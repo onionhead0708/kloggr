@@ -9,12 +9,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let elapsed = start.elapsed();
     let size = log.bytes().len() as f64;
     println!(
-        "{} lines, {:.1} MiB in {elapsed:.2?} ({:.0} MiB/s), index {:.1} MiB, longest line {} B",
+        "{} lines, {:.1} MiB in {elapsed:.2?} ({:.0} MiB/s), index {:.1} MiB, longest line {}, {}",
         log.line_count(),
         size / 1048576.0,
         size / 1048576.0 / elapsed.as_secs_f64(),
         log.index().allocated_bytes() as f64 / 1048576.0,
         log.index().max_line_len(),
+        log.encoding(),
     );
     Ok(())
 }

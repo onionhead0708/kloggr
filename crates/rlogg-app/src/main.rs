@@ -12,7 +12,7 @@ use gpui::{
 };
 use gpui_component::Root;
 use rlogg_core::file::OpenError;
-use rlogg_core::{IndexProgress, LogFile};
+use rlogg_core::{IndexProgress, LogFile, OpenOptions};
 
 /// Messages from the indexing thread to the view.
 enum IndexEvent {
@@ -56,9 +56,10 @@ impl LogView {
         std::thread::Builder::new()
             .name("rlogg-index".into())
             .spawn(move || {
-                let result = LogFile::open_with(&thread_path, &cancel, |p| {
-                    tx.send_blocking(IndexEvent::Progress(p)).ok();
-                });
+                let result =
+                    LogFile::open_with(&thread_path, OpenOptions::default(), &cancel, |p| {
+                        tx.send_blocking(IndexEvent::Progress(p)).ok();
+                    });
                 tx.send_blocking(IndexEvent::Done(result)).ok();
             })
             .expect("failed to spawn indexing thread");
@@ -78,7 +79,8 @@ impl LogView {
                                 elapsed = ?started.elapsed(),
                                 "indexed {path}"
                             );
-                            view.status = format!("{path} — {} lines", log.line_count());
+                            view.status =
+                                format!("{path} — {} lines — {}", log.line_count(), log.encoding());
                             view.log = Some(log);
                         }
                         IndexEvent::Done(Err(OpenError::Cancelled(_))) => {}
@@ -98,11 +100,11 @@ impl LogView {
             return Vec::new();
         };
         let first = range.start;
-        log.lines(range)
+        log.lines_text(range)
             .enumerate()
-            .map(|(i, line)| {
-                // TODO: decoding and long-line windowing (Phase 1 log view).
-                let text = String::from_utf8_lossy(line).into_owned();
+            .map(|(i, text)| {
+                // TODO: long-line windowing (Phase 1 log view).
+                let text = text.into_owned();
                 div()
                     .flex()
                     .gap_2()

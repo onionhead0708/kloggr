@@ -11,8 +11,12 @@
 //! `PartialIndexOperation`). It reports progress and can be cancelled between
 //! batches; a cancelled index is still valid for the prefix it covers.
 //!
-//! TODO(encoding): only single-byte line feeds for now. UTF-16 needs klogg's
-//! `lineFeedWidth` handling, and line lengths will need tab expansion.
+//! Multi-byte line feeds (UTF-16) follow klogg's `lineFeedWidth` /
+//! `lineFeedIndex`, but stricter: a `0x0A` byte is a line feed only at its
+//! position within an aligned code unit whose other byte is 0, so text such as
+//! U+520A is not split. Indexing starts after the byte-order mark.
+//!
+//! TODO: line lengths do not expand tabs yet (klogg `expandTabsInLine`).
 
 mod compressed;
 
@@ -22,6 +26,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use rayon::prelude::*;
 
 pub use compressed::CompressedOffsets;
+
+use crate::encoding::LineFeed;
 
 /// Bytes scanned by one rayon task.
 const CHUNK: usize = 4 << 20;
@@ -52,28 +58,57 @@ pub struct Cancelled;
 ///
 /// Lines are terminated by `\n`; a `\r` before it is not part of the line.
 /// A final line without a terminator still counts. An empty buffer has 0 lines.
-#[derive(Debug, Default, Clone)]
+/// For multi-byte encodings, a trailing partial code unit is not indexed.
+#[derive(Debug, Clone)]
 pub struct LineIndex {
+    lf: LineFeed,
+    /// Offset of the first line: the byte-order mark is skipped.
+    origin: u64,
     /// Offset of the first byte of each line.
     starts: CompressedOffsets,
     /// Number of bytes of the buffer covered by the index.
     len: u64,
-    /// Longest line among all lines except the last, in bytes.
+    /// Longest line among all lines except the last, in code units.
     max_terminated_len: u64,
     /// Length of the last line, which may still grow on [`extend`](Self::extend).
     last_len: u64,
 }
 
+impl Default for LineIndex {
+    fn default() -> Self {
+        Self::new(LineFeed::SINGLE_BYTE, 0)
+    }
+}
+
 impl LineIndex {
-    pub fn new() -> Self {
-        Self::default()
+    /// An empty index for text with line feeds `lf`, whose first line starts
+    /// at `origin` (the byte-order mark length).
+    pub fn new(lf: LineFeed, origin: usize) -> Self {
+        assert_eq!(
+            origin % lf.width as usize,
+            0,
+            "origin must be code-unit aligned"
+        );
+        Self {
+            lf,
+            origin: origin as u64,
+            starts: CompressedOffsets::new(),
+            len: 0,
+            max_terminated_len: 0,
+            last_len: 0,
+        }
     }
 
-    /// Builds the index of `data` (parallel, not cancellable).
+    /// Builds the index of single-byte-line-feed `data` (parallel, not
+    /// cancellable).
     pub fn build(data: &[u8]) -> Self {
-        let mut index = Self::new();
+        let mut index = Self::default();
         index.extend(data);
         index
+    }
+
+    pub fn line_feed(&self) -> LineFeed {
+        self.lf
     }
 
     /// Indexes the bytes appended to `data` since the last call.
@@ -107,13 +142,16 @@ impl LineIndex {
         mut on_progress: impl FnMut(IndexProgress),
         batch: usize,
     ) -> Result<(), Cancelled> {
-        let total = data.len() as u64;
+        let total = self.indexable_len(data);
         assert!(total >= self.len, "buffer shrank: reindex from scratch");
+        let batch = batch - batch % self.lf.width as usize;
         while self.len < total {
             if cancel.load(Ordering::Relaxed) {
                 return Err(Cancelled);
             }
-            let end = (self.len as usize).saturating_add(batch).min(data.len());
+            let end = (self.len as usize)
+                .saturating_add(batch)
+                .min(total as usize);
             self.extend_to(data, end);
             on_progress(IndexProgress {
                 done: self.len,
@@ -123,26 +161,49 @@ impl LineIndex {
         Ok(())
     }
 
-    /// Indexes `data[self.len..end]`.
-    fn extend_to(&mut self, data: &[u8], end: usize) {
-        let old = self.len as usize;
-        debug_assert!(old < end);
+    /// Bytes of `data` that can be indexed: 0 if there is nothing after the
+    /// BOM but a partial code unit, otherwise up to the last complete unit.
+    fn indexable_len(&self, data: &[u8]) -> u64 {
+        let len = data.len() as u64;
+        let width = u64::from(self.lf.width);
+        if len < self.origin + width {
+            return 0;
+        }
+        len - (len - self.origin) % width
+    }
 
-        // A line starts at `old` if the old buffer was empty or ended on `\n`:
-        // a start is only recorded once there is a byte after the terminator.
-        if old == 0 || data[old - 1] == b'\n' {
-            self.push_start(data, old as u64);
+    /// Indexes `data[self.len..end]`; `end` is code-unit aligned.
+    fn extend_to(&mut self, data: &[u8], end: usize) {
+        let origin = self.origin as usize;
+        let scan_from = (self.len as usize).max(origin);
+        debug_assert!(scan_from < end);
+
+        // A line starts at `scan_from` if it is the first line, or if the
+        // indexed part ended on a line feed: a start is only recorded once
+        // there is a byte after the terminator.
+        if self.starts.is_empty() || self.lf.ends_with_lf(data, scan_from) {
+            self.push_start(data, scan_from as u64);
         }
 
-        // Positions after each `\n` in the new bytes, chunk by chunk in parallel.
-        let chunks: Vec<Vec<u64>> = (old..end)
+        // Positions after each line feed in the new bytes, chunk by chunk in
+        // parallel. Chunks are code-unit aligned, so units never straddle them.
+        let lf = self.lf;
+        let (width, index) = (lf.width as usize, lf.index as usize);
+        let chunks: Vec<Vec<u64>> = (scan_from..end)
             .step_by(CHUNK)
             .collect::<Vec<_>>()
             .into_par_iter()
             .map(|from| {
                 let to = (from + CHUNK).min(end);
                 memchr::memchr_iter(b'\n', &data[from..to])
-                    .map(|i| (from + i + 1) as u64)
+                    .map(|i| from + i)
+                    .filter(|&p| {
+                        width == 1
+                            || (p >= origin + index
+                                && (p - index - origin).is_multiple_of(width)
+                                && lf.ends_with_lf(data, p - index + width))
+                    })
+                    .map(|p| (p - index + width) as u64)
                     .filter(|&s| s < end as u64)
                     .collect()
             })
@@ -155,13 +216,18 @@ impl LineIndex {
 
         self.len = end as u64;
         if let Some(last) = self.starts.last() {
-            self.last_len = content_len(data, last as usize, end);
+            self.last_len = self.content_len(data, last as usize, end);
         }
+    }
+
+    /// Length in code units of the line in `data[start..end]`, no terminator.
+    fn content_len(&self, data: &[u8], start: usize, end: usize) -> u64 {
+        (self.lf.strip_eol(&data[start..end]).len() / self.lf.width as usize) as u64
     }
 
     fn push_start(&mut self, data: &[u8], start: u64) {
         if let Some(prev) = self.starts.last() {
-            let len = content_len(data, prev as usize, start as usize);
+            let len = self.content_len(data, prev as usize, start as usize);
             self.max_terminated_len = self.max_terminated_len.max(len);
         }
         self.starts.push(start);
@@ -176,8 +242,9 @@ impl LineIndex {
         self.len
     }
 
-    /// Length in bytes of the longest line, without terminator (klogg:
-    /// `getMaxLength`, which also expands tabs; not done yet).
+    /// Length in code units of the longest line, without terminator (klogg:
+    /// `getMaxLength`, which also expands tabs; not done yet). For UTF-8 this
+    /// is bytes, for UTF-16 it is 16-bit units.
     pub fn max_line_len(&self) -> u64 {
         self.max_terminated_len.max(self.last_len)
     }
@@ -198,7 +265,7 @@ impl LineIndex {
     /// without its `\n` / `\r\n` terminator.
     pub fn line<'a>(&self, data: &'a [u8], n: usize) -> Option<&'a [u8]> {
         self.check_buffer(data);
-        self.line_span(n).map(|span| strip_eol(&data[span]))
+        self.line_span(n).map(|span| self.lf.strip_eol(&data[span]))
     }
 
     /// Content of the lines in `range` (clamped to the line count), decoding
@@ -216,8 +283,9 @@ impl LineIndex {
         if start < end && end == count {
             bounds.push(self.len);
         }
+        let lf = self.lf;
         (1..bounds.len().max(1))
-            .map(move |k| strip_eol(&data[bounds[k - 1] as usize..bounds[k] as usize]))
+            .map(move |k| lf.strip_eol(&data[bounds[k - 1] as usize..bounds[k] as usize]))
     }
 
     fn check_buffer(&self, data: &[u8]) {
@@ -228,19 +296,14 @@ impl LineIndex {
     }
 }
 
-fn strip_eol(line: &[u8]) -> &[u8] {
-    let line = line.strip_suffix(b"\n").unwrap_or(line);
-    line.strip_suffix(b"\r").unwrap_or(line)
-}
-
-/// Length of the line occupying `data[start..end]`, without terminator.
-fn content_len(data: &[u8], start: usize, end: usize) -> u64 {
-    strip_eol(&data[start..end]).len() as u64
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Strips a trailing `\r` from a line already split on `\n`.
+    fn strip_cr(line: &[u8]) -> &[u8] {
+        line.strip_suffix(b"\r").unwrap_or(line)
+    }
 
     fn lines(data: &[u8]) -> Vec<&[u8]> {
         let idx = LineIndex::build(data);
@@ -255,7 +318,7 @@ mod tests {
             return Vec::new();
         }
         let body = data.strip_suffix(b"\n").unwrap_or(data);
-        body.split(|&b| b == b'\n').map(strip_eol).collect()
+        body.split(|&b| b == b'\n').map(strip_cr).collect()
     }
 
     #[test]
@@ -335,7 +398,7 @@ mod tests {
         let data = generated(50_000);
         let full = LineIndex::build(&data);
         // Grow in uneven steps, including cuts right before and after `\n`.
-        let mut idx = LineIndex::new();
+        let mut idx = LineIndex::default();
         let mut cut = 0;
         for step in [1, 2, 3, 97, 1000, 4096, 7, 13_000] {
             cut = (cut + step).min(data.len());
@@ -380,7 +443,7 @@ mod tests {
         let data = generated(100_000);
         let batch = 30_000;
         let cancel = AtomicBool::new(false);
-        let mut idx = LineIndex::new();
+        let mut idx = LineIndex::default();
         let mut reports = Vec::new();
         let result = idx.extend_batched(
             &data,
@@ -405,5 +468,159 @@ mod tests {
             .unwrap();
         assert_eq!(percents, [60, 90, 100]);
         assert_eq!(idx.line_count(), reference(&data).len());
+    }
+
+    mod utf16 {
+        use super::*;
+        use crate::encoding::{Encoding, detect};
+
+        /// Reference: decode the whole buffer, then split into lines.
+        fn decoded_reference(enc: Encoding, data: &[u8]) -> Vec<String> {
+            let w = enc.line_feed().width as usize;
+            let bom = enc.bom_len(data);
+            let body = &data[bom..data.len() - (data.len() - bom) % w];
+            let text = enc.decode(body);
+            if text.is_empty() {
+                return Vec::new();
+            }
+            let text = text.strip_suffix('\n').unwrap_or(&text);
+            text.split('\n')
+                .map(|l| l.strip_suffix('\r').unwrap_or(l).to_owned())
+                .collect()
+        }
+
+        fn decoded_lines(enc: Encoding, idx: &LineIndex, data: &[u8]) -> Vec<String> {
+            idx.lines(data, 0..usize::MAX)
+                .map(|l| enc.decode(l).into_owned())
+                .collect()
+        }
+
+        fn index(enc: Encoding, data: &[u8]) -> LineIndex {
+            let mut idx = LineIndex::new(enc.line_feed(), enc.bom_len(data));
+            idx.extend(data);
+            idx
+        }
+
+        fn klogg_sample(name: &str) -> Vec<u8> {
+            std::fs::read(format!("{}/tests/data/{name}", env!("CARGO_MANIFEST_DIR"))).unwrap()
+        }
+
+        #[test]
+        fn klogg_samples_match_reference() {
+            for name in [
+                "Chinese-Lipsum.utf16.txt",
+                "Chinese-Lipsum.utf16be.txt",
+                "utf16_tab_test.txt",
+                "utf16be_tab_test.txt",
+                "random_block_100_byte_utf16le.txt",
+                "random_block_100_byte_utf16be.txt",
+            ] {
+                let data = klogg_sample(name);
+                let enc = detect(&data);
+                let idx = index(enc, &data);
+                let expected = decoded_reference(enc, &data);
+                assert!(!expected.is_empty());
+                assert_eq!(decoded_lines(enc, &idx, &data), expected, "{name}");
+            }
+        }
+
+        #[test]
+        fn le_and_be_samples_agree() {
+            let le = klogg_sample("Chinese-Lipsum.utf16.txt");
+            let be = klogg_sample("Chinese-Lipsum.utf16be.txt");
+            let (il, ib) = (
+                index(Encoding::UTF_16LE, &le),
+                index(Encoding::UTF_16BE, &be),
+            );
+            assert_eq!(il.line_count(), ib.line_count());
+            assert_eq!(il.max_line_len(), ib.max_line_len());
+            assert_eq!(
+                decoded_lines(Encoding::UTF_16LE, &il, &le),
+                decoded_lines(Encoding::UTF_16BE, &ib, &be)
+            );
+        }
+
+        /// Multi-chunk UTF-16 text with CRLF and code units containing 0x0A
+        /// (U+520A, U+0A0A) that must not split lines.
+        fn generated_text() -> String {
+            let ascii = String::from_utf8(generated(CHUNK + CHUNK / 2)).unwrap();
+            ascii
+                .split_inclusive('\n')
+                .enumerate()
+                .map(|(i, l)| match i % 3 {
+                    0 => format!("\u{520A}{l}"),
+                    1 => format!("\u{0A0A}\u{FEFF}{l}"),
+                    _ => l.to_owned(),
+                })
+                .collect()
+        }
+
+        fn encode(text: &str, be: bool, bom: bool) -> Vec<u8> {
+            let mut out = Vec::new();
+            for u in std::iter::once(0xFEFF)
+                .filter(|_| bom)
+                .chain(text.encode_utf16())
+            {
+                out.extend(if be { u.to_be_bytes() } else { u.to_le_bytes() });
+            }
+            out
+        }
+
+        #[test]
+        fn generated_multi_chunk_matches_reference() {
+            let text = generated_text();
+            for (be, bom) in [(false, true), (true, true), (false, false), (true, false)] {
+                let data = encode(&text, be, bom);
+                let enc = if be {
+                    Encoding::UTF_16BE
+                } else {
+                    Encoding::UTF_16LE
+                };
+                assert_eq!(detect(&data), enc);
+                let idx = index(enc, &data);
+                assert_eq!(
+                    decoded_lines(enc, &idx, &data),
+                    decoded_reference(enc, &data),
+                    "be={be} bom={bom}"
+                );
+            }
+        }
+
+        #[test]
+        fn incremental_with_odd_cuts() {
+            let text: String = generated_text().chars().take(20_000).collect();
+            for be in [false, true] {
+                let data = encode(&text, be, true);
+                let enc = if be {
+                    Encoding::UTF_16BE
+                } else {
+                    Encoding::UTF_16LE
+                };
+                let mut idx = LineIndex::new(enc.line_feed(), 2);
+                let mut cut = 0;
+                for step in [1, 1, 1, 2, 3, 97, 1001, 4096, 7, 13_001] {
+                    cut = (cut + step).min(data.len());
+                    idx.extend(&data[..cut]);
+                    assert_eq!(
+                        decoded_lines(enc, &idx, &data[..cut]),
+                        decoded_reference(enc, &data[..cut]),
+                        "be={be} cut={cut}"
+                    );
+                }
+                idx.extend(&data);
+                assert_eq!(idx.line_count(), index(enc, &data).line_count());
+            }
+        }
+
+        #[test]
+        fn bom_only_has_no_lines() {
+            let idx = index(Encoding::UTF_16LE, b"\xFF\xFE");
+            assert_eq!(idx.line_count(), 0);
+            let idx = index(Encoding::UTF_8, b"\xEF\xBB\xBFa\n");
+            assert_eq!(
+                idx.lines(b"\xEF\xBB\xBFa\n", 0..1).collect::<Vec<_>>(),
+                [b"a"]
+            );
+        }
     }
 }

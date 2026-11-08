@@ -1,5 +1,6 @@
 //! Memory-mapped log file (klogg: `FileHolder` + `LogData`).
 
+use std::borrow::Cow;
 use std::fs::File;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -7,7 +8,15 @@ use std::sync::atomic::AtomicBool;
 
 use memmap2::Mmap;
 
+use crate::encoding::{self, Encoding};
 use crate::line_index::{Cancelled, IndexProgress, LineIndex};
+
+/// Options for [`LogFile::open_with`].
+#[derive(Debug, Default, Clone, Copy)]
+pub struct OpenOptions {
+    /// Use this encoding instead of the detected one (klogg: forced encoding).
+    pub encoding: Option<Encoding>,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum OpenError {
@@ -30,19 +39,31 @@ pub struct LogFile {
     /// `None` for an empty file: mapping 0 bytes fails on some platforms.
     map: Option<Mmap>,
     index: LineIndex,
+    encoding: Encoding,
+    detected_encoding: Encoding,
 }
 
 impl LogFile {
     /// Maps and fully indexes `path`.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, OpenError> {
-        Self::open_with(path, &AtomicBool::new(false), |_| {})
+        Self::open_with(
+            path,
+            OpenOptions::default(),
+            &AtomicBool::new(false),
+            |_| {},
+        )
     }
 
-    /// Maps and indexes `path`, reporting progress and stopping early with
-    /// [`OpenError::Cancelled`] once `cancel` is set. Blocks; call it off the
-    /// UI thread (klogg: `FullIndexOperation`).
+    /// Maps `path`, detects its encoding and indexes it, reporting progress
+    /// and stopping early with [`OpenError::Cancelled`] once `cancel` is set.
+    /// Blocks; call it off the UI thread (klogg: `FullIndexOperation`).
+    ///
+    /// To switch encodings, open the file again with
+    /// [`OpenOptions::encoding`]: the line layout may change (klogg reindexes
+    /// too).
     pub fn open_with(
         path: impl AsRef<Path>,
+        options: OpenOptions,
         cancel: &AtomicBool,
         on_progress: impl FnMut(IndexProgress),
     ) -> Result<Self, OpenError> {
@@ -61,9 +82,19 @@ impl LogFile {
             // klogg; follow mode must detect truncation before reading.
             Some(unsafe { Mmap::map(&file) }.map_err(io_err)?)
         };
-        let mut index = LineIndex::new();
-        index.extend_with(map.as_deref().unwrap_or_default(), cancel, on_progress)?;
-        Ok(Self { path, map, index })
+        let data = map.as_deref().unwrap_or_default();
+        let detected_encoding =
+            encoding::detect(&data[..data.len().min(encoding::DETECTION_SAMPLE)]);
+        let encoding = options.encoding.unwrap_or(detected_encoding);
+        let mut index = LineIndex::new(encoding.line_feed(), encoding.bom_len(data));
+        index.extend_with(data, cancel, on_progress)?;
+        Ok(Self {
+            path,
+            map,
+            index,
+            encoding,
+            detected_encoding,
+        })
     }
 
     pub fn path(&self) -> &Path {
@@ -91,6 +122,27 @@ impl LogFile {
 
     pub fn index(&self) -> &LineIndex {
         &self.index
+    }
+
+    /// Encoding used to index and decode the file.
+    pub fn encoding(&self) -> Encoding {
+        self.encoding
+    }
+
+    /// Encoding guessed from the file content (klogg: `getDetectedEncoding`).
+    pub fn detected_encoding(&self) -> Encoding {
+        self.detected_encoding
+    }
+
+    /// Decoded text of line `n`. Invalid sequences become U+FFFD.
+    pub fn line_text(&self, n: usize) -> Option<Cow<'_, str>> {
+        self.line(n).map(|l| self.encoding.decode(l))
+    }
+
+    /// Decoded text of the lines in `range` (clamped).
+    pub fn lines_text(&self, range: Range<usize>) -> impl ExactSizeIterator<Item = Cow<'_, str>> {
+        let encoding = self.encoding;
+        self.lines(range).map(move |l| encoding.decode(l))
     }
 }
 
@@ -125,10 +177,37 @@ mod tests {
     fn open_reports_progress_and_can_be_cancelled() {
         let path = temp_file("progress.log", b"a\nb\n");
         let mut last = None;
-        LogFile::open_with(&path, &AtomicBool::new(false), |p| last = Some(p)).unwrap();
+        let opts = OpenOptions::default();
+        LogFile::open_with(&path, opts, &AtomicBool::new(false), |p| last = Some(p)).unwrap();
         assert_eq!(last.map(|p| p.percent()), Some(100));
-        let cancelled = LogFile::open_with(&path, &AtomicBool::new(true), |_| {});
+        let cancelled = LogFile::open_with(&path, opts, &AtomicBool::new(true), |_| {});
         assert!(matches!(cancelled, Err(OpenError::Cancelled(_))));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn detects_and_decodes_utf16() {
+        let text = "caf\u{e9}\r\n\u{520A}\u{65e5}\u{672c}\n";
+        let mut bytes = vec![0xFF, 0xFE];
+        bytes.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+        let path = temp_file("utf16.log", &bytes);
+        let log = LogFile::open(&path).unwrap();
+        assert_eq!(log.encoding(), Encoding::UTF_16LE);
+        assert_eq!(
+            log.lines_text(0..10).collect::<Vec<_>>(),
+            ["caf\u{e9}", "\u{520A}\u{65e5}\u{672c}"]
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn forced_encoding_overrides_detection() {
+        let path = temp_file("latin1.log", b"caf\xe9\n");
+        let opts = OpenOptions {
+            encoding: Encoding::for_label("latin1"),
+        };
+        let log = LogFile::open_with(&path, opts, &AtomicBool::new(false), |_| {}).unwrap();
+        assert_eq!(log.line_text(0).as_deref(), Some("caf\u{e9}"));
         std::fs::remove_file(path).unwrap();
     }
 

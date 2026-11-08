@@ -12,3 +12,5 @@ memmap2.workspace = true
 thiserror.workspace = true
 rayon.workspace = true
 memchr.workspace = true
+encoding_rs.workspace = true
+chardetng.workspace = true
