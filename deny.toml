@@ -1,0 +1,47 @@
+# cargo-deny config: `cargo deny check`
+# rlogg is GPL-3.0-or-later, so every dependency must be GPLv3-compatible.
+
+[graph]
+all-features = false
+
+[advisories]
+# Unmaintained crates deep in the GPUI tree are not actionable here; only fail
+# on our direct dependencies.
+unmaintained = "workspace"
+ignore = []
+
+[licenses]
+confidence-threshold = 0.9
+# The list is a policy, not an inventory: keep entries nothing uses yet.
+unused-allowed-license = "allow"
+# GPLv3-compatible licenses only (https://www.gnu.org/licenses/license-list.html).
+allow = [
+    "GPL-3.0-or-later",
+    "LGPL-2.1-or-later",
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "CC0-1.0",
+    "Unlicense",
+    "Unicode-3.0",
+    "BSL-1.0",
+    "MPL-2.0",
+]
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
