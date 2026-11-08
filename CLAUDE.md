@@ -95,6 +95,7 @@ cargo deny check                 # license / advisory check (GPL-compatible deps
 - [ ] Regex, plain-text and case-insensitive search, plus klogg's boolean combinations (`regex/`)
 - [ ] Filtered view (bottom pane) synced with the main view; marks
 - [ ] Quick find (incremental, next/previous)
+- [ ] Jump to line: digits then `g`, and Ctrl+L with a small input box (klogg `digitsBuffer_`, `LogViewJumpToLine`)
 - [ ] Overview bar showing match and mark positions
 
 ### Phase 3: live files and workspace
@@ -102,6 +103,7 @@ cargo deny check                 # license / advisory check (GPL-compatible deps
 - [ ] Tabs and multiple files, sessions
 - [ ] Highlighters and highlighter sets, color labels
 - [ ] Frozen columns (klogg `frozencolumns`)
+- [ ] Wide characters (CJK, emoji): map columns using real glyph widths instead of one column per `char`
 - [ ] Settings and options dialog, keyboard shortcuts matching klogg's defaults
 
 ### Phase 4: extras and release
@@ -109,6 +111,7 @@ cargo deny check                 # license / advisory check (GPL-compatible deps
 - [ ] Archive/compressed file opening (klogg `decompressor`)
 - [ ] Packaging: AppImage, .deb, tarball; then Windows (.msi) and macOS (.dmg) CI
 - [ ] Version check, crash/panic reporting
+- [ ] Copying large selections: stream to the clipboard in chunks, or warn above a size limit
 
 ## Conventions
 
