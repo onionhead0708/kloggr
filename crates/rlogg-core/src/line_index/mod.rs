@@ -158,6 +158,7 @@ impl LineIndex {
                 total,
             });
         }
+        self.starts.shrink_to_fit();
         Ok(())
     }
 

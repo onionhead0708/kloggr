@@ -27,6 +27,7 @@ chardetng = "1"
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 directories = "6"
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 async-channel = "2.5"
 anyhow = "1"
 tracing = "0.1"

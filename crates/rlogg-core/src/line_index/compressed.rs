@@ -120,6 +120,13 @@ impl CompressedOffsets {
         self.tail.truncate(len % BLOCK);
     }
 
+    /// Releases spare capacity left by growth. Called when indexing finishes:
+    /// on a multi-GB file the spare capacity can nearly double the index.
+    pub fn shrink_to_fit(&mut self) {
+        self.packed.shrink_to_fit();
+        self.blocks.shrink_to_fit();
+    }
+
     /// Heap bytes used (klogg: `allocatedSize`).
     pub fn allocated_bytes(&self) -> usize {
         self.packed.capacity()

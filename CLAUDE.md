@@ -68,6 +68,8 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt
 bacon                            # watch mode
 cargo deny check                 # license / advisory check (GPL-compatible deps only)
+cargo bench -p rlogg-core        # criterion benches (RLOGG_BENCH_SIZE_MB=10240 for 10 GB)
+scripts/bench-vs-klogg.sh 1024   # indexing time vs klogg on the same generated files
 ```
 
 ## Environment (Ubuntu 26.04, Linux first)
@@ -89,7 +91,7 @@ cargo deny check                 # license / advisory check (GPL-compatible deps
 - [x] Encoding detection and decoding: UTF-8, UTF-16LE/BE, Latin-1, etc. (`EncodingDetector`)
 - [x] Custom log view element: line numbers, selection, copy, horizontal scroll, long-line handling
 - [x] Open file (dialog, drag and drop, CLI), recent files
-- [ ] Benchmarks (criterion) for indexing and search on 1–10 GB files, compared with klogg
+- [x] Benchmarks (criterion) for indexing and search on 1–10 GB files, compared with klogg (indexing done, 1 GiB results in `docs/benchmarks.md`; add search benches with Phase 2, run 10 GB)
 
 ### Phase 2: search and filtering
 - [ ] Regex, plain-text and case-insensitive search, plus klogg's boolean combinations (`regex/`)
