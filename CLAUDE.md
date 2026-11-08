@@ -26,7 +26,7 @@ stays GPLv3. Keep klogg's copyright notices where code is translated closely.
 | `logdata/` LogFilteredData(Worker) | `rlogg-core::filter` (todo) | regex, rayon, crossbeam-channel |
 | `regex/` (Hyperscan / QRegularExpression, boolean combos) | `rlogg-core::search` (todo) | regex, regex-automata (RegexSet) |
 | `filewatch/` (efsw) | `rlogg-core::watch` (todo) | notify |
-| `settings/`, `ui/session*`, `ui/recentfiles*` | `rlogg-core::settings` (todo) | serde, toml, directories |
+| `settings/`, `ui/session*`, `ui/recentfiles*` | `rlogg-core::settings` (recent files done) | serde, toml, directories |
 | `ui/abstractlogview`, `logmainview`, `filteredview`, `frozencolumns`, `overview*` | `rlogg-app` log view widget | gpui |
 | `ui/crawlerwidget`, `tabbedcrawlerwidget`, `mainwindow`, `menu` | `rlogg-app` workspace, tabs, menus | gpui-component |
 | `ui/quickfind*`, `highlighter*`, `predefinedfilters*`, `savedsearches`, `scratchpad` | `rlogg-app` features | gpui-component |
@@ -88,7 +88,7 @@ cargo deny check                 # license / advisory check (GPL-compatible deps
 - [x] Parallel, compressed line index with progress reporting (klogg `LogDataWorker`, `CompressedLineStorage`)
 - [x] Encoding detection and decoding: UTF-8, UTF-16LE/BE, Latin-1, etc. (`EncodingDetector`)
 - [x] Custom log view element: line numbers, selection, copy, horizontal scroll, long-line handling
-- [ ] Open file (dialog, drag and drop, CLI), recent files
+- [x] Open file (dialog, drag and drop, CLI), recent files
 - [ ] Benchmarks (criterion) for indexing and search on 1–10 GB files, compared with klogg
 
 ### Phase 2: search and filtering

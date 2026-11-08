@@ -1,0 +1,276 @@
+//! Persistent session state: recent files (more settings later).
+//!
+//! klogg keeps these in `QSettings` INI files (`settings/src/persistentinfo.cpp`);
+//! rlogg uses one TOML file, `session.toml`, in the platform config directory
+//! (`~/.config/rlogg` on Linux). `RLOGG_CONFIG_DIR` overrides the directory,
+//! e.g. for a portable install or tests.
+
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+/// Most recent files remembered (klogg: `MAX_RECENT_FILES`).
+pub const MAX_RECENT_FILES: usize = 25;
+/// Recent files shown in the menu by default (klogg:
+/// `DEFAULT_MAX_ITEMS_TO_SHOW`).
+pub const DEFAULT_RECENT_SHOWN: usize = 5;
+
+const SESSION_FILE: &str = "session.toml";
+const SESSION_VERSION: u32 = 1;
+
+#[derive(Debug, thiserror::Error)]
+pub enum SettingsError {
+    #[error("cannot access {path}: {source}")]
+    Io {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("cannot serialize settings: {0}")]
+    Serialize(#[from] toml::ser::Error),
+}
+
+/// Recently opened files, most recent first (klogg: `RecentFiles`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RecentFiles {
+    files: Vec<PathBuf>,
+    /// How many to show in the menu, 1..=[`MAX_RECENT_FILES`].
+    shown: usize,
+}
+
+impl Default for RecentFiles {
+    fn default() -> Self {
+        Self {
+            files: Vec::new(),
+            shown: DEFAULT_RECENT_SHOWN,
+        }
+    }
+}
+
+impl RecentFiles {
+    /// All remembered files, most recent first.
+    pub fn files(&self) -> &[PathBuf] {
+        &self.files
+    }
+
+    /// The files to show in the menu (klogg: `getNumberItemsToShow`).
+    pub fn shown(&self) -> &[PathBuf] {
+        &self.files[..self.files.len().min(self.shown)]
+    }
+
+    pub fn set_shown(&mut self, n: usize) {
+        if n > 0 {
+            self.shown = n.min(MAX_RECENT_FILES);
+        }
+    }
+
+    /// Moves `path` to the front (klogg: `addRecent`). Like klogg, this also
+    /// drops files that no longer exist.
+    pub fn add(&mut self, path: impl Into<PathBuf>) {
+        let path = path.into();
+        self.remove(&path);
+        self.files.insert(0, path);
+        self.files.truncate(MAX_RECENT_FILES);
+    }
+
+    /// Removes `path`, and any file that no longer exists (klogg:
+    /// `removeRecent`).
+    pub fn remove(&mut self, path: &Path) {
+        self.files.retain(|f| f != path && f.exists());
+    }
+
+    pub fn clear(&mut self) {
+        self.files.clear();
+    }
+
+    /// Restores invariants after loading a hand-edited or older file.
+    fn sanitize(&mut self) {
+        let mut seen = std::collections::HashSet::new();
+        self.files.retain(|f| seen.insert(f.clone()));
+        self.files.truncate(MAX_RECENT_FILES);
+        self.shown = self.shown.clamp(1, MAX_RECENT_FILES);
+    }
+}
+
+/// Everything stored in `session.toml`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Session {
+    version: u32,
+    pub recent_files: RecentFiles,
+}
+
+impl Default for Session {
+    fn default() -> Self {
+        Self {
+            version: SESSION_VERSION,
+            recent_files: RecentFiles::default(),
+        }
+    }
+}
+
+impl Session {
+    /// Loads the session from `dir`. A missing file gives the defaults; an
+    /// unreadable or unknown-version file is logged and ignored, as klogg
+    /// does, so a bad file never prevents startup.
+    pub fn load(dir: &Path) -> Self {
+        let path = dir.join(SESSION_FILE);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Self::default(),
+            Err(e) => {
+                tracing::warn!("cannot read {}: {e}", path.display());
+                return Self::default();
+            }
+        };
+        match toml::from_str::<Self>(&text) {
+            Ok(mut session) if session.version == SESSION_VERSION => {
+                session.recent_files.sanitize();
+                session
+            }
+            Ok(session) => {
+                tracing::warn!(
+                    "ignoring {}: unknown version {}",
+                    path.display(),
+                    session.version
+                );
+                Self::default()
+            }
+            Err(e) => {
+                tracing::warn!("ignoring {}: {e}", path.display());
+                Self::default()
+            }
+        }
+    }
+
+    /// Saves to `dir`, creating it if needed. Writes a temporary file and
+    /// renames it, so a crash never leaves a truncated file.
+    pub fn save(&self, dir: &Path) -> Result<(), SettingsError> {
+        let io = |path: &Path| {
+            let path = path.to_path_buf();
+            move |source| SettingsError::Io { path, source }
+        };
+        std::fs::create_dir_all(dir).map_err(io(dir))?;
+        let path = dir.join(SESSION_FILE);
+        let tmp = dir.join(format!("{SESSION_FILE}.tmp"));
+        std::fs::write(&tmp, toml::to_string_pretty(self)?).map_err(io(&tmp))?;
+        std::fs::rename(&tmp, &path).map_err(io(&path))
+    }
+}
+
+/// Directory for rlogg's settings: `$RLOGG_CONFIG_DIR`, else the platform
+/// config directory.
+pub fn config_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("RLOGG_CONFIG_DIR").filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    directories::ProjectDirs::from("", "", "rlogg").map(|d| d.config_dir().to_path_buf())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("rlogg-settings-{}-{name}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+
+        /// Creates an empty file and returns its path.
+        fn file(&self, name: &str) -> PathBuf {
+            let path = self.0.join(name);
+            std::fs::write(&path, b"").unwrap();
+            path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn add_moves_to_front_without_duplicates() {
+        let dir = TempDir::new("order");
+        let (a, b, c) = (dir.file("a"), dir.file("b"), dir.file("c"));
+        let mut recent = RecentFiles::default();
+        recent.add(&a);
+        recent.add(&b);
+        recent.add(&c);
+        recent.add(&a);
+        assert_eq!(recent.files(), [a, c, b]);
+    }
+
+    #[test]
+    fn add_prunes_missing_files_and_caps_length() {
+        let dir = TempDir::new("prune");
+        let mut recent = RecentFiles::default();
+        let gone = dir.file("gone");
+        recent.add(&gone);
+        std::fs::remove_file(&gone).unwrap();
+        let files: Vec<_> = (0..30).map(|i| dir.file(&format!("f{i}"))).collect();
+        for f in &files {
+            recent.add(f);
+        }
+        assert_eq!(recent.files().len(), MAX_RECENT_FILES);
+        assert_eq!(recent.files()[0], files[29]);
+        assert!(!recent.files().contains(&gone));
+    }
+
+    #[test]
+    fn shown_is_limited() {
+        let dir = TempDir::new("shown");
+        let mut recent = RecentFiles::default();
+        for i in 0..8 {
+            recent.add(dir.file(&i.to_string()));
+        }
+        assert_eq!(recent.shown().len(), DEFAULT_RECENT_SHOWN);
+        recent.set_shown(0);
+        assert_eq!(recent.shown().len(), DEFAULT_RECENT_SHOWN);
+        recent.set_shown(100);
+        assert_eq!(recent.shown().len(), 8);
+        recent.clear();
+        assert!(recent.shown().is_empty());
+    }
+
+    #[test]
+    fn save_and_load_round_trip() {
+        let dir = TempDir::new("roundtrip");
+        let mut session = Session::default();
+        session.recent_files.add(dir.file("x.log"));
+        session.recent_files.add(dir.file("y.log"));
+        session.save(&dir.0.join("conf")).unwrap();
+        assert_eq!(Session::load(&dir.0.join("conf")), session);
+    }
+
+    #[test]
+    fn bad_files_load_as_default() {
+        let dir = TempDir::new("bad");
+        assert_eq!(Session::load(&dir.0), Session::default());
+        std::fs::write(dir.0.join(SESSION_FILE), "not = [valid").unwrap();
+        assert_eq!(Session::load(&dir.0), Session::default());
+        std::fs::write(dir.0.join(SESSION_FILE), "version = 99\n").unwrap();
+        assert_eq!(Session::load(&dir.0), Session::default());
+    }
+
+    #[test]
+    fn load_sanitizes() {
+        let dir = TempDir::new("sanitize");
+        std::fs::write(
+            dir.0.join(SESSION_FILE),
+            "version = 1\n[recent_files]\nfiles = [\"/a\", \"/a\", \"/b\"]\nshown = 0\n",
+        )
+        .unwrap();
+        let recent = Session::load(&dir.0).recent_files;
+        assert_eq!(recent.files(), [PathBuf::from("/a"), PathBuf::from("/b")]);
+        assert_eq!(recent.shown().len(), 1);
+    }
+}

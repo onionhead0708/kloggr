@@ -141,6 +141,11 @@ impl LogView {
         cx.notify();
     }
 
+    #[cfg(test)]
+    pub fn log(&self) -> Option<&LogFile> {
+        self.log.as_ref()
+    }
+
     fn line_count(&self) -> usize {
         self.log.as_ref().map_or(0, LogFile::line_count)
     }

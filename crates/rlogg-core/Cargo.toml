@@ -14,3 +14,7 @@ rayon.workspace = true
 memchr.workspace = true
 encoding_rs.workspace = true
 chardetng.workspace = true
+serde.workspace = true
+toml.workspace = true
+directories.workspace = true
+tracing.workspace = true

@@ -8,6 +8,7 @@
 //! - [`text`]: display text: tab expansion, long-line windowing (klogg: `untabify`)
 //! - [`selection`]: line / range / portion selection (klogg: `Selection`)
 //! - [`viewport`]: scroll position in lines and columns
+//! - [`settings`]: persistent session state, recent files (klogg: `RecentFiles`)
 //!
 //! Planned: regex search / filtered data, file watching.
 
@@ -15,6 +16,7 @@ pub mod encoding;
 pub mod file;
 pub mod line_index;
 pub mod selection;
+pub mod settings;
 pub mod text;
 pub mod viewport;
 
