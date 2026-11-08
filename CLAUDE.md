@@ -87,7 +87,7 @@ cargo deny check                 # license / advisory check (GPL-compatible deps
 ### Phase 1: core viewer (MVP)
 - [x] Parallel, compressed line index with progress reporting (klogg `LogDataWorker`, `CompressedLineStorage`)
 - [x] Encoding detection and decoding: UTF-8, UTF-16LE/BE, Latin-1, etc. (`EncodingDetector`)
-- [ ] Custom log view element: line numbers, selection, copy, horizontal scroll, long-line handling
+- [x] Custom log view element: line numbers, selection, copy, horizontal scroll, long-line handling
 - [ ] Open file (dialog, drag and drop, CLI), recent files
 - [ ] Benchmarks (criterion) for indexing and search on 1–10 GB files, compared with klogg
 

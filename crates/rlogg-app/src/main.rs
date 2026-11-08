@@ -1,14 +1,15 @@
-//! rlogg desktop app. Scaffold: opens the file given on the command line and
-//! shows it in a virtualized list. See CLAUDE.md for the roadmap.
+//! rlogg desktop app: opens the file given on the command line in a log view.
+//! See CLAUDE.md for the roadmap.
 
-use std::ops::Range;
+mod log_view;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use gpui::{
-    App, AppContext, Context, IntoElement, ParentElement, Render, Styled, Task, Window,
-    WindowOptions, div, px, uniform_list,
+    App, AppContext, Context, Entity, Focusable, IntoElement, ParentElement, Render, Styled, Task,
+    Window, WindowOptions, div,
 };
 use gpui_component::Root;
 use rlogg_core::file::OpenError;
@@ -20,18 +21,21 @@ enum IndexEvent {
     Done(Result<LogFile, OpenError>),
 }
 
-struct LogView {
-    log: Option<LogFile>,
+use log_view::LogView;
+
+/// Main window content: the log view and a status line.
+struct Workspace {
+    view: Entity<LogView>,
     status: String,
     /// Stops the indexing thread when the view goes away.
     cancel: Arc<AtomicBool>,
     _indexing: Option<Task<()>>,
 }
 
-impl LogView {
+impl Workspace {
     fn new(path: Option<String>, cx: &mut Context<Self>) -> Self {
         let mut view = Self {
-            log: None,
+            view: cx.new(LogView::new),
             status: "usage: rlogg <file>".into(),
             cancel: Arc::default(),
             _indexing: None,
@@ -47,7 +51,7 @@ impl LogView {
     fn open(&mut self, path: String, cx: &mut Context<Self>) {
         self.cancel.store(true, Ordering::Relaxed);
         self.cancel = Arc::default();
-        self.log = None;
+        self.view.update(cx, |v, cx| v.set_log(None, cx));
         self.status = format!("{path} — indexing…");
 
         let (tx, rx) = async_channel::unbounded();
@@ -81,7 +85,7 @@ impl LogView {
                             );
                             view.status =
                                 format!("{path} — {} lines — {}", log.line_count(), log.encoding());
-                            view.log = Some(log);
+                            view.view.update(cx, |v, cx| v.set_log(Some(log), cx));
                         }
                         IndexEvent::Done(Err(OpenError::Cancelled(_))) => {}
                         IndexEvent::Done(Err(e)) => view.status = e.to_string(),
@@ -94,51 +98,22 @@ impl LogView {
             }
         }));
     }
-
-    fn render_rows(&mut self, range: Range<usize>) -> Vec<gpui::Div> {
-        let Some(log) = &self.log else {
-            return Vec::new();
-        };
-        let first = range.start;
-        log.lines_text(range)
-            .enumerate()
-            .map(|(i, text)| {
-                // TODO: long-line windowing (Phase 1 log view).
-                let text = text.into_owned();
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(div().w(px(70.)).child(format!("{}", first + i + 1)))
-                    .child(text)
-            })
-            .collect()
-    }
 }
 
-impl Drop for LogView {
+impl Drop for Workspace {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
 }
 
-impl Render for LogView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let count = self.log.as_ref().map_or(0, LogFile::line_count);
+impl Render for Workspace {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
             .flex()
             .flex_col()
-            .font_family("monospace")
-            .text_sm()
-            .child(
-                uniform_list(
-                    "log-lines",
-                    count,
-                    cx.processor(|this, range: Range<usize>, _window, _cx| this.render_rows(range)),
-                )
-                .flex_1(),
-            )
-            .child(div().px_2().py_1().child(self.status.clone()))
+            .child(div().flex_1().min_h_0().child(self.view.clone()))
+            .child(div().px_2().py_1().text_sm().child(self.status.clone()))
     }
 }
 
@@ -150,9 +125,12 @@ fn main() {
 
     gpui_platform::application().run(move |cx: &mut App| {
         gpui_component::init(cx);
+        cx.bind_keys(log_view::key_bindings());
         cx.open_window(WindowOptions::default(), |window, cx| {
-            let view = cx.new(|cx| LogView::new(path, cx));
-            cx.new(|cx| Root::new(view, window, cx))
+            let workspace = cx.new(|cx| Workspace::new(path, cx));
+            let focus = workspace.read(cx).view.focus_handle(cx);
+            window.focus(&focus, cx);
+            cx.new(|cx| Root::new(workspace, window, cx))
         })
         .expect("failed to open window");
         cx.on_window_closed(|cx, _| {

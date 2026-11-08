@@ -109,6 +109,11 @@ impl Encoding {
         }
     }
 
+    /// A streaming decoder, for decoding part of a long line.
+    pub(crate) fn new_decoder(&self) -> encoding_rs::Decoder {
+        self.0.new_decoder_without_bom_handling()
+    }
+
     /// Decodes one line (without terminator). Invalid sequences become U+FFFD.
     pub fn decode<'a>(&self, bytes: &'a [u8]) -> Cow<'a, str> {
         self.0.decode_without_bom_handling(bytes).0
