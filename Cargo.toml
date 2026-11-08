@@ -1,0 +1,33 @@
+[workspace]
+resolver = "3"
+members = ["crates/rlogg-core", "crates/rlogg-app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+rust-version = "1.99"
+
+[workspace.dependencies]
+rlogg-core = { path = "crates/rlogg-core" }
+
+# GPUI is pre-1.0 and breaks on minor bumps: pin EXACTLY and bump gpui-pre,
+# gpui-pre-platform and gpui-component together (gpui-component pins gpui-pre).
+gpui = { package = "gpui-pre", version = "=0.3.9" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", features = ["font-kit", "x11", "wayland"] }
+gpui-component = { version = "=0.8.0" }
+
+memmap2 = "0.9"
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# GPUI does layout and text shaping on the CPU every frame; an unoptimized
+# dependency graph drops frames even in debug builds.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
