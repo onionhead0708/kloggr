@@ -5253,6 +5253,7 @@ name = "rlogg-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-channel",
  "gpui-component",
  "gpui-pre",
  "gpui-pre-platform",
@@ -5265,7 +5266,9 @@ dependencies = [
 name = "rlogg-core"
 version = "0.1.0"
 dependencies = [
+ "memchr",
  "memmap2",
+ "rayon",
  "thiserror 2.0.21",
 ]
 
