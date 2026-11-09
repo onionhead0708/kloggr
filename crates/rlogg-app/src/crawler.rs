@@ -115,6 +115,15 @@ enum SearchEvent {
     Done(Result<(), Cancelled>),
 }
 
+/// Emitted for the workspace (klogg: `dataStatusChanged`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CrawlerEvent {
+    /// The file changed on disk and was reloaded: its tab shows it.
+    NewData,
+}
+
+impl gpui::EventEmitter<CrawlerEvent> for Crawler {}
+
 pub struct Crawler {
     pub(crate) log: Option<Arc<LogFile>>,
     pub(crate) filter: Entity<FilteredLines>,

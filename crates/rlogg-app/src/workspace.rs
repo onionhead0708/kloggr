@@ -1,9 +1,9 @@
-//! Main window content: menu bar, log view and status line (klogg:
-//! `MainWindow`).
+//! Main window content: menu bar, tabs of open files, and status line
+//! (klogg: `MainWindow`, `TabbedCrawlerWidget`).
 //!
 //! Files are opened from the command line, File > Open (Ctrl+O), File > Open
-//! Recent, or by dropping them on the window. Recent files are kept in the
-//! session file (see [`rlogg_core::settings`]).
+//! Recent, or by dropping them on the window, each in its tab. Recent files
+//! are kept in the session file (see [`rlogg_core::settings`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -11,20 +11,36 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use gpui::{
-    Action, AppContext, Context, Entity, ExternalPaths, Focusable, InteractiveElement, IntoElement,
-    KeyBinding, Menu, MenuItem, ParentElement, PathPromptOptions, PromptLevel, Render, Styled,
-    Task, Window, actions, div, px,
+    Action, AppContext, ClipboardItem, Context, Entity, ExternalPaths, FocusHandle, Focusable,
+    InteractiveElement, IntoElement, KeyBinding, Menu, MenuItem, MouseButton, ParentElement,
+    PathPromptOptions, PromptLevel, Render, ScrollHandle, SharedString, StatefulInteractiveElement,
+    Styled, Subscription, Task, Window, actions, div, px,
 };
-use gpui_component::menu::AppMenuBar;
-use gpui_component::{ActiveTheme, GlobalState};
+use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::menu::{AppMenuBar, ContextMenuExt};
+use gpui_component::tab::{Tab as GuiTab, TabBar};
+use gpui_component::tooltip::Tooltip;
+use gpui_component::{ActiveTheme, GlobalState, Sizable};
 use rlogg_core::file::OpenError;
 use rlogg_core::settings::Session;
 use rlogg_core::{IndexProgress, LogFile, OpenOptions};
 
 use crate::background;
-use crate::crawler::Crawler;
+use crate::crawler::{Crawler, CrawlerEvent};
 
-actions!(workspace, [Open, Close, Quit, ClearRecent]);
+actions!(
+    workspace,
+    [
+        Open,
+        Close,
+        Quit,
+        ClearRecent,
+        NextTab,
+        PrevTab,
+        LastTab,
+        CloseAllTabs
+    ]
+);
 
 /// Opens a file from File > Open Recent.
 #[derive(Clone, PartialEq, Debug, Action)]
@@ -33,13 +49,43 @@ pub struct OpenRecent {
     pub path: PathBuf,
 }
 
-/// klogg's defaults: `QKeySequence::Open`, `Close`, `Quit`.
+/// Tab actions, from the keyboard (Ctrl+1…8) and the tab context menu.
+macro_rules! tab_action {
+    ($($name:ident),*) => {$(
+        #[derive(Clone, PartialEq, Debug, Action)]
+        #[action(namespace = workspace, no_json)]
+        pub struct $name {
+            pub index: usize,
+        }
+    )*};
+}
+tab_action!(
+    ActivateTab,
+    CloseTab,
+    CloseOtherTabs,
+    CloseTabsLeft,
+    CloseTabsRight,
+    CopyTabPath
+);
+
+/// klogg's defaults: `QKeySequence::Open`, `Close`, `Quit`, and the tab keys
+/// of `TabbedCrawlerWidget::keyPressEvent`.
 pub fn key_bindings() -> Vec<KeyBinding> {
-    vec![
+    let mut keys = vec![
         KeyBinding::new("secondary-o", Open, None),
         KeyBinding::new("secondary-w", Close, None),
         KeyBinding::new("secondary-q", Quit, None),
-    ]
+        KeyBinding::new("ctrl-tab", NextTab, None),
+        KeyBinding::new("ctrl-pagedown", NextTab, None),
+        KeyBinding::new("ctrl-shift-tab", PrevTab, None),
+        KeyBinding::new("ctrl-pageup", PrevTab, None),
+        KeyBinding::new("secondary-9", LastTab, None),
+    ];
+    for index in 0..8 {
+        let key = format!("secondary-{}", index + 1);
+        keys.push(KeyBinding::new(&key, ActivateTab { index }, None));
+    }
+    keys
 }
 
 const IDLE_STATUS: &str = "Open a file with Ctrl+O, or drop it here";
@@ -50,36 +96,63 @@ enum IndexEvent {
     Done(Result<Arc<LogFile>, OpenError>),
 }
 
-pub struct Workspace {
+/// One open file (klogg: a `CrawlerWidget` in `TabbedCrawlerWidget`).
+struct Tab {
+    path: PathBuf,
     crawler: Entity<Crawler>,
+    status: String,
+    /// The file changed while the tab was in the background (klogg: the
+    /// "new data" tab icon).
+    new_data: bool,
+    /// Stops the tab's indexing thread.
+    cancel: Arc<AtomicBool>,
+    _indexing: Option<Task<()>>,
+    _events: Subscription,
+}
+
+impl Drop for Tab {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+pub struct Workspace {
+    tabs: Vec<Tab>,
+    active: usize,
     /// In-window menu bar; `None` on macOS, which uses the native one.
     menu_bar: Option<Entity<AppMenuBar>>,
-    status: String,
     /// Where the session is saved; `None` if there is no config directory.
     config_dir: Option<PathBuf>,
     session: Session,
-    /// Stops the current indexing thread.
-    cancel: Arc<AtomicBool>,
-    _indexing: Option<Task<()>>,
+    tab_scroll: ScrollHandle,
+    /// Focused when no tab is open, so that the window's keys still work.
+    focus: FocusHandle,
+    /// Why the last file could not be opened, when no tab is left to show it.
+    error: Option<String>,
 }
 
 impl Workspace {
     pub fn new(config_dir: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let session = config_dir.as_deref().map(Session::load).unwrap_or_default();
-        let crawler = cx.new(|cx| Crawler::new(window, cx));
-        let focus = crawler.focus_handle(cx);
+        let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let mut this = Self {
-            crawler,
+            tabs: Vec::new(),
+            active: 0,
             menu_bar: (!cfg!(target_os = "macos")).then(|| AppMenuBar::new(cx)),
-            status: IDLE_STATUS.into(),
             config_dir,
             session,
-            cancel: Arc::default(),
-            _indexing: None,
+            tab_scroll: ScrollHandle::new(),
+            focus,
+            error: None,
         };
         this.update_menus(cx);
         this
+    }
+
+    /// The crawler of the current tab.
+    pub fn crawler(&self) -> Option<&Entity<Crawler>> {
+        self.tabs.get(self.active).map(|t| &t.crawler)
     }
 
     fn menus(&self) -> Vec<Menu> {
@@ -103,6 +176,7 @@ impl Workspace {
                 ),
                 MenuItem::separator(),
                 MenuItem::action("Close", Close),
+                MenuItem::action("Close All", CloseAllTabs),
                 MenuItem::action("Quit", Quit),
             ]),
         ]
@@ -126,24 +200,40 @@ impl Workspace {
         }
     }
 
-    /// Opens `path`: maps and indexes it on a dedicated thread (indexing
-    /// itself runs on rayon), streaming progress to the status line. Replaces
-    /// the current file (klogg opens a tab; tabs come later).
+    /// Opens `path` in a new tab, or shows its tab if it is open already
+    /// (klogg: `loadFile`). The file is mapped and indexed on a dedicated
+    /// thread (indexing itself runs on rayon), with progress in the status
+    /// line.
     pub fn open(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        self.stop_indexing();
-        self.crawler.update(cx, |c, cx| c.set_log(None, cx));
+        let path = std::fs::canonicalize(&path).unwrap_or(path);
+        if let Some(index) = self.tabs.iter().position(|t| t.path == path) {
+            self.activate(index, window, cx);
+            return;
+        }
+        let crawler = cx.new(|cx| Crawler::new(window, cx));
+        let events = cx.subscribe(&crawler, |this, crawler, event: &CrawlerEvent, cx| {
+            let CrawlerEvent::NewData = event;
+            if let Some(tab) = this.tabs.iter_mut().find(|t| t.crawler == crawler) {
+                tab.status = status_of(&tab.path, crawler.read(cx).log.as_deref());
+            }
+            let active = this.crawler().cloned();
+            if let Some(tab) = this.tabs.iter_mut().find(|t| t.crawler == crawler)
+                && active.as_ref() != Some(&crawler)
+            {
+                tab.new_data = true;
+            }
+            cx.notify();
+        });
         let shown = path.display().to_string();
-        self.status = format!("{shown} — indexing…");
-        window.set_window_title(&format!("{} — rlogg", file_name(&path)));
-
         let (tx, rx) = async_channel::unbounded();
-        let cancel = self.cancel.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let thread_cancel = cancel.clone();
         let thread_path = path.clone();
         background::spawn_blocking(
             "rlogg-index",
             move || {
                 let result =
-                    LogFile::open_with(&thread_path, OpenOptions::default(), &cancel, |p| {
+                    LogFile::open_with(&thread_path, OpenOptions::default(), &thread_cancel, |p| {
                         tx.send_blocking(IndexEvent::Progress(p)).ok();
                     });
                 tx.send_blocking(IndexEvent::Done(result.map(Arc::new)))
@@ -153,12 +243,18 @@ impl Workspace {
         );
 
         let started = Instant::now();
-        self._indexing = Some(cx.spawn_in(window, async move |this, cx| {
+        let tab_crawler = crawler.clone();
+        let task = cx.spawn_in(window, async move |this, cx| {
             while let Ok(event) = rx.recv().await {
                 let alive = this.update_in(cx, |this, window, cx| {
+                    let Some(index) = this.tabs.iter().position(|t| t.crawler == tab_crawler)
+                    else {
+                        return;
+                    };
                     match event {
                         IndexEvent::Progress(p) => {
-                            this.status = format!("{shown} — indexing {}%", p.percent());
+                            this.tabs[index].status =
+                                format!("{shown} — indexing {}%", p.percent());
                         }
                         IndexEvent::Done(Ok(log)) => {
                             tracing::info!(
@@ -167,18 +263,18 @@ impl Workspace {
                                 elapsed = ?started.elapsed(),
                                 "indexed {shown}"
                             );
-                            this.status = format!(
-                                "{shown} — {} lines — {}",
-                                log.line_count(),
-                                log.encoding()
-                            );
-                            this.crawler.update(cx, |c, cx| c.set_log(Some(log), cx));
+                            let tab = &mut this.tabs[index];
+                            tab.status = status_of(&tab.path, Some(&log));
+                            let path = tab.path.clone();
+                            tab.crawler.update(cx, |c, cx| c.set_log(Some(log), cx));
                             this.add_recent(&path, cx);
                         }
                         IndexEvent::Done(Err(OpenError::Cancelled(_))) => {}
                         IndexEvent::Done(Err(e)) => {
-                            this.status = e.to_string();
-                            window.set_window_title("rlogg");
+                            // klogg: the tab of a file that can't be read is
+                            // closed, with an error.
+                            this.close_tab(index, window, cx);
+                            this.error = Some(e.to_string());
                         }
                     }
                     cx.notify();
@@ -187,46 +283,114 @@ impl Workspace {
                     break;
                 }
             }
-        }));
-        cx.notify();
+        });
+        self.tabs.push(Tab {
+            status: status_of(&path, None),
+            path,
+            crawler,
+            new_data: false,
+            cancel,
+            _indexing: Some(task),
+            _events: events,
+        });
+        self.error = None;
+        let index = self.tabs.len() - 1;
+        self.activate(index, window, cx);
     }
 
     fn add_recent(&mut self, path: &Path, cx: &mut Context<Self>) {
-        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        self.session.recent_files.add(path);
+        self.session.recent_files.add(path.to_path_buf());
         self.save_session();
         self.update_menus(cx);
     }
 
-    fn stop_indexing(&mut self) {
-        self.cancel.store(true, Ordering::Relaxed);
-        self.cancel = Arc::default();
-        self._indexing = None;
+    /// Shows tab `index` (klogg: `currentTabChanged`).
+    fn activate(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.get_mut(index) else {
+            return;
+        };
+        self.active = index;
+        self.error = None;
+        tab.new_data = false;
+        let focus = tab.crawler.focus_handle(cx);
+        window.focus(&focus, cx);
+        self.tab_scroll.scroll_to_item(index);
+        self.update_title(window);
+        cx.notify();
     }
 
-    fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.stop_indexing();
-        self.crawler.update(cx, |c, cx| c.set_log(None, cx));
-        self.status = IDLE_STATUS.into();
-        window.set_window_title("rlogg");
-        cx.notify();
+    fn update_title(&self, window: &mut Window) {
+        match self.tabs.get(self.active) {
+            Some(tab) => window.set_window_title(&format!("{} — rlogg", file_name(&tab.path))),
+            None => window.set_window_title("rlogg"),
+        }
+    }
+
+    /// Closes tab `index`; the next one, or else the previous one, becomes
+    /// current (as in Qt's tab widget).
+    fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if index >= self.tabs.len() {
+            return;
+        }
+        self.tabs.remove(index);
+        if self.tabs.is_empty() {
+            self.active = 0;
+            window.focus(&self.focus, cx);
+            self.update_title(window);
+            cx.notify();
+            return;
+        }
+        let active = if index < self.active || self.active >= self.tabs.len() {
+            self.active.saturating_sub(1)
+        } else {
+            self.active
+        };
+        self.activate(active, window, cx);
+    }
+
+    /// Closes the tabs for which `close(index)` is true.
+    fn close_tabs(
+        &mut self,
+        close: impl Fn(usize) -> bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for index in (0..self.tabs.len()).rev() {
+            if close(index) {
+                self.close_tab(index, window, cx);
+            }
+        }
+    }
+
+    fn cycle_tab(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let n = self.tabs.len();
+        if n > 0 {
+            let next = if forward {
+                (self.active + 1) % n
+            } else {
+                (self.active + n - 1) % n
+            };
+            self.activate(next, window, cx);
+        }
     }
 
     fn prompt_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let paths = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
-            multiple: false,
+            multiple: true,
             prompt: Some("Open".into()),
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = paths.await else {
                 return;
             };
-            if let Some(path) = paths.into_iter().next() {
-                this.update_in(cx, |this, window, cx| this.open(path, window, cx))
-                    .ok();
-            }
+            this.update_in(cx, |this, window, cx| {
+                for path in paths {
+                    this.open(path, window, cx);
+                }
+            })
+            .ok();
         })
         .detach();
     }
@@ -267,28 +431,111 @@ impl Workspace {
         self.update_menus(cx);
     }
 
-    /// Files dropped on the window (klogg: `dropEvent`). Until tabs exist,
-    /// only the first one is opened.
+    /// Files dropped on the window, each in its tab (klogg: `dropEvent`).
     fn drop_paths(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(path) = paths.paths().iter().find(|p| p.is_file()) {
+        for path in paths.paths().iter().filter(|p| p.is_file()) {
             self.open(path.clone(), window, cx);
         }
     }
-}
 
-impl Drop for Workspace {
-    fn drop(&mut self) {
-        self.cancel.store(true, Ordering::Relaxed);
+    fn status(&self) -> String {
+        if let Some(error) = &self.error {
+            return error.clone();
+        }
+        self.tabs
+            .get(self.active)
+            .map_or_else(|| IDLE_STATUS.to_owned(), |t| t.status.clone())
+    }
+
+    /// The tab bar, shown with two tabs or more (klogg hides it for one).
+    fn render_tabs(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        if self.tabs.len() < 2 {
+            return None;
+        }
+        let accent = cx.theme().blue;
+        let last = self.tabs.len() - 1;
+        let tabs = self.tabs.iter().enumerate().map(|(index, tab)| {
+            let label = div()
+                .id(("tab-label", index))
+                .flex()
+                .items_center()
+                .gap_1()
+                .children(
+                    tab.new_data
+                        .then(|| div().size(px(6.)).rounded_full().bg(accent)),
+                )
+                .child(file_name(&tab.path))
+                .tooltip({
+                    let path: SharedString = tab.path.display().to_string().into();
+                    move |window, cx| Tooltip::new(path.clone()).build(window, cx)
+                })
+                .context_menu(move |menu, _, _| {
+                    menu.menu("Close this", Box::new(CloseTab { index }))
+                        .menu("Close others", Box::new(CloseOtherTabs { index }))
+                        .menu_with_disabled(
+                            "Close to the left",
+                            Box::new(CloseTabsLeft { index }),
+                            index == 0,
+                        )
+                        .menu_with_disabled(
+                            "Close to the right",
+                            Box::new(CloseTabsRight { index }),
+                            index == last,
+                        )
+                        .menu("Close all", Box::new(CloseAllTabs))
+                        .separator()
+                        .menu("Copy full path", Box::new(CopyTabPath { index }))
+                });
+            GuiTab::new()
+                .child(label)
+                .suffix(
+                    Button::new(("tab-close", index))
+                        .label("×")
+                        .xsmall()
+                        .ghost()
+                        .tooltip("Close (Ctrl+W)")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.close_tab(index, window, cx);
+                        })),
+                )
+                .on_mouse_down(
+                    MouseButton::Middle,
+                    cx.listener(move |this, _, window, cx| this.close_tab(index, window, cx)),
+                )
+        });
+        Some(
+            TabBar::new("tabs")
+                .track_scroll(&self.tab_scroll)
+                .menu(true)
+                .selected_index(self.active)
+                .children(tabs)
+                .on_click(
+                    cx.listener(|this, index: &usize, window, cx| {
+                        this.activate(*index, window, cx)
+                    }),
+                ),
+        )
     }
 }
 
 impl Render for Workspace {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let (border, drop_bg) = (theme.border, theme.drop_target);
+        let (border, drop_bg, muted) = (theme.border, theme.drop_target, theme.muted_foreground);
+        let content = match self.crawler() {
+            Some(crawler) => div().size_full().child(crawler.clone()),
+            None => div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(muted)
+                .child(IDLE_STATUS),
+        };
         div()
             .id("workspace")
             .key_context("Workspace")
+            .track_focus(&self.focus)
             .size_full()
             .flex()
             .flex_col()
@@ -297,7 +544,47 @@ impl Render for Workspace {
                 this.open_recent(a.path.clone(), window, cx)
             }))
             .on_action(cx.listener(|this, _: &ClearRecent, _, cx| this.clear_recent(cx)))
-            .on_action(cx.listener(|this, _: &Close, window, cx| this.close(window, cx)))
+            .on_action(cx.listener(|this, _: &Close, window, cx| {
+                let index = this.active;
+                this.close_tab(index, window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, a: &CloseTab, window, cx| this.close_tab(a.index, window, cx)),
+            )
+            .on_action(cx.listener(|this, a: &CloseOtherTabs, window, cx| {
+                let keep = a.index;
+                this.close_tabs(|i| i != keep, window, cx)
+            }))
+            .on_action(cx.listener(|this, a: &CloseTabsLeft, window, cx| {
+                let keep = a.index;
+                this.close_tabs(|i| i < keep, window, cx)
+            }))
+            .on_action(cx.listener(|this, a: &CloseTabsRight, window, cx| {
+                let keep = a.index;
+                this.close_tabs(|i| i > keep, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &CloseAllTabs, window, cx| {
+                this.close_tabs(|_| true, window, cx)
+            }))
+            .on_action(cx.listener(|this, a: &CopyTabPath, _, cx| {
+                if let Some(tab) = this.tabs.get(a.index) {
+                    let path = tab.path.display().to_string();
+                    cx.write_to_clipboard(ClipboardItem::new_string(path));
+                }
+            }))
+            .on_action(
+                cx.listener(|this, a: &ActivateTab, window, cx| this.activate(a.index, window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &LastTab, window, cx| {
+                let last = this.tabs.len().saturating_sub(1);
+                this.activate(last, window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &NextTab, window, cx| this.cycle_tab(true, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &PrevTab, window, cx| this.cycle_tab(false, window, cx)),
+            )
             .on_drop(cx.listener(Self::drop_paths))
             .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(drop_bg))
             .children(self.menu_bar.clone().map(|bar| {
@@ -308,8 +595,18 @@ impl Render for Workspace {
                     .border_color(border)
                     .child(bar)
             }))
-            .child(div().flex_1().min_h_0().child(self.crawler.clone()))
-            .child(div().px_2().py_1().text_sm().child(self.status.clone()))
+            .children(self.render_tabs(cx))
+            .child(div().flex_1().min_h_0().child(content))
+            .child(div().px_2().py_1().text_sm().child(self.status()))
+    }
+}
+
+/// "path — N lines — encoding".
+fn status_of(path: &Path, log: Option<&LogFile>) -> String {
+    let shown = path.display();
+    match log {
+        Some(log) => format!("{shown} — {} lines — {}", log.line_count(), log.encoding()),
+        None => format!("{shown} — indexing…"),
     }
 }
 
@@ -386,7 +683,8 @@ mod tests {
         for _ in 0..500 {
             cx.run_until_parked();
             let lines = ws.read_with(cx, |ws, cx| {
-                ws.crawler.read(cx).log().map(LogFile::line_count)
+                ws.crawler()
+                    .and_then(|c| c.read(cx).log().map(LogFile::line_count))
             });
             if let Some(lines) = lines {
                 return lines;
@@ -431,7 +729,7 @@ mod tests {
         cx.simulate_path_prompt_response(|_| Some(vec![a.clone()]));
         assert_eq!(wait_indexed(&ws, cx), 10);
         assert_eq!(cx.window_title().as_deref(), Some("a.log — rlogg"));
-        assert!(ws.read_with(cx, |ws, _| ws.status.contains("10 lines")));
+        assert!(ws.read_with(cx, |ws, _| ws.status().contains("10 lines")));
 
         assert_eq!(recent(&ws, cx), std::slice::from_ref(&a));
         assert_eq!(
@@ -461,9 +759,10 @@ mod tests {
         }
         assert_eq!(recent(&ws, cx), [b.clone(), a.clone()]);
 
+        // Already open: its tab is shown; like klogg, the list stays as is.
         cx.dispatch_action(OpenRecent { path: a.clone() });
         assert_eq!(wait_indexed(&ws, cx), 3);
-        assert_eq!(recent(&ws, cx), [a.clone(), b.clone()]);
+        assert_eq!(recent(&ws, cx), [b.clone(), a.clone()]);
 
         // A recent file that disappeared: klogg asks before forgetting it.
         std::fs::remove_file(&b).unwrap();
@@ -495,8 +794,154 @@ mod tests {
 
         cx.simulate_keystrokes("ctrl-w");
         cx.run_until_parked();
-        assert!(ws.read_with(cx, |ws, cx| ws.crawler.read(cx).log().is_none()));
-        assert_eq!(ws.read_with(cx, |ws, _| ws.status.clone()), IDLE_STATUS);
+        assert!(ws.read_with(cx, |ws, _| ws.crawler().is_none()));
+        assert_eq!(ws.read_with(cx, |ws, _| ws.status()), IDLE_STATUS);
         assert_eq!(cx.window_title().as_deref(), Some("rlogg"));
+    }
+
+    fn tab_names(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> (Vec<String>, usize) {
+        ws.read_with(cx, |ws, _| {
+            (
+                ws.tabs.iter().map(|t| file_name(&t.path)).collect(),
+                ws.active,
+            )
+        })
+    }
+
+    #[gpui::test]
+    fn tabs(cx: &mut TestAppContext) {
+        let fx = Fixture::new("tabs");
+        let paths: Vec<PathBuf> = ["a.log", "b.log", "c.log", "d.log"]
+            .iter()
+            .enumerate()
+            .map(|(i, n)| fx.log(n, i + 1))
+            .collect();
+        let (ws, cx) = workspace(cx, fx.config());
+        for path in &paths {
+            ws.update_in(cx, |ws, window, cx| ws.open(path.clone(), window, cx));
+            wait_indexed(&ws, cx);
+        }
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            tab_names(&ws, cx),
+            (names(&["a.log", "b.log", "c.log", "d.log"]), 3)
+        );
+        assert_eq!(cx.window_title().as_deref(), Some("d.log — rlogg"));
+
+        // Opening an open file shows its tab.
+        ws.update_in(cx, |ws, window, cx| ws.open(paths[1].clone(), window, cx));
+        assert_eq!(tab_names(&ws, cx).1, 1);
+        assert_eq!(wait_indexed(&ws, cx), 2);
+
+        // klogg's keys: Ctrl+Tab / Ctrl+Shift+Tab cycle, Ctrl+N picks.
+        cx.simulate_keystrokes("ctrl-tab");
+        assert_eq!(tab_names(&ws, cx).1, 2);
+        cx.simulate_keystrokes("ctrl-shift-tab ctrl-shift-tab ctrl-shift-tab");
+        assert_eq!(tab_names(&ws, cx).1, 3);
+        cx.simulate_keystrokes("ctrl-1");
+        assert_eq!(tab_names(&ws, cx).1, 0);
+        cx.simulate_keystrokes("ctrl-9");
+        assert_eq!(tab_names(&ws, cx).1, 3);
+        cx.simulate_keystrokes("ctrl-pageup");
+        assert_eq!(tab_names(&ws, cx).1, 2);
+        // The keys reach the tab's views: the focus follows the tab.
+        let focused = ws.update_in(cx, |ws, window, cx| {
+            ws.crawler()
+                .unwrap()
+                .focus_handle(cx)
+                .contains_focused(window, cx)
+        });
+        assert!(focused);
+
+        // Ctrl+W closes the current tab; the next one takes its place.
+        cx.simulate_keystrokes("ctrl-w");
+        assert_eq!(tab_names(&ws, cx), (names(&["a.log", "b.log", "d.log"]), 2));
+        assert_eq!(cx.window_title().as_deref(), Some("d.log — rlogg"));
+
+        // Context menu actions.
+        cx.dispatch_action(CopyTabPath { index: 0 });
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|c| c.text()),
+            Some(paths[0].display().to_string())
+        );
+        cx.dispatch_action(CloseTabsRight { index: 0 });
+        assert_eq!(tab_names(&ws, cx), (names(&["a.log"]), 0));
+        for path in &paths[2..] {
+            ws.update_in(cx, |ws, window, cx| ws.open(path.clone(), window, cx));
+        }
+        cx.dispatch_action(CloseTabsLeft { index: 1 });
+        assert_eq!(tab_names(&ws, cx).0, names(&["c.log", "d.log"]));
+        cx.dispatch_action(CloseOtherTabs { index: 1 });
+        assert_eq!(tab_names(&ws, cx), (names(&["d.log"]), 0));
+        cx.dispatch_action(CloseAllTabs);
+        assert!(tab_names(&ws, cx).0.is_empty());
+        assert_eq!(cx.window_title().as_deref(), Some("rlogg"));
+    }
+
+    #[gpui::test]
+    fn dropping_several_files_opens_a_tab_each(cx: &mut TestAppContext) {
+        let fx = Fixture::new("drop-many");
+        let (a, b) = (fx.log("a.log", 2), fx.log("b.log", 3));
+        let (ws, cx) = workspace(cx, fx.config());
+        let at = point(gpui::px(200.), gpui::px(200.));
+        cx.simulate_event(FileDropEvent::Entered {
+            position: at,
+            paths: ExternalPaths(vec![a, b].into()),
+        });
+        cx.simulate_event(FileDropEvent::Submit { position: at });
+        assert_eq!(wait_indexed(&ws, cx), 3);
+        assert_eq!(tab_names(&ws, cx).0, ["a.log", "b.log"]);
+    }
+
+    #[gpui::test]
+    fn unreadable_file_closes_its_tab(cx: &mut TestAppContext) {
+        let fx = Fixture::new("unreadable");
+        let a = fx.log("a.log", 2);
+        let (ws, cx) = workspace(cx, fx.config());
+        ws.update_in(cx, |ws, window, cx| ws.open(a.clone(), window, cx));
+        wait_indexed(&ws, cx);
+        let missing = fx.dir.join("missing.log");
+        ws.update_in(cx, |ws, window, cx| ws.open(missing, window, cx));
+        for _ in 0..500 {
+            cx.run_until_parked();
+            if ws.read_with(cx, |ws, _| ws.tabs.len()) == 1 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(tab_names(&ws, cx).0, ["a.log"]);
+        assert!(ws.read_with(cx, |ws, _| ws.status().contains("missing.log")));
+    }
+
+    #[gpui::test]
+    fn background_tab_shows_new_data(cx: &mut TestAppContext) {
+        let fx = Fixture::new("newdata");
+        let (a, b) = (fx.log("a.log", 2), fx.log("b.log", 3));
+        let (ws, cx) = workspace(cx, fx.config());
+        for path in [&a, &b] {
+            ws.update_in(cx, |ws, window, cx| ws.open(path.clone(), window, cx));
+            wait_indexed(&ws, cx);
+        }
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&a)
+            .unwrap()
+            .write_all(b"more\n")
+            .unwrap();
+        let tx = ws.read_with(cx, |ws, cx| {
+            ws.tabs[0].crawler.read(cx).watch.changed.clone().unwrap()
+        });
+        tx.try_send(()).unwrap();
+        cx.run_until_parked();
+        let new_data = |cx: &mut VisualTestContext| {
+            ws.read_with(cx, |ws, _| {
+                ws.tabs.iter().map(|t| t.new_data).collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(new_data(cx), [true, false]);
+        cx.simulate_keystrokes("ctrl-1");
+        assert_eq!(new_data(cx), [false, false]);
+        assert!(ws.read_with(cx, |ws, _| ws.status().contains("3 lines")));
     }
 }

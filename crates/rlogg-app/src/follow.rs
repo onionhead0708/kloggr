@@ -21,7 +21,7 @@ use rlogg_core::search::FilteredLines;
 use rlogg_core::{FileChange, LogFile, Watcher};
 
 use crate::background;
-use crate::crawler::{self, Crawler, SearchInfo};
+use crate::crawler::{self, Crawler, CrawlerEvent, SearchInfo};
 use crate::log_view;
 
 actions!(follow, [ToggleFollow]);
@@ -115,6 +115,7 @@ impl Crawler {
     }
 
     fn apply_reload(&mut self, reload: Reload, cx: &mut Context<Self>) {
+        cx.emit(CrawlerEvent::NewData);
         match reload {
             Reload::Grew(log) => {
                 self.log = Some(log.clone());
