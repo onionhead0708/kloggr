@@ -510,7 +510,7 @@ impl Crawler {
                 option(
                     "boolean",
                     "&|",
-                    "Combine quoted patterns with and, or, not (7)",
+                    "Combine quoted patterns with and, or, not (Alt+7)",
                     o.boolean,
                 )
                 .on_click(
