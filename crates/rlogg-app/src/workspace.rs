@@ -47,7 +47,7 @@ const IDLE_STATUS: &str = "Open a file with Ctrl+O, or drop it here";
 /// Messages from the indexing thread.
 enum IndexEvent {
     Progress(IndexProgress),
-    Done(Result<LogFile, OpenError>),
+    Done(Result<Arc<LogFile>, OpenError>),
 }
 
 pub struct Workspace {
@@ -146,7 +146,8 @@ impl Workspace {
                     LogFile::open_with(&thread_path, OpenOptions::default(), &cancel, |p| {
                         tx.send_blocking(IndexEvent::Progress(p)).ok();
                     });
-                tx.send_blocking(IndexEvent::Done(result)).ok();
+                tx.send_blocking(IndexEvent::Done(result.map(Arc::new)))
+                    .ok();
             },
             cx,
         );
@@ -171,8 +172,7 @@ impl Workspace {
                                 log.line_count(),
                                 log.encoding()
                             );
-                            this.crawler
-                                .update(cx, |c, cx| c.set_log(Some(Arc::new(log)), cx));
+                            this.crawler.update(cx, |c, cx| c.set_log(Some(log), cx));
                             this.add_recent(&path, cx);
                         }
                         IndexEvent::Done(Err(OpenError::Cancelled(_))) => {}

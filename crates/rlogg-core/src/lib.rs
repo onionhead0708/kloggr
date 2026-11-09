@@ -13,7 +13,7 @@
 //! - [`search`]: patterns, matchers and parallel search (klogg: `src/regex`,
 //!   `LogFilteredDataWorker`)
 //!
-//! Planned: filtered data (results + marks), file watching.
+//! - [`watch`]: file change notifications (klogg: `filewatch/`)
 
 pub mod digits;
 pub mod encoding;
@@ -24,11 +24,13 @@ pub mod selection;
 pub mod settings;
 pub mod text;
 pub mod viewport;
+pub mod watch;
 
 pub use digits::DigitsBuffer;
 pub use encoding::Encoding;
-pub use file::{LogFile, OpenOptions};
+pub use file::{FileChange, LogFile, OpenOptions};
 pub use line_index::{Cancelled, IndexProgress, LineIndex};
 pub use search::{LineSet, Matcher, Pattern, PatternError, SearchProgress};
 pub use selection::{Drag, Position, Selection};
 pub use viewport::Viewport;
+pub use watch::Watcher;

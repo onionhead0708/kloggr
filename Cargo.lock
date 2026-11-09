@@ -5593,6 +5593,7 @@ dependencies = [
  "encoding_rs",
  "memchr",
  "memmap2",
+ "notify",
  "rayon",
  "regex",
  "roaring",
