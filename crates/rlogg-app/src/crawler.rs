@@ -19,6 +19,7 @@ use gpui_component::menu::{DropdownMenu, PopupMenu};
 use gpui_component::resizable::{resizable_panel, v_resizable};
 use gpui_component::{ActiveTheme, Sizable};
 use rlogg_core::search::{self, FilteredLines, Matcher, Pattern, SearchProgress, Visibility};
+use rlogg_core::settings::FileContext;
 use rlogg_core::{Cancelled, LogFile};
 
 use crate::background;
@@ -153,6 +154,9 @@ pub struct Crawler {
     search_covers: (usize, usize),
     /// The running search only adds the lines appended to the file.
     updating: bool,
+    /// Marks from the session, set once the file is loaded (klogg:
+    /// `savedMarkedLines_`).
+    pending_marks: Vec<u64>,
     cancel: Arc<AtomicBool>,
     _search: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -249,6 +253,7 @@ impl Crawler {
             searched: None,
             search_covers: (0, 0),
             updating: false,
+            pending_marks: Vec::new(),
             cancel: Arc::default(),
             _search: None,
             _subscriptions: subscriptions,
@@ -269,11 +274,55 @@ impl Crawler {
         self.filtered.update(cx, |v, cx| v.set_log(log, cx));
         self.info = SearchInfo::default();
         self.searched = None;
+        if let Some(log) = &self.log
+            && !self.pending_marks.is_empty()
+        {
+            let marks = std::mem::take(&mut self.pending_marks);
+            let count = log.line_count();
+            self.filter.update(cx, |f, cx| {
+                f.toggle_marks(marks.into_iter().map(|m| m as usize), count);
+                cx.notify();
+            });
+        }
         if let (Some(pattern), Some(_)) = (self.last_pattern.clone(), &self.log) {
             self.run(pattern, cx);
         }
         self.start_watching(cx);
         cx.notify();
+    }
+
+    /// The per-file state saved in the session (klogg: `doGetViewContext`).
+    pub fn context(&self, cx: &gpui::App) -> FileContext {
+        let o = self.options;
+        FileContext {
+            match_case: o.match_case,
+            regex: o.regex,
+            inverse: o.inverse,
+            boolean: o.boolean,
+            auto_refresh: o.auto_refresh,
+            follow: self.following,
+            marks: self
+                .filter
+                .read(cx)
+                .marks()
+                .iter()
+                .map(|m| m as u64)
+                .collect(),
+        }
+    }
+
+    /// Restores the per-file state of a session, before the file is loaded
+    /// (klogg: `doSetViewContext`).
+    pub fn set_context(&mut self, context: FileContext, cx: &mut Context<Self>) {
+        self.options = SearchOptions {
+            match_case: context.match_case,
+            regex: context.regex,
+            inverse: context.inverse,
+            boolean: context.boolean,
+            auto_refresh: context.auto_refresh,
+        };
+        self.pending_marks = context.marks;
+        self.set_follow(context.follow, cx);
     }
 
     #[cfg(test)]
@@ -322,7 +371,7 @@ impl Crawler {
     }
 
     #[cfg(test)]
-    fn toggle_marks_for_test(&mut self, line: usize, cx: &mut Context<Self>) {
+    pub fn toggle_marks_for_test(&mut self, line: usize, cx: &mut Context<Self>) {
         self.filter
             .update(cx, |f, _| f.toggle_marks([line], usize::MAX));
     }

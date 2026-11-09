@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use gpui::{
-    Action, AppContext, ClipboardItem, Context, Entity, ExternalPaths, FocusHandle, Focusable,
+    Action, App, AppContext, ClipboardItem, Context, Entity, ExternalPaths, FocusHandle, Focusable,
     InteractiveElement, IntoElement, KeyBinding, Menu, MenuItem, MouseButton, ParentElement,
     PathPromptOptions, PromptLevel, Render, ScrollHandle, SharedString, StatefulInteractiveElement,
     Styled, Subscription, Task, Window, actions, div, px,
@@ -22,7 +22,7 @@ use gpui_component::tab::{Tab as GuiTab, TabBar};
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme, GlobalState, Sizable};
 use rlogg_core::file::OpenError;
-use rlogg_core::settings::Session;
+use rlogg_core::settings::{FileContext, OpenFile, Session};
 use rlogg_core::{IndexProgress, LogFile, OpenOptions};
 
 use crate::background;
@@ -136,6 +136,12 @@ impl Workspace {
         let session = config_dir.as_deref().map(Session::load).unwrap_or_default();
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
+        // Marks and options change without a tab change: save them on exit.
+        cx.on_app_quit(|this, cx| {
+            this.save_open_files(cx);
+            async {}
+        })
+        .detach();
         let mut this = Self {
             tabs: Vec::new(),
             active: 0,
@@ -205,12 +211,29 @@ impl Workspace {
     /// thread (indexing itself runs on rayon), with progress in the status
     /// line.
     pub fn open(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_with(path, None, window, cx);
+    }
+
+    /// Like [`open`](Self::open), restoring the file's state from a session.
+    fn open_with(
+        &mut self,
+        path: PathBuf,
+        context: Option<FileContext>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let path = std::fs::canonicalize(&path).unwrap_or(path);
         if let Some(index) = self.tabs.iter().position(|t| t.path == path) {
             self.activate(index, window, cx);
             return;
         }
-        let crawler = cx.new(|cx| Crawler::new(window, cx));
+        let crawler = cx.new(|cx| {
+            let mut crawler = Crawler::new(window, cx);
+            if let Some(context) = context {
+                crawler.set_context(context, cx);
+            }
+            crawler
+        });
         let events = cx.subscribe(&crawler, |this, crawler, event: &CrawlerEvent, cx| {
             let CrawlerEvent::NewData = event;
             if let Some(tab) = this.tabs.iter_mut().find(|t| t.crawler == crawler) {
@@ -304,6 +327,44 @@ impl Workspace {
         self.update_menus(cx);
     }
 
+    /// Reopens the files of the last session, each with its state, and
+    /// shows the tab that was current (klogg: `reloadSession`). Files that
+    /// are gone are skipped.
+    pub fn restore_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let files = std::mem::take(&mut self.session.open_files);
+        let current = self.session.current_file;
+        let mut current_tab = None;
+        for (i, file) in files.into_iter().enumerate() {
+            if !file.path.is_file() {
+                continue;
+            }
+            self.open_with(file.path, Some(file.context), window, cx);
+            if i <= current {
+                current_tab = Some(self.tabs.len() - 1);
+            }
+        }
+        if let Some(index) = current_tab {
+            self.activate(index, window, cx);
+        }
+        self.save_open_files(cx);
+    }
+
+    /// Stores the open tabs and their state in the session file (klogg:
+    /// `writeSettings`, which does it on exit; here also on every tab change,
+    /// so a crash keeps the tabs).
+    fn save_open_files(&mut self, cx: &App) {
+        self.session.open_files = self
+            .tabs
+            .iter()
+            .map(|t| OpenFile {
+                path: t.path.clone(),
+                context: t.crawler.read(cx).context(cx),
+            })
+            .collect();
+        self.session.current_file = self.active;
+        self.save_session();
+    }
+
     /// Shows tab `index` (klogg: `currentTabChanged`).
     fn activate(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tab) = self.tabs.get_mut(index) else {
@@ -316,6 +377,7 @@ impl Workspace {
         window.focus(&focus, cx);
         self.tab_scroll.scroll_to_item(index);
         self.update_title(window);
+        self.save_open_files(cx);
         cx.notify();
     }
 
@@ -336,6 +398,7 @@ impl Workspace {
         if self.tabs.is_empty() {
             self.active = 0;
             window.focus(&self.focus, cx);
+            self.save_open_files(cx);
             self.update_title(window);
             cx.notify();
             return;
@@ -943,5 +1006,62 @@ mod tests {
         cx.simulate_keystrokes("ctrl-1");
         assert_eq!(new_data(cx), [false, false]);
         assert!(ws.read_with(cx, |ws, _| ws.status().contains("3 lines")));
+    }
+
+    #[gpui::test]
+    fn session_restores_tabs_and_their_state(cx: &mut TestAppContext) {
+        let fx = Fixture::new("session");
+        let (a, b, c) = (fx.log("a.log", 5), fx.log("b.log", 6), fx.log("c.log", 7));
+        let (ws, cx) = workspace(cx, fx.config());
+        for path in [&a, &b, &c] {
+            ws.update_in(cx, |ws, window, cx| ws.open(path.clone(), window, cx));
+            wait_indexed(&ws, cx);
+        }
+        // a: marks and options; b: follow; then c is deleted; b is current.
+        ws.update(cx, |ws, cx| {
+            ws.tabs[0].crawler.update(cx, |c, cx| {
+                c.toggle_marks_for_test(1, cx);
+                c.toggle_marks_for_test(3, cx);
+                c.options.match_case = false;
+                c.options.auto_refresh = true;
+            });
+            ws.tabs[1]
+                .crawler
+                .update(cx, |c, cx| c.set_follow(true, cx));
+        });
+        cx.simulate_keystrokes("ctrl-2");
+        // What quitting does.
+        ws.update(cx, |ws, cx| ws.save_open_files(cx));
+        std::fs::remove_file(&c).unwrap();
+
+        let config = fx.config();
+        let ws2 = cx.update(|window, cx| {
+            cx.new(|cx| {
+                let mut ws = Workspace::new(Some(config), window, cx);
+                ws.restore_session(window, cx);
+                ws
+            })
+        });
+        assert_eq!(
+            tab_names(&ws2, cx),
+            (vec!["a.log".into(), "b.log".into()], 1)
+        );
+        assert_eq!(wait_indexed(&ws2, cx), 6);
+        ws2.update_in(cx, |ws, window, cx| ws.activate(0, window, cx));
+        assert_eq!(wait_indexed(&ws2, cx), 5);
+        let (marks, options, following) = ws2.read_with(cx, |ws, cx| {
+            let a = ws.tabs[0].crawler.read(cx);
+            let b = ws.tabs[1].crawler.read(cx);
+            (
+                a.filter().read(cx).marks().iter().collect::<Vec<_>>(),
+                a.options(),
+                (a.following, b.following),
+            )
+        });
+        assert_eq!(marks, [1, 3]);
+        assert!(!options.match_case && options.auto_refresh && options.regex);
+        assert_eq!(following, (false, true));
+        // The missing file is dropped from the saved session.
+        assert_eq!(Session::load(&fx.config()).open_files.len(), 2);
     }
 }

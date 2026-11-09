@@ -33,6 +33,8 @@ fn main() {
             let config_dir = rlogg_core::settings::config_dir();
             let workspace = cx.new(|cx| {
                 let mut workspace = Workspace::new(config_dir, window, cx);
+                // klogg: the last session first, then the file given.
+                workspace.restore_session(window, cx);
                 if let Some(path) = path {
                     workspace.open(path, window, cx);
                 }

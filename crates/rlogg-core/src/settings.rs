@@ -1,4 +1,5 @@
-//! Persistent session state: recent files (more settings later).
+//! Persistent session state: recent files and the files open in the window
+//! with their per-file state (more settings later).
 //!
 //! klogg keeps these in `QSettings` INI files (`settings/src/persistentinfo.cpp`);
 //! rlogg uses one TOML file, `session.toml`, in the platform config directory
@@ -93,12 +94,56 @@ impl RecentFiles {
     }
 }
 
+/// Per-file state kept in the session (klogg: `CrawlerWidgetContext`,
+/// saved as the "view context" of each open file).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FileContext {
+    pub match_case: bool,
+    pub regex: bool,
+    pub inverse: bool,
+    pub boolean: bool,
+    pub auto_refresh: bool,
+    pub follow: bool,
+    /// Marked lines, 0-based.
+    pub marks: Vec<u64>,
+}
+
+impl Default for FileContext {
+    /// klogg's defaults for a new file.
+    fn default() -> Self {
+        Self {
+            match_case: true,
+            regex: true,
+            inverse: false,
+            boolean: false,
+            auto_refresh: false,
+            follow: false,
+            marks: Vec::new(),
+        }
+    }
+}
+
+/// A file open when the session was saved (klogg: `SessionInfo::OpenFile`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenFile {
+    pub path: PathBuf,
+    #[serde(default)]
+    pub context: FileContext,
+}
+
 /// Everything stored in `session.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Session {
     version: u32,
+    /// Index in `open_files` of the current tab. (Plain values come before
+    /// tables in TOML.)
+    pub current_file: usize,
     pub recent_files: RecentFiles,
+    /// Files open in the window, in tab order, reopened at startup (klogg:
+    /// `loadLastSession`, on by default).
+    pub open_files: Vec<OpenFile>,
 }
 
 impl Default for Session {
@@ -106,6 +151,8 @@ impl Default for Session {
         Self {
             version: SESSION_VERSION,
             recent_files: RecentFiles::default(),
+            open_files: Vec::new(),
+            current_file: 0,
         }
     }
 }
@@ -249,6 +296,35 @@ mod tests {
         session.recent_files.add(dir.file("y.log"));
         session.save(&dir.0.join("conf")).unwrap();
         assert_eq!(Session::load(&dir.0.join("conf")), session);
+    }
+
+    #[test]
+    fn open_files_round_trip() {
+        let dir = TempDir::new("open-files");
+        let session = Session {
+            current_file: 1,
+            open_files: vec![
+                OpenFile {
+                    path: "/var/log/a.log".into(),
+                    context: FileContext::default(),
+                },
+                OpenFile {
+                    path: "/var/log/b.log".into(),
+                    context: FileContext {
+                        match_case: false,
+                        follow: true,
+                        marks: vec![3, 7],
+                        ..FileContext::default()
+                    },
+                },
+            ],
+            ..Session::default()
+        };
+        session.save(&dir.0).unwrap();
+        assert_eq!(Session::load(&dir.0), session);
+        // A session from before tabs: no open files.
+        std::fs::write(dir.0.join(SESSION_FILE), "version = 1\n").unwrap();
+        assert!(Session::load(&dir.0).open_files.is_empty());
     }
 
     #[test]
