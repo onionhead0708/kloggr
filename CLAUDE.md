@@ -109,7 +109,7 @@ scripts/bench-vs-klogg.sh 1024   # indexing time vs klogg on the same generated 
 - [ ] Highlighters and highlighter sets, color labels
 - [ ] Frozen columns (klogg `frozencolumns`)
 - [ ] Wide characters (CJK, emoji): map columns using real glyph widths instead of one column per `char`
-- [ ] Settings and options dialog, keyboard shortcuts matching klogg's defaults (include the search-match highlight toggle)
+- [ ] Settings and options dialog, keyboard shortcuts matching klogg's defaults (include the search-match highlight: on/off and its colour, as klogg's "main search highlight" checkbox and colour button)
 
 ### Phase 4: extras and release
 - [ ] Predefined filters, saved searches, scratchpad
