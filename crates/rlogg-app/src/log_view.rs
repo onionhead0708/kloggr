@@ -26,7 +26,8 @@ use gpui::{
     Window, actions, div, fill, point, px, relative, size,
 };
 use gpui_component::ActiveTheme;
-use rlogg_core::search::{FilteredLines, LineKind};
+use rlogg_core::search::find::{self, Direction, Found};
+use rlogg_core::search::{FilteredLines, LineKind, Matcher};
 use rlogg_core::text;
 use rlogg_core::{Drag, LogFile, Position, Selection, Viewport};
 
@@ -103,6 +104,9 @@ const MIN_THUMB: Pixels = px(24.);
 const GUTTER_PAD: Pixels = px(8.);
 /// klogg: `BulletAreaWidth`.
 const BULLET_WIDTH: Pixels = px(11.);
+/// Lines longer than this (in bytes) get no quick-find highlights: finding
+/// them would decode the whole line on every frame.
+const MAX_HIGHLIGHT_LINE: usize = 256 << 10;
 
 /// Geometry of the last frame, used to map mouse positions.
 #[derive(Debug, Clone, Copy)]
@@ -142,6 +146,9 @@ pub struct LogView {
     grab: Option<MouseGrab>,
     /// Sub-column horizontal wheel motion not applied yet.
     hscroll_carry: Pixels,
+    /// Quick-find pattern: its occurrences on visible rows are highlighted
+    /// (klogg: `QuickFindPattern`).
+    quick_find: Option<Arc<Matcher>>,
 }
 
 impl LogView {
@@ -159,6 +166,7 @@ impl LogView {
             layout: None,
             grab: None,
             hscroll_carry: px(0.),
+            quick_find: None,
         }
     }
 
@@ -271,6 +279,51 @@ impl LogView {
         self.selection = Selection::Line(row);
         self.viewport.reveal_line(row);
         cx.notify();
+    }
+
+    pub fn set_quick_find(&mut self, matcher: Option<Arc<Matcher>>, cx: &mut Context<Self>) {
+        self.quick_find = matcher;
+        cx.notify();
+    }
+
+    /// Where a quick find starts, as a row and display column (klogg:
+    /// `Selection::getNextPosition`, `getPreviousPosition`): after the
+    /// selection going forward, at its start going backward. Without a
+    /// selection, from the top of the screen.
+    pub fn find_origin(&self, direction: Direction) -> Position {
+        let at = |line, col| Position { line, col };
+        let forward = direction == Direction::Forward;
+        match (&self.selection, self.selection.lines()) {
+            (Selection::Portion { line, start, end }, _) => {
+                if forward {
+                    at(*line, end + 1)
+                } else {
+                    at(*line, *start)
+                }
+            }
+            (_, Some(rows)) if forward => at(rows.end() + 1, 0),
+            (_, Some(rows)) => at(*rows.start(), 0),
+            (_, None) => at(self.viewport.first_line(), 0),
+        }
+    }
+
+    /// Selects a quick-find occurrence and scrolls to it.
+    pub fn show_found(&mut self, found: &Found, cx: &mut Context<Self>) {
+        self.cursor = found.row;
+        let last = found.cols.end.max(found.cols.start + 1) - 1;
+        self.select(Selection::portion(found.row, found.cols.start, last), cx);
+        self.viewport.reveal_line(found.row);
+        self.viewport.reveal_col(last);
+        self.viewport.reveal_col(found.cols.start);
+        cx.notify();
+    }
+
+    /// The selected part of a line, for "find selection" (`*`, `/`).
+    pub fn selected_portion(&self, cx: &App) -> Option<String> {
+        match self.selection {
+            Selection::Portion { .. } => self.selected_text(false, cx),
+            _ => None,
+        }
     }
 
     /// Toggles marks on the selected lines (klogg: `markSelected`, `m`).
@@ -662,6 +715,8 @@ struct Row {
     text: ShapedLine,
     /// Selected columns, relative to the first visible column.
     highlight: Option<(usize, usize)>,
+    /// Quick-find occurrences, relative to the first visible column.
+    found: Vec<(usize, usize)>,
     kind: LineKind,
 }
 
@@ -785,6 +840,20 @@ impl Element for LogElement {
                             (start < end).then(|| (start - vp.left(), end - vp.left()))
                         })
                     };
+                    let window_end = vp.left() + vp.cols() + 1;
+                    let found = match &view.quick_find {
+                        Some(m) if bytes.len() <= MAX_HIGHLIGHT_LINE => {
+                            find::match_columns(&log, m, line)
+                                .into_iter()
+                                .filter_map(|c| {
+                                    let start = c.start.max(vp.left());
+                                    let end = c.end.min(window_end);
+                                    (start < end).then(|| (start - vp.left(), end - vp.left()))
+                                })
+                                .collect()
+                        }
+                        _ => Vec::new(),
+                    };
                     let y =
                         text_bounds.top() + metrics.line_height * (row as f64 - vp.top()) as f32;
                     out.push(Row {
@@ -792,6 +861,7 @@ impl Element for LogElement {
                         number: metrics.shape(window, (line + 1).to_string().into(), muted),
                         text: metrics.shape(window, win.text.into(), fg),
                         highlight,
+                        found,
                         kind,
                     });
                 }
@@ -883,6 +953,7 @@ impl Element for LogElement {
             theme.scrollbar,
             theme.scrollbar_thumb,
         );
+        let found_bg = theme.yellow.opacity(0.45);
         let bullet_colors = BulletColors {
             matched: theme.red,
             marked: theme.blue,
@@ -914,6 +985,12 @@ impl Element for LogElement {
             }),
             |window| {
                 for row in &frame.rows {
+                    for &(from, to) in &row.found {
+                        let x = layout.text.left() + layout.char_width * from;
+                        let w = layout.char_width * (to - from);
+                        window
+                            .paint_quad(fill(Bounds::new(point(x, row.y), size(w, lh)), found_bg));
+                    }
                     if let Some((from, to)) = row.highlight {
                         let x = layout.text.left() + layout.char_width * from;
                         let w = layout.char_width * (to - from);

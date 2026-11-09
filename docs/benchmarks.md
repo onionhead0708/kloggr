@@ -95,3 +95,17 @@ Notes:
   candidate match starts (care needed with `\A`/`\z` and matches that cross lines).
 - No klogg comparison yet: klogg has no headless search mode to time it the way
   `scripts/bench-vs-klogg.sh` times indexing.
+
+### Quick find (2026-11-09)
+
+`search::find::find` with no occurrence after the start, i.e. a scan of the whole
+1 GiB typical file (klogg: "Reached end of file, no occurrence found").
+
+| benchmark | time | throughput |
+|---|---|---|
+| forward, line 0 to the end | 291 ms | 3.43 GiB/s |
+| backward, the end to line 0 | 289 ms | 3.46 GiB/s |
+
+Blocks of rows are checked in parallel and the first (last) block with a match wins.
+Decoding each block's line offsets once, instead of one index lookup per line,
+took this from 1383 ms to 291 ms. klogg scans line by line on one thread.

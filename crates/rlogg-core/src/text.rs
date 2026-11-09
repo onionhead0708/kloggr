@@ -69,6 +69,41 @@ pub fn columns(line: &str) -> usize {
     n
 }
 
+/// Maps sorted, non-overlapping byte ranges of `line` (e.g. regex matches)
+/// to display column ranges, in one pass. Range ends must be char
+/// boundaries.
+pub fn column_ranges(line: &str, bytes: &[Range<usize>]) -> Vec<Range<usize>> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut wanted = bytes.iter().peekable();
+    let mut start_col = None;
+    let mut col = 0usize;
+    let mut chars = line.char_indices();
+    loop {
+        let (at, c) = chars
+            .next()
+            .map_or((line.len(), None), |(i, c)| (i, Some(c)));
+        // Resolve every boundary at this byte (an empty range has two).
+        while let Some(r) = wanted.peek() {
+            match start_col {
+                None if r.start <= at => start_col = Some(col),
+                Some(start) if r.end <= at => {
+                    out.push(start..col);
+                    start_col = None;
+                    wanted.next();
+                }
+                _ => break,
+            }
+        }
+        let Some(c) = c else { break };
+        col += if c == '\t' {
+            TAB_STOP - col % TAB_STOP
+        } else {
+            1
+        };
+    }
+    out
+}
+
 /// A horizontal slice of a line, ready to shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DisplayWindow {
@@ -163,6 +198,18 @@ pub fn slice_columns(expanded: &str, range: Range<usize>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)]
+    fn column_ranges_expand_tabs() {
+        // "a\tbc": a=0, tab=1..8, b=8, c=9.
+        assert_eq!(column_ranges("a\tbc", &[0..1, 2..4]), [0..1, 8..10]);
+        assert_eq!(column_ranges("a\tbc", &[1..2]), [1..8]);
+        assert_eq!(column_ranges("été x", &[2..5, 6..7]), [1..3, 4..5]);
+        assert_eq!(column_ranges("abc", &[1..1, 3..3]), [1..1, 3..3]);
+        assert_eq!(column_ranges("", &[0..0]), [0..0]);
+        assert!(column_ranges("abc", &[]).is_empty());
+    }
 
     fn win(s: &str, first: usize, n: usize) -> DisplayWindow {
         window(Encoding::UTF_8, s.as_bytes(), first, n)

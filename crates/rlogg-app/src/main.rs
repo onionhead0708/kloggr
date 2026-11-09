@@ -3,6 +3,7 @@
 mod background;
 mod crawler;
 mod log_view;
+mod quick_find;
 mod workspace;
 
 use std::path::PathBuf;
@@ -21,6 +22,7 @@ fn main() {
         gpui_component::init(cx);
         cx.bind_keys(log_view::key_bindings());
         cx.bind_keys(crawler::key_bindings());
+        cx.bind_keys(quick_find::key_bindings());
         cx.bind_keys(workspace::key_bindings());
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.open_window(WindowOptions::default(), |window, cx| {

@@ -29,7 +29,8 @@ stays GPLv3. Keep klogg's copyright notices where code is translated closely.
 | `settings/`, `ui/session*`, `ui/recentfiles*` | `rlogg-core::settings` (recent files done) | serde, toml, directories |
 | `ui/abstractlogview`, `logmainview`, `filteredview`, `frozencolumns`, `overview*` | `rlogg-app` log view widget | gpui |
 | `ui/crawlerwidget`, `tabbedcrawlerwidget`, `mainwindow`, `menu` | `rlogg-app` workspace, tabs, menus | gpui-component |
-| `ui/quickfind*`, `highlighter*`, `predefinedfilters*`, `savedsearches`, `scratchpad` | `rlogg-app` features | gpui-component |
+| `ui/quickfind*` (QuickFind engine) | `rlogg-core::search::find`, `rlogg-app` quick_find | rayon |
+| `ui/highlighter*`, `predefinedfilters*`, `savedsearches`, `scratchpad` | `rlogg-app` features | gpui-component |
 | `versioncheck/`, `logging/`, `crash_handler/` | later | ureq (rustls), tracing, panic hook |
 
 ## Architecture
@@ -96,7 +97,7 @@ scripts/bench-vs-klogg.sh 1024   # indexing time vs klogg on the same generated 
 ### Phase 2: search and filtering
 - [x] Regex, plain-text and case-insensitive search, plus klogg's boolean combinations (`regex/`): engine in `rlogg-core::search`; the search bar UI comes with the filtered view
 - [x] Filtered view (bottom pane) synced with the main view; marks (search bar, bullets, `m` `[` `]`, visibility `v` `1`–`3`; match highlighting in the text still todo)
-- [ ] Quick find (incremental, next/previous)
+- [x] Quick find (incremental, next/previous): Ctrl+F, `'` `"`, `n` `N` F3 Ctrl+G, `*` `.` `/` `,`; occurrences highlighted in both views
 - [ ] Jump to line: digits then `g`, and Ctrl+L with a small input box (klogg `digitsBuffer_`, `LogViewJumpToLine`)
 - [ ] Overview bar showing match and mark positions
 

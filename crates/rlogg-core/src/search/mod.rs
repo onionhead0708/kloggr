@@ -5,11 +5,13 @@
 //! - [`LineSet`]: compact set of matching lines (klogg: `SearchResultArray`)
 //! - [`FilteredLines`]: matches and marks shown by the filtered view (klogg:
 //!   `LogFilteredData`)
+//! - [`find`]: quick find, the next or previous occurrence (klogg: `QuickFind`)
 //! - [`search`]: parallel search of a line range, with progress, cancellation
 //!   and incremental results (klogg: `SearchOperation`)
 
 mod boolean;
 mod filtered;
+pub mod find;
 mod line_set;
 mod matcher;
 
@@ -27,8 +29,13 @@ use crate::encoding::Encoding;
 use crate::file::LogFile;
 use crate::line_index::Cancelled;
 
+/// Escapes regex metacharacters in `text`, to search for it literally.
+pub fn escape(text: &str) -> String {
+    regex::escape(text)
+}
+
 /// Lines matched by one rayon task.
-const BLOCK_LINES: usize = 8192;
+pub(crate) const BLOCK_LINES: usize = 8192;
 
 /// Search progress, reported after each batch of lines.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

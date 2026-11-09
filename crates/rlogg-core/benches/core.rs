@@ -102,6 +102,34 @@ fn search(c: &mut Criterion) {
     group.finish();
 }
 
+/// Quick find with no occurrence after the start: the worst case, a scan
+/// of the whole file (klogg: "Reached end of file").
+fn quick_find(c: &mut Criterion) {
+    use rlogg_core::Position;
+    use rlogg_core::search::find::{self, Direction, Rows};
+    let path = generate::cached(&data_dir(), Profile::Typical, size_mb());
+    let log = LogFile::open(&path).unwrap();
+    let matcher = Matcher::new(&Pattern::plain("no such text")).unwrap();
+    let never = AtomicBool::new(false);
+    let mut group = c.benchmark_group("quick_find");
+    group
+        .sample_size(10)
+        .measurement_time(Duration::from_secs(20));
+    group.throughput(Throughput::Bytes(log.bytes().len() as u64));
+    for (name, direction, from) in [
+        ("forward_to_end", Direction::Forward, 0),
+        ("backward_to_start", Direction::Backward, log.line_count()),
+    ] {
+        group.bench_function(BenchmarkId::new(name, format!("{}MiB", size_mb())), |b| {
+            b.iter(|| {
+                let at = Position { line: from, col: 0 };
+                find::find(&log, Rows::All, &matcher, at, direction, &never, |_| {}).unwrap()
+            })
+        });
+    }
+    group.finish();
+}
+
 /// Reading lines the way the view does: a screenful at a random position.
 fn line_access(c: &mut Criterion) {
     let path = generate::cached(&data_dir(), Profile::Typical, size_mb());
@@ -221,6 +249,7 @@ criterion_group!(
     benches,
     index,
     search,
+    quick_find,
     line_access,
     long_line_window,
     detection,

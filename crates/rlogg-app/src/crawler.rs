@@ -23,6 +23,8 @@ use rlogg_core::{Cancelled, LogFile};
 
 use crate::background;
 use crate::log_view::{self, LogView, LogViewEvent};
+use crate::quick_find::{self, QuickFind, Target};
+use rlogg_core::search::find::Direction;
 
 actions!(
     crawler,
@@ -40,7 +42,7 @@ actions!(
     ]
 );
 
-const CONTEXT: &str = "Crawler";
+pub(crate) const CONTEXT: &str = "Crawler";
 
 /// klogg's defaults (`settings/src/shortcuts.cpp`). Single keys only work
 /// in the log views, so they can still be typed in the search box.
@@ -106,10 +108,13 @@ enum SearchEvent {
 }
 
 pub struct Crawler {
-    log: Option<Arc<LogFile>>,
-    filter: Entity<FilteredLines>,
-    main: Entity<LogView>,
-    filtered: Entity<LogView>,
+    pub(crate) log: Option<Arc<LogFile>>,
+    pub(crate) filter: Entity<FilteredLines>,
+    pub(crate) main: Entity<LogView>,
+    pub(crate) filtered: Entity<LogView>,
+    pub(crate) qf: QuickFind,
+    /// The view that last had focus: quick find works on it.
+    pub(crate) target: Target,
     input: Entity<InputState>,
     options: SearchOptions,
     info: SearchInfo,
@@ -138,6 +143,9 @@ impl Crawler {
             v
         });
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search"));
+        let qf = QuickFind::new(window, cx);
+        let main_focus = main.focus_handle(cx);
+        let filtered_focus = filtered.focus_handle(cx);
         let subscriptions = vec![
             cx.subscribe_in(&input, window, |this, _, event: &InputEvent, _, cx| {
                 if let InputEvent::PressEnter { .. } = event {
@@ -158,12 +166,34 @@ impl Crawler {
                 },
             ),
             cx.observe(&filter, |_, _, cx| cx.notify()),
+            cx.on_focus_in(&main_focus, window, |this, _, _| this.target = Target::Main),
+            cx.on_focus_in(&filtered_focus, window, |this, _, _| {
+                this.target = Target::Filtered
+            }),
+            cx.subscribe_in(
+                &qf.input,
+                window,
+                |this, _, event: &InputEvent, window, cx| match event {
+                    InputEvent::Change => this.quick_find_edited(cx),
+                    InputEvent::PressEnter { shift, .. } => {
+                        let direction = if *shift {
+                            Direction::Backward
+                        } else {
+                            Direction::Forward
+                        };
+                        this.find_next(direction, window, cx);
+                    }
+                    _ => {}
+                },
+            ),
         ];
         Self {
             log: None,
             filter,
             main,
             filtered,
+            qf,
+            target: Target::Main,
             input,
             options: SearchOptions::default(),
             info: SearchInfo::default(),
@@ -228,6 +258,17 @@ impl Crawler {
     #[cfg(test)]
     pub fn is_searching(&self) -> bool {
         self.searching
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_search_text_for_test(
+        &mut self,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.input
+            .update(cx, |input, cx| input.set_value(text.to_owned(), window, cx));
     }
 
     #[cfg(test)]
@@ -538,11 +579,61 @@ impl Render for Crawler {
             .on_action(cx.listener(|this, _: &ToggleBoolean, _, cx| {
                 this.toggle(|o| o.boolean = !o.boolean, cx)
             }))
-            .child(
-                v_resizable("crawler-split")
-                    .child(resizable_panel().child(self.main.clone()))
-                    .child(resizable_panel().size(px(260.)).child(bottom)),
+            .on_action(cx.listener(|this, _: &quick_find::Open, window, cx| {
+                this.open_quick_find(Direction::Forward, window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &quick_find::OpenForward, window, cx| {
+                    this.open_quick_find(Direction::Forward, window, cx)
+                }),
             )
+            .on_action(
+                cx.listener(|this, _: &quick_find::OpenBackward, window, cx| {
+                    this.open_quick_find(Direction::Backward, window, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &quick_find::FindNext, window, cx| {
+                this.find_next(Direction::Forward, window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &quick_find::FindPrevious, window, cx| {
+                    this.find_next(Direction::Backward, window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &quick_find::FindSelectionNext, window, cx| {
+                    this.find_selection(Direction::Forward, window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &quick_find::FindSelectionPrevious, window, cx| {
+                    this.find_selection(Direction::Backward, window, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &quick_find::Close, window, cx| {
+                this.close_quick_find(window, cx)
+            }))
+            .flex()
+            .flex_col()
+            .child(
+                div().flex_1().min_h_0().child(
+                    v_resizable("crawler-split")
+                        .child(resizable_panel().child(self.main.clone()))
+                        .child(resizable_panel().size(px(260.)).child(bottom)),
+                ),
+            )
+            .children(self.qf.open.then(|| {
+                div()
+                    .id("quick-find")
+                    // Esc in the bar's input closes the bar (klogg: Cancel).
+                    .capture_action(cx.listener(
+                        |this, _: &gpui_component::input::Escape, window, cx| {
+                            this.close_quick_find(window, cx);
+                            cx.stop_propagation();
+                        },
+                    ))
+                    .child(self.render_quick_find(cx))
+            }))
     }
 }
 
