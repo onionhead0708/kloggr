@@ -317,8 +317,19 @@ impl Crawler {
             cx.notify();
         });
         self.filtered.update(cx, |v, cx| v.reset(cx));
+        self.set_search_highlight(None, cx);
         self.info = SearchInfo::default();
         cx.notify();
+    }
+
+    /// Highlights the search pattern's matches in both views (klogg:
+    /// `setSearchPattern`). Excluding and boolean patterns highlight nothing,
+    /// as in klogg.
+    fn set_search_highlight(&mut self, matcher: Option<Arc<Matcher>>, cx: &mut Context<Self>) {
+        for view in [&self.main, &self.filtered] {
+            let matcher = matcher.clone();
+            view.update(cx, |v, cx| v.set_search_highlight(matcher, cx));
+        }
     }
 
     fn run(&mut self, pattern: Pattern, cx: &mut Context<Self>) {
@@ -332,6 +343,7 @@ impl Crawler {
             Ok(m) => m,
             Err(e) => {
                 self.last_pattern = None;
+                self.set_search_highlight(None, cx);
                 self.info = SearchInfo {
                     text: format!("Error in expression: {e}"),
                     error: true,
@@ -340,6 +352,9 @@ impl Crawler {
                 return;
             }
         };
+        let matcher = Arc::new(matcher);
+        let highlight = (!pattern.exclude && !pattern.boolean).then(|| matcher.clone());
+        self.set_search_highlight(highlight, cx);
         self.last_pattern = Some(pattern);
         let Some(log) = self.log.clone() else {
             return;
@@ -1022,5 +1037,42 @@ mod tests {
         cx.simulate_keystrokes("ctrl-l 5 escape");
         assert!(crawler.read_with(cx, |c, _| !c.go_to.open));
         assert_eq!(selection(&main, cx), Selection::Line(13));
+    }
+
+    #[gpui::test]
+    fn search_matches_are_highlighted(cx: &mut TestAppContext) {
+        let log = TempLog::new("highlight", 9);
+        let (crawler, cx) = crawler(cx, &log);
+        let highlighted = |cx: &mut VisualTestContext| {
+            crawler.read_with(cx, |c, cx| {
+                (
+                    c.main_view().read(cx).has_search_highlight(),
+                    c.filtered_view().read(cx).has_search_highlight(),
+                )
+            })
+        };
+        assert_eq!(highlighted(cx), (false, false));
+        search(&crawler, cx, "ERROR", SearchOptions::default());
+        assert_eq!(highlighted(cx), (true, true));
+        // As in klogg: no highlight for excluding or boolean patterns.
+        let inverse = SearchOptions {
+            inverse: true,
+            ..SearchOptions::default()
+        };
+        search(&crawler, cx, "ERROR", inverse);
+        assert_eq!(highlighted(cx), (false, false));
+        let boolean = SearchOptions {
+            boolean: true,
+            ..SearchOptions::default()
+        };
+        search(&crawler, cx, "\"ERROR\" or \"a\"", boolean);
+        assert_eq!(highlighted(cx), (false, false));
+        // An invalid pattern or an empty search clears it.
+        search(&crawler, cx, "ERROR", SearchOptions::default());
+        search(&crawler, cx, "(", SearchOptions::default());
+        assert_eq!(highlighted(cx), (false, false));
+        search(&crawler, cx, "ERROR", SearchOptions::default());
+        search(&crawler, cx, "", SearchOptions::default());
+        assert_eq!(highlighted(cx), (false, false));
     }
 }

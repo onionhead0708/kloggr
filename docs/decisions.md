@@ -8,6 +8,16 @@ Newest first. Each entry gives the date, what klogg does, what rlogg does, and w
 
 ---
 
+## 2026-11-09: Search matches are highlighted in the text by default
+
+**klogg:** the main search pattern's matches can be highlighted in both views. This option ("main search highlight", `enableMainSearchHighlight_`) is **off** by default, and its colour is light gray. Excluding and boolean patterns are never highlighted.
+
+**rlogg:** highlighting is **on**, with a translucent gray (the theme's text colour at 18 %) so it works in both light and dark themes. Like klogg, rlogg highlights nothing for excluding or boolean patterns. Quick-find occurrences (yellow) and the selection are drawn on top of it.
+
+**Why:** the user asked for it as the Phase 2 follow-up. There is no options dialog yet; when Phase 3 adds settings, this becomes a setting that defaults to on.
+
+**Code:** `Crawler::set_search_highlight`, `LogView::search_highlight`.
+
 ## 2026-11-09: Digits in a log view always type a line number; 1–7 shortcuts move to Alt+1…Alt+7
 
 **klogg:** the bare keys `1`–`7` are crawler shortcuts:

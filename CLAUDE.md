@@ -101,7 +101,7 @@ scripts/bench-vs-klogg.sh 1024   # indexing time vs klogg on the same generated 
 - [x] Quick find (incremental, next/previous): Ctrl+F, `'` `"`, `n` `N` F3 Ctrl+G, `*` `.` `/` `,`; occurrences highlighted in both views
 - [x] Jump to line: `[number] g`, `[number] j/k`, and Ctrl+L with a small input box (klogg `digitsBuffer_`, `LogViewJumpToLine`). klogg's `1`–`7` shortcuts are Alt+1…7 (`docs/decisions.md`)
 - [x] Overview bar showing match and mark positions (main view; click or drag to scroll)
-- [ ] Follow-up: highlight the search pattern's matches in the text of both views (only quick-find occurrences are highlighted so far)
+- [x] Follow-up: highlight the search pattern's matches in the text of both views (on by default, unlike klogg: `docs/decisions.md`)
 
 ### Phase 3: live files and workspace
 - [ ] Follow mode / tail: incremental reindex on growth, detect truncation (`filewatch/`)
@@ -109,7 +109,7 @@ scripts/bench-vs-klogg.sh 1024   # indexing time vs klogg on the same generated 
 - [ ] Highlighters and highlighter sets, color labels
 - [ ] Frozen columns (klogg `frozencolumns`)
 - [ ] Wide characters (CJK, emoji): map columns using real glyph widths instead of one column per `char`
-- [ ] Settings and options dialog, keyboard shortcuts matching klogg's defaults
+- [ ] Settings and options dialog, keyboard shortcuts matching klogg's defaults (include the search-match highlight toggle)
 
 ### Phase 4: extras and release
 - [ ] Predefined filters, saved searches, scratchpad

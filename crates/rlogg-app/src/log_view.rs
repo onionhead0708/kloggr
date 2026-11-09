@@ -166,6 +166,9 @@ pub struct LogView {
     /// Quick-find pattern: its occurrences on visible rows are highlighted
     /// (klogg: `QuickFindPattern`).
     quick_find: Option<Arc<Matcher>>,
+    /// Search pattern: its matches on visible rows are highlighted (klogg:
+    /// `searchPattern_`, "main search highlight").
+    search_highlight: Option<Arc<Matcher>>,
     /// Digits typed before a command (klogg: `digitsBuffer_`).
     digits: DigitsBuffer,
     /// Overview ticks, with the (filter generation, line count, height) they
@@ -189,6 +192,7 @@ impl LogView {
             grab: None,
             hscroll_carry: px(0.),
             quick_find: None,
+            search_highlight: None,
             digits: DigitsBuffer::new(),
             overview: None,
         }
@@ -302,6 +306,16 @@ impl LogView {
         self.cursor = row;
         self.selection = Selection::Line(row);
         self.viewport.reveal_line(row);
+        cx.notify();
+    }
+
+    #[cfg(test)]
+    pub fn has_search_highlight(&self) -> bool {
+        self.search_highlight.is_some()
+    }
+
+    pub fn set_search_highlight(&mut self, matcher: Option<Arc<Matcher>>, cx: &mut Context<Self>) {
+        self.search_highlight = matcher;
         cx.notify();
     }
 
@@ -813,6 +827,8 @@ struct Row {
     highlight: Option<(usize, usize)>,
     /// Quick-find occurrences, relative to the first visible column.
     found: Vec<(usize, usize)>,
+    /// Search pattern matches, relative to the first visible column.
+    searched: Vec<(usize, usize)>,
     kind: LineKind,
 }
 
@@ -952,17 +968,25 @@ impl Element for LogElement {
                         })
                     };
                     let window_end = vp.left() + vp.cols() + 1;
+                    // Visible columns of a matcher's matches in the line.
+                    let visible_matches = |m: &Matcher| -> Vec<(usize, usize)> {
+                        find::match_columns(&log, m, line)
+                            .into_iter()
+                            .filter_map(|c| {
+                                let start = c.start.max(vp.left());
+                                let end = c.end.min(window_end);
+                                (start < end).then(|| (start - vp.left(), end - vp.left()))
+                            })
+                            .collect()
+                    };
+                    let short = bytes.len() <= MAX_HIGHLIGHT_LINE;
                     let found = match &view.quick_find {
-                        Some(m) if bytes.len() <= MAX_HIGHLIGHT_LINE => {
-                            find::match_columns(&log, m, line)
-                                .into_iter()
-                                .filter_map(|c| {
-                                    let start = c.start.max(vp.left());
-                                    let end = c.end.min(window_end);
-                                    (start < end).then(|| (start - vp.left(), end - vp.left()))
-                                })
-                                .collect()
-                        }
+                        Some(m) if short => visible_matches(m),
+                        _ => Vec::new(),
+                    };
+                    // Only matched lines can hold search matches.
+                    let searched = match &view.search_highlight {
+                        Some(m) if short && kind.matched => visible_matches(m),
                         _ => Vec::new(),
                     };
                     let y =
@@ -973,6 +997,7 @@ impl Element for LogElement {
                         text: metrics.shape(window, win.text.into(), fg),
                         highlight,
                         found,
+                        searched,
                         kind,
                     });
                 }
@@ -1081,6 +1106,9 @@ impl Element for LogElement {
         );
         let found_bg = theme.yellow.opacity(0.45);
         let fg = theme.foreground;
+        // klogg's default `mainSearchBackColor` is light gray; a translucent
+        // foreground gives a gray in light and dark themes alike.
+        let search_bg = theme.foreground.opacity(0.18);
         let bullet_colors = BulletColors {
             matched: theme.red,
             marked: theme.blue,
@@ -1112,6 +1140,12 @@ impl Element for LogElement {
             }),
             |window| {
                 for row in &frame.rows {
+                    for &(from, to) in &row.searched {
+                        let x = layout.text.left() + layout.char_width * from;
+                        let w = layout.char_width * (to - from);
+                        window
+                            .paint_quad(fill(Bounds::new(point(x, row.y), size(w, lh)), search_bg));
+                    }
                     for &(from, to) in &row.found {
                         let x = layout.text.left() + layout.char_width * from;
                         let w = layout.char_width * (to - from);
