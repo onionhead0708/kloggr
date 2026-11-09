@@ -22,6 +22,7 @@ use rlogg_core::search::{self, FilteredLines, Matcher, Pattern, SearchProgress, 
 use rlogg_core::{Cancelled, LogFile};
 
 use crate::background;
+use crate::go_to_line::{self, GoToLine};
 use crate::log_view::{self, LogView, LogViewEvent};
 use crate::quick_find::{self, QuickFind, Target};
 use rlogg_core::search::find::Direction;
@@ -45,7 +46,9 @@ actions!(
 pub(crate) const CONTEXT: &str = "Crawler";
 
 /// klogg's defaults (`settings/src/shortcuts.cpp`). Single keys only work
-/// in the log views, so they can still be typed in the search box.
+/// in the log views, so they can still be typed in the search box. klogg's
+/// bare `1`–`7` are Alt+1…Alt+7 here, so that digits in a view always
+/// type a line number (`docs/decisions.md`).
 pub fn key_bindings() -> Vec<KeyBinding> {
     let view = Some(log_view::CONTEXT);
     vec![
@@ -53,13 +56,13 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("secondary-shift-f", FocusSearch, Some(CONTEXT)),
         KeyBinding::new("v", VisibilityForward, view),
         KeyBinding::new("shift-v", VisibilityBackward, view),
-        KeyBinding::new("1", ShowMarksAndMatches, view),
-        KeyBinding::new("2", ShowMarks, view),
-        KeyBinding::new("3", ShowMatches, view),
-        KeyBinding::new("4", ToggleMatchCase, view),
-        KeyBinding::new("5", ToggleRegex, view),
-        KeyBinding::new("6", ToggleInverse, view),
-        KeyBinding::new("7", ToggleBoolean, view),
+        KeyBinding::new("alt-1", ShowMarksAndMatches, view),
+        KeyBinding::new("alt-2", ShowMarks, view),
+        KeyBinding::new("alt-3", ShowMatches, view),
+        KeyBinding::new("alt-4", ToggleMatchCase, view),
+        KeyBinding::new("alt-5", ToggleRegex, view),
+        KeyBinding::new("alt-6", ToggleInverse, view),
+        KeyBinding::new("alt-7", ToggleBoolean, view),
     ]
 }
 
@@ -123,7 +126,8 @@ pub struct Crawler {
     searching: bool,
     /// Line last selected in either view (klogg: `currentLineNumber_`), to
     /// keep the filtered view near it after a search or visibility change.
-    current_line: usize,
+    pub(crate) current_line: usize,
+    pub(crate) go_to: GoToLine,
     cancel: Arc<AtomicBool>,
     _search: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -144,6 +148,7 @@ impl Crawler {
         });
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search"));
         let qf = QuickFind::new(window, cx);
+        let go_to = GoToLine::new(window, cx);
         let main_focus = main.focus_handle(cx);
         let filtered_focus = filtered.focus_handle(cx);
         let subscriptions = vec![
@@ -170,6 +175,15 @@ impl Crawler {
             cx.on_focus_in(&filtered_focus, window, |this, _, _| {
                 this.target = Target::Filtered
             }),
+            cx.subscribe_in(
+                &go_to.input,
+                window,
+                |this, _, event: &InputEvent, window, cx| match event {
+                    InputEvent::PressEnter { .. } => this.submit_go_to_line(window, cx),
+                    InputEvent::Change => this.go_to_line_edited(cx),
+                    _ => {}
+                },
+            ),
             cx.subscribe_in(
                 &qf.input,
                 window,
@@ -200,6 +214,7 @@ impl Crawler {
             last_pattern: None,
             searching: false,
             current_line: 0,
+            go_to,
             cancel: Arc::default(),
             _search: None,
             _subscriptions: subscriptions,
@@ -477,17 +492,17 @@ impl Crawler {
             )
             .child(div().flex_1().child(Input::new(&self.input).small()))
             .child(
-                option("match-case", "Aa", "Match case (4)", o.match_case).on_click(
+                option("match-case", "Aa", "Match case (Alt+4)", o.match_case).on_click(
                     cx.listener(|this, on: &bool, _, cx| this.toggle(|o| o.match_case = *on, cx)),
                 ),
             )
             .child(
-                option("regex", ".*", "Use regex (5)", o.regex).on_click(
+                option("regex", ".*", "Use regex (Alt+5)", o.regex).on_click(
                     cx.listener(|this, on: &bool, _, cx| this.toggle(|o| o.regex = *on, cx)),
                 ),
             )
             .child(
-                option("inverse", "!", "Inverse match (6)", o.inverse).on_click(
+                option("inverse", "!", "Inverse match (Alt+6)", o.inverse).on_click(
                     cx.listener(|this, on: &bool, _, cx| this.toggle(|o| o.inverse = *on, cx)),
                 ),
             )
@@ -613,6 +628,9 @@ impl Render for Crawler {
             .on_action(cx.listener(|this, _: &quick_find::Close, window, cx| {
                 this.close_quick_find(window, cx)
             }))
+            .on_action(cx.listener(|this, _: &go_to_line::Open, window, cx| {
+                this.open_go_to_line(window, cx)
+            }))
             .flex()
             .flex_col()
             .child(
@@ -633,6 +651,17 @@ impl Render for Crawler {
                         },
                     ))
                     .child(self.render_quick_find(cx))
+            }))
+            .children(self.go_to.open.then(|| {
+                div()
+                    .id("go-to-line")
+                    .capture_action(cx.listener(
+                        |this, _: &gpui_component::input::Escape, window, cx| {
+                            this.close_go_to_line(window, cx);
+                            cx.stop_propagation();
+                        },
+                    ))
+                    .child(self.render_go_to_line(cx))
             }))
     }
 }
@@ -684,6 +713,7 @@ mod tests {
             gpui_component::init(cx);
             cx.bind_keys(log_view::key_bindings());
             cx.bind_keys(key_bindings());
+            cx.bind_keys(go_to_line::key_bindings());
         });
         let file = Arc::new(LogFile::open(&log.0).unwrap());
         let (crawler, cx) = cx.add_window_view(Crawler::new);
@@ -851,10 +881,10 @@ mod tests {
         cx.simulate_keystrokes("ctrl-end m");
         assert_eq!(marks(cx), [1, 2, 29]);
 
-        // Visibility: 2 = marks, 3 = matches, 1 = both; v cycles.
-        cx.simulate_keystrokes("2");
+        // Visibility: Alt+2 = marks, Alt+3 = matches, Alt+1 = both; v cycles.
+        cx.simulate_keystrokes("alt-2");
         assert_eq!(rows(cx), [1, 2, 29]);
-        cx.simulate_keystrokes("3");
+        cx.simulate_keystrokes("alt-3");
         assert_eq!(rows(cx).len(), 10);
         cx.simulate_keystrokes("v");
         assert_eq!(rows(cx).len(), 13);
@@ -880,7 +910,7 @@ mod tests {
     fn option_keys_and_focus_search(cx: &mut TestAppContext) {
         let log = TempLog::new("keys", 3);
         let (crawler, cx) = crawler(cx, &log);
-        cx.simulate_keystrokes("4 5 6 7");
+        cx.simulate_keystrokes("alt-4 alt-5 alt-6 alt-7");
         assert_eq!(
             crawler.read_with(cx, |c, _| c.options()),
             SearchOptions {
@@ -903,7 +933,7 @@ mod tests {
         );
         cx.simulate_keystrokes("backspace backspace backspace backspace backspace l i n e enter");
         cx.run_until_parked();
-        // Boolean mode is on (7), so the pattern must be quoted.
+        // Boolean mode is on (Alt+7), so the pattern must be quoted.
         let info = info(&crawler, cx);
         assert!(info.error && info.text.contains("quotes"), "{info:?}");
     }
@@ -921,5 +951,76 @@ mod tests {
         assert_eq!(matches(&crawler, cx), [0, 3]);
         let marks = crawler.read_with(cx, |c, cx| c.filter().read(cx).marks().len());
         assert_eq!(marks, 0);
+    }
+
+    #[gpui::test]
+    fn digits_then_g_jump_to_a_line(cx: &mut TestAppContext) {
+        let log = TempLog::new("digits", 300);
+        let (crawler, cx) = crawler(cx, &log);
+        let main = crawler.read_with(cx, |c, _| c.main_view().clone());
+        // Digits are a line number, not the visibility shortcuts.
+        cx.simulate_keystrokes("1 2 3 g");
+        assert_eq!(selection(&main, cx), Selection::Line(122));
+        assert_eq!(
+            crawler.read_with(cx, |c, cx| c.filter().read(cx).visibility()),
+            Visibility::MarksAndMatches
+        );
+        // A count before j / k.
+        cx.simulate_keystrokes("1 0 j");
+        assert_eq!(selection(&main, cx), Selection::Line(132));
+        cx.simulate_keystrokes("3 k");
+        assert_eq!(selection(&main, cx), Selection::Line(129));
+        cx.simulate_keystrokes("j");
+        assert_eq!(selection(&main, cx), Selection::Line(130));
+        // g alone: the first line; past the end: the last.
+        cx.simulate_keystrokes("g");
+        assert_eq!(selection(&main, cx), Selection::Line(0));
+        cx.simulate_keystrokes("9 9 9 9 g");
+        assert_eq!(selection(&main, cx), Selection::Line(299));
+    }
+
+    #[gpui::test]
+    fn digits_in_the_filtered_view_are_file_lines(cx: &mut TestAppContext) {
+        let log = TempLog::new("digits-filtered", 30);
+        let (crawler, cx) = crawler(cx, &log);
+        search(&crawler, cx, "ERROR", SearchOptions::default());
+        let (main, filtered) = crawler.read_with(cx, |c, _| {
+            (c.main_view().clone(), c.filtered_view().clone())
+        });
+        crawler.update_in(cx, |c, window, cx| {
+            let focus = c.filtered.focus_handle(cx);
+            window.focus(&focus, cx);
+        });
+        // Matches are lines 0, 3, 6, ...; line 8 (8g) is not one, so the
+        // row of line 6 (row 2) is selected, and the main view follows.
+        cx.simulate_keystrokes("8 g");
+        assert_eq!(selection(&filtered, cx), Selection::Line(2));
+        assert_eq!(selection(&main, cx), Selection::Line(6));
+    }
+
+    #[gpui::test]
+    fn ctrl_l_jumps_in_both_views(cx: &mut TestAppContext) {
+        let log = TempLog::new("ctrl-l", 30);
+        let (crawler, cx) = crawler(cx, &log);
+        search(&crawler, cx, "ERROR", SearchOptions::default());
+        let (main, filtered) = crawler.read_with(cx, |c, _| {
+            (c.main_view().clone(), c.filtered_view().clone())
+        });
+        cx.simulate_keystrokes("ctrl-l");
+        assert!(crawler.read_with(cx, |c, _| c.go_to.open));
+        // Not a number: an error, the box stays open.
+        cx.simulate_keystrokes("x enter");
+        assert!(crawler.read_with(cx, |c, _| c.go_to.open && c.go_to.error.is_some()));
+        cx.simulate_keystrokes("backspace 1 3 enter");
+        assert!(crawler.read_with(cx, |c, _| !c.go_to.open));
+        assert_eq!(selection(&main, cx), Selection::Line(12));
+        assert_eq!(selection(&filtered, cx), Selection::Line(4));
+        // The focus is back in the view: keys are view commands again.
+        cx.simulate_keystrokes("j");
+        assert_eq!(selection(&main, cx), Selection::Line(13));
+        // Esc closes without jumping.
+        cx.simulate_keystrokes("ctrl-l 5 escape");
+        assert!(crawler.read_with(cx, |c, _| !c.go_to.open));
+        assert_eq!(selection(&main, cx), Selection::Line(13));
     }
 }

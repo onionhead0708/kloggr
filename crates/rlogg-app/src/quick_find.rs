@@ -139,7 +139,7 @@ impl Drop for QuickFind {
 }
 
 impl Crawler {
-    fn target_view(&self, target: Target) -> &Entity<LogView> {
+    pub(crate) fn target_view(&self, target: Target) -> &Entity<LogView> {
         match target {
             Target::Main => &self.main,
             Target::Filtered => &self.filtered,
@@ -147,7 +147,7 @@ impl Crawler {
     }
 
     /// Quick find works on the log view that has (or last had) the focus.
-    fn update_target(&mut self, window: &Window, cx: &mut Context<Self>) {
+    pub(crate) fn update_target(&mut self, window: &Window, cx: &mut Context<Self>) {
         if self.filtered.focus_handle(cx).contains_focused(window, cx) {
             self.target = Target::Filtered;
         } else if self.main.focus_handle(cx).contains_focused(window, cx) {

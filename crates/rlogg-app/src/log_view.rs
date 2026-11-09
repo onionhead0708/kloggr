@@ -9,6 +9,8 @@
 //! Interaction follows klogg: click selects a line, drag on the same line
 //! selects a portion, drag across lines selects whole lines, shift+click
 //! extends, double-click selects a word. Keys are bound in [`key_bindings`].
+//! Digits typed before `g`, `j` or `k` give a line number or a count, as in
+//! klogg (`123g`, `5j`); see `docs/decisions.md`.
 //!
 //! The same view serves klogg's two panes: the main view shows every line,
 //! the filtered view (klogg: `FilteredView`) shows the rows of a
@@ -29,7 +31,7 @@ use gpui_component::ActiveTheme;
 use rlogg_core::search::find::{self, Direction, Found};
 use rlogg_core::search::{FilteredLines, LineKind, Matcher};
 use rlogg_core::text;
-use rlogg_core::{Drag, LogFile, Position, Selection, Viewport};
+use rlogg_core::{DigitsBuffer, Drag, LogFile, Position, Selection, Viewport};
 
 actions!(
     log_view,
@@ -53,6 +55,7 @@ actions!(
         Mark,
         NextMark,
         PrevMark,
+        JumpToLineNumber,
     ]
 );
 
@@ -89,6 +92,7 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("m", Mark, c),
         KeyBinding::new("]", NextMark, c),
         KeyBinding::new("[", PrevMark, c),
+        KeyBinding::new("g", JumpToLineNumber, c),
     ]
 }
 
@@ -149,6 +153,8 @@ pub struct LogView {
     /// Quick-find pattern: its occurrences on visible rows are highlighted
     /// (klogg: `QuickFindPattern`).
     quick_find: Option<Arc<Matcher>>,
+    /// Digits typed before a command (klogg: `digitsBuffer_`).
+    digits: DigitsBuffer,
 }
 
 impl LogView {
@@ -167,6 +173,7 @@ impl LogView {
             grab: None,
             hscroll_carry: px(0.),
             quick_find: None,
+            digits: DigitsBuffer::new(),
         }
     }
 
@@ -372,13 +379,52 @@ impl LogView {
         }
     }
 
+    /// Moves the selection one line, or as many as the digits typed before
+    /// (klogg: `moveSelectionUp`, `moveSelectionDown`).
     fn move_selection(&mut self, up: bool, cx: &mut Context<Self>) {
+        let count = self.take_number().unwrap_or(1).max(1);
+        let count = usize::try_from(count).unwrap_or(usize::MAX);
         let line = match self.selection.lines() {
             None => self.viewport.first_line(),
-            Some(lines) if up => lines.start().saturating_sub(1),
-            Some(lines) => lines.end() + 1,
+            Some(lines) if up => lines.start().saturating_sub(count),
+            Some(lines) => lines.end().saturating_add(count),
         };
         self.select_and_reveal(line, cx);
+    }
+
+    fn take_number(&mut self) -> Option<u64> {
+        self.digits.take(std::time::Instant::now())
+    }
+
+    /// A digit key: adds it to the number being typed, or, for a lone `0`,
+    /// scrolls to the start of the line (klogg: `keyPressEvent`).
+    fn on_key_down(&mut self, event: &gpui::KeyDownEvent, cx: &mut Context<Self>) {
+        let keystroke = &event.keystroke;
+        let mut chars = keystroke.key.chars();
+        let (Some(c), None) = (chars.next(), chars.next()) else {
+            return;
+        };
+        if keystroke.modifiers.modified() || !c.is_ascii_digit() {
+            return;
+        }
+        let now = std::time::Instant::now();
+        if self.digits.add(c, now) {
+            cx.stop_propagation();
+        } else if c == '0' {
+            self.viewport.set_left(0);
+            cx.stop_propagation();
+            cx.notify();
+        }
+    }
+
+    /// `[number] g`: selects file line `number` (1-based), or the first
+    /// line without a number (klogg: `LogViewJumpToLineNumber`). In the
+    /// filtered view, the row of that line or of the closest one before it.
+    fn jump_to_line_number(&mut self, cx: &mut Context<Self>) {
+        let number = self.take_number().unwrap_or(0);
+        let line = usize::try_from(number.saturating_sub(1)).unwrap_or(usize::MAX);
+        let row = self.row_of(line, cx);
+        self.select_and_reveal(row, cx);
     }
 
     fn extend_selection(&mut self, up: bool, cx: &mut Context<Self>) {
@@ -663,6 +709,8 @@ impl Render for LogView {
             .on_action(cx.listener(|v, _: &Mark, _, cx| v.mark_selection(cx)))
             .on_action(cx.listener(|v, _: &NextMark, _, cx| v.jump_to_mark(true, cx)))
             .on_action(cx.listener(|v, _: &PrevMark, _, cx| v.jump_to_mark(false, cx)))
+            .on_action(cx.listener(|v, _: &JumpToLineNumber, _, cx| v.jump_to_line_number(cx)))
+            .on_key_down(cx.listener(|v, event, _, cx| v.on_key_down(event, cx)))
             .child(LogElement { view: cx.entity() })
     }
 }
