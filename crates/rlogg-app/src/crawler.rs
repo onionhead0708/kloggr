@@ -10,11 +10,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui::{
-    AppContext, Context, Entity, Focusable, InteractiveElement, IntoElement, KeyBinding,
+    Action, AppContext, Context, Entity, Focusable, InteractiveElement, IntoElement, KeyBinding,
     ParentElement, Render, Styled, Subscription, Task, Window, actions, div, px,
 };
 use gpui_component::button::{Button, ButtonVariants, Toggle};
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::menu::{DropdownMenu, PopupMenu};
 use gpui_component::resizable::{resizable_panel, v_resizable};
 use gpui_component::{ActiveTheme, Sizable};
 use rlogg_core::search::{self, FilteredLines, Matcher, Pattern, SearchProgress, Visibility};
@@ -379,6 +380,7 @@ impl Crawler {
     fn render_search_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let o = self.options;
         let visibility = self.visibility(cx);
+        let filtered_focus = self.filtered.focus_handle(cx);
         let option = |id: &'static str, label: &'static str, tip: &'static str, on: bool| {
             Toggle::new(id)
                 .label(label)
@@ -415,9 +417,22 @@ impl Crawler {
                     .tooltip("Lines shown below (v / shift-v)")
                     .small()
                     .outline()
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.set_visibility(visibility.next(), cx)
-                    })),
+                    .dropdown_caret(true)
+                    .dropdown_menu(move |menu, _, _| {
+                        // Actions go to the filtered view, the pane they change;
+                        // the menu shows their 1/2/3 shortcuts.
+                        let item = |menu: PopupMenu, v: Visibility, action: Box<dyn Action>| {
+                            menu.menu_with_check(v.label(), v == visibility, action)
+                        };
+                        let menu = menu.action_context(filtered_focus.clone());
+                        let menu = item(
+                            menu,
+                            Visibility::MarksAndMatches,
+                            Box::new(ShowMarksAndMatches),
+                        );
+                        let menu = item(menu, Visibility::Marks, Box::new(ShowMarks));
+                        item(menu, Visibility::Matches, Box::new(ShowMatches))
+                    }),
             )
             .child(div().flex_1().child(Input::new(&self.input).small()))
             .child(

@@ -883,7 +883,11 @@ impl Element for LogElement {
             theme.scrollbar,
             theme.scrollbar_thumb,
         );
-        let (match_color, mark_color) = (theme.danger, theme.info);
+        let bullet_colors = BulletColors {
+            matched: theme.red,
+            marked: theme.blue,
+            both: theme.magenta,
+        };
         let layout = frame.layout;
         let lh = layout.line_height;
 
@@ -916,7 +920,7 @@ impl Element for LogElement {
                         window
                             .paint_quad(fill(Bounds::new(point(x, row.y), size(w, lh)), highlight));
                     }
-                    paint_bullet(window, &layout, row, match_color, mark_color);
+                    paint_bullet(window, &layout, row, &bullet_colors);
                     let x = frame.gutter.right() - GUTTER_PAD - row.number.width;
                     row.number
                         .paint(point(x, row.y), lh, TextAlign::Left, None, window, cx)
@@ -990,22 +994,44 @@ impl Element for LogElement {
     }
 }
 
-/// klogg's bullets: an arrow-like tab on marked lines (red if also
-/// matched), a dot on matching lines.
-fn paint_bullet(window: &mut Window, layout: &Layout, row: &Row, matched: Hsla, marked: Hsla) {
-    let mid_x = layout.bullets.left() + BULLET_WIDTH / 2.;
+struct BulletColors {
+    matched: Hsla,
+    marked: Hsla,
+    /// Marked and matched (klogg: `markedMatchBrush`).
+    both: Hsla,
+}
+
+/// klogg's bullets (`AbstractLogView::drawTextArea`): an arrow on marked
+/// lines, blue or, if the line also matches, magenta; a red dot on lines
+/// that only match.
+fn paint_bullet(window: &mut Window, layout: &Layout, row: &Row, colors: &BulletColors) {
+    let left = layout.bullets.left();
+    let mid_x = left + BULLET_WIDTH / 2.;
     let mid_y = row.y + layout.line_height / 2.;
     if row.kind.marked {
-        let color = if row.kind.matched { matched } else { marked };
-        let tab = Bounds::from_corners(
-            point(layout.bullets.left() + px(1.), mid_y - px(3.)),
-            point(layout.bullets.right() - px(1.), mid_y + px(3.)),
-        );
-        window.paint_quad(fill(tab, color).corner_radii(px(3.)));
+        let color = if row.kind.matched {
+            colors.both
+        } else {
+            colors.marked
+        };
+        // Shaft from the left edge, head pointing at the line number.
+        let (shaft, head) = (px(2.), px(4.5));
+        let mut arrow = gpui::PathBuilder::fill();
+        arrow.move_to(point(left + px(1.), mid_y - shaft));
+        arrow.line_to(point(mid_x, mid_y - shaft));
+        arrow.line_to(point(mid_x, mid_y - head));
+        arrow.line_to(point(layout.bullets.right() - px(1.), mid_y));
+        arrow.line_to(point(mid_x, mid_y + head));
+        arrow.line_to(point(mid_x, mid_y + shaft));
+        arrow.line_to(point(left + px(1.), mid_y + shaft));
+        arrow.close();
+        if let Ok(path) = arrow.build() {
+            window.paint_path(path, color);
+        }
     } else if row.kind.matched {
         let r = px(3.);
         let dot = Bounds::from_corners(point(mid_x - r, mid_y - r), point(mid_x + r, mid_y + r));
-        window.paint_quad(fill(dot, matched).corner_radii(r));
+        window.paint_quad(fill(dot, colors.matched).corner_radii(r));
     }
 }
 
