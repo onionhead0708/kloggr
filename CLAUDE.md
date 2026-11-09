@@ -95,12 +95,13 @@ scripts/bench-vs-klogg.sh 1024   # indexing time vs klogg on the same generated 
 - [x] Open file (dialog, drag and drop, CLI), recent files
 - [x] Benchmarks (criterion) for indexing and search on 1–10 GB files, compared with klogg (indexing and search done, 1 GiB results in `docs/benchmarks.md`; 10 GB runs still to do)
 
-### Phase 2: search and filtering
+### Phase 2: search and filtering ✅
 - [x] Regex, plain-text and case-insensitive search, plus klogg's boolean combinations (`regex/`): engine in `rlogg-core::search`; the search bar UI comes with the filtered view
 - [x] Filtered view (bottom pane) synced with the main view; marks (search bar, bullets, `m` `[` `]`, visibility `v` `1`–`3`; match highlighting in the text still todo)
 - [x] Quick find (incremental, next/previous): Ctrl+F, `'` `"`, `n` `N` F3 Ctrl+G, `*` `.` `/` `,`; occurrences highlighted in both views
 - [x] Jump to line: `[number] g`, `[number] j/k`, and Ctrl+L with a small input box (klogg `digitsBuffer_`, `LogViewJumpToLine`). klogg's `1`–`7` shortcuts are Alt+1…7 (`docs/decisions.md`)
 - [x] Overview bar showing match and mark positions (main view; click or drag to scroll)
+- [ ] Follow-up: highlight the search pattern's matches in the text of both views (only quick-find occurrences are highlighted so far)
 
 ### Phase 3: live files and workspace
 - [ ] Follow mode / tail: incremental reindex on growth, detect truncation (`filewatch/`)
