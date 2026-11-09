@@ -22,6 +22,7 @@ use rlogg_core::search::{self, FilteredLines, Matcher, Pattern, SearchProgress, 
 use rlogg_core::{Cancelled, LogFile};
 
 use crate::background;
+use crate::follow::{self, Watch};
 use crate::go_to_line::{self, GoToLine};
 use crate::log_view::{self, LogView, LogViewEvent};
 use crate::quick_find::{self, QuickFind, Target};
@@ -73,6 +74,9 @@ pub struct SearchOptions {
     pub regex: bool,
     pub inverse: bool,
     pub boolean: bool,
+    /// Search the lines appended to the file (klogg: "Auto-refresh", off by
+    /// default).
+    pub auto_refresh: bool,
 }
 
 impl Default for SearchOptions {
@@ -82,6 +86,7 @@ impl Default for SearchOptions {
             regex: true,
             inverse: false,
             boolean: false,
+            auto_refresh: false,
         }
     }
 }
@@ -119,15 +124,26 @@ pub struct Crawler {
     /// The view that last had focus: quick find works on it.
     pub(crate) target: Target,
     input: Entity<InputState>,
-    options: SearchOptions,
-    info: SearchInfo,
+    pub(crate) options: SearchOptions,
+    pub(crate) info: SearchInfo,
     /// The pattern of the last search started, re-run when a file is opened.
-    last_pattern: Option<Pattern>,
+    pub(crate) last_pattern: Option<Pattern>,
     searching: bool,
     /// Line last selected in either view (klogg: `currentLineNumber_`), to
     /// keep the filtered view near it after a search or visibility change.
     pub(crate) current_line: usize,
     pub(crate) go_to: GoToLine,
+    /// Follow mode, in both views (klogg: "Follow File").
+    pub(crate) following: bool,
+    pub(crate) watch: Watch,
+    /// Lines and bytes covered by the last finished search (`None`: none
+    /// finished); with auto-refresh, what comes after is searched when the
+    /// file grows.
+    pub(crate) searched: Option<(usize, usize)>,
+    /// Lines and bytes of the file snapshot the running search covers.
+    search_covers: (usize, usize),
+    /// The running search only adds the lines appended to the file.
+    updating: bool,
     cancel: Arc<AtomicBool>,
     _search: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -157,17 +173,21 @@ impl Crawler {
                     this.start_search(cx);
                 }
             }),
-            cx.subscribe(&main, |this, _, event: &LogViewEvent, _| match *event {
+            cx.subscribe(&main, |this, _, event: &LogViewEvent, cx| match *event {
                 LogViewEvent::LineSelected(line) => this.current_line = line,
+                LogViewEvent::FollowChanged(on) => this.set_follow(on, cx),
             }),
             cx.subscribe(
                 &filtered,
                 |this, _, event: &LogViewEvent, cx| match *event {
                     LogViewEvent::LineSelected(line) => {
-                        // klogg: `jumpToMatchingLine`.
+                        // klogg: `jumpToMatchingLine`, which also stops
+                        // following.
                         this.current_line = line;
+                        this.set_follow(false, cx);
                         this.main.update(cx, |v, cx| v.show_line(line, cx));
                     }
+                    LogViewEvent::FollowChanged(on) => this.set_follow(on, cx),
                 },
             ),
             cx.observe(&filter, |_, _, cx| cx.notify()),
@@ -215,6 +235,11 @@ impl Crawler {
             searching: false,
             current_line: 0,
             go_to,
+            following: false,
+            watch: Watch::default(),
+            searched: None,
+            search_covers: (0, 0),
+            updating: false,
             cancel: Arc::default(),
             _search: None,
             _subscriptions: subscriptions,
@@ -234,9 +259,11 @@ impl Crawler {
         self.main.update(cx, |v, cx| v.set_log(log.clone(), cx));
         self.filtered.update(cx, |v, cx| v.set_log(log, cx));
         self.info = SearchInfo::default();
+        self.searched = None;
         if let (Some(pattern), Some(_)) = (self.last_pattern.clone(), &self.log) {
             self.run(pattern, cx);
         }
+        self.start_watching(cx);
         cx.notify();
     }
 
@@ -270,7 +297,6 @@ impl Crawler {
         self.options
     }
 
-    #[cfg(test)]
     pub fn is_searching(&self) -> bool {
         self.searching
     }
@@ -332,13 +358,30 @@ impl Crawler {
         }
     }
 
-    fn run(&mut self, pattern: Pattern, cx: &mut Context<Self>) {
+    pub(crate) fn run(&mut self, pattern: Pattern, cx: &mut Context<Self>) {
+        self.run_from(pattern, None, cx);
+    }
+
+    /// A new search that replaces the matches, or with `update`, a search of
+    /// lines `update..` that adds to them: the lines appended to the file
+    /// (klogg: `updateSearch`).
+    pub(crate) fn run_from(
+        &mut self,
+        pattern: Pattern,
+        update: Option<usize>,
+        cx: &mut Context<Self>,
+    ) {
         self.stop_search();
-        self.filter.update(cx, |f, cx| {
-            f.clear_matches();
-            cx.notify();
-        });
-        self.filtered.update(cx, |v, cx| v.reset(cx));
+        self.updating = update.is_some();
+        let from = update.unwrap_or(0);
+        if !self.updating {
+            self.searched = None;
+            self.filter.update(cx, |f, cx| {
+                f.clear_matches();
+                cx.notify();
+            });
+            self.filtered.update(cx, |v, cx| v.reset(cx));
+        }
         let matcher = match Matcher::new(&pattern) {
             Ok(m) => m,
             Err(e) => {
@@ -359,6 +402,7 @@ impl Crawler {
         let Some(log) = self.log.clone() else {
             return;
         };
+        self.search_covers = (log.line_count(), log.bytes().len());
         self.searching = true;
         self.info = SearchInfo {
             text: "Search in progress…".into(),
@@ -370,9 +414,10 @@ impl Crawler {
         background::spawn_blocking(
             "rlogg-search",
             move || {
-                let result = search::search(&log, &matcher, 0..usize::MAX, &cancel, |p, found| {
-                    tx.send_blocking(SearchEvent::Batch(p, found.to_vec())).ok();
-                });
+                let result =
+                    search::search(&log, &matcher, from..usize::MAX, &cancel, |p, found| {
+                        tx.send_blocking(SearchEvent::Batch(p, found.to_vec())).ok();
+                    });
                 tx.send_blocking(SearchEvent::Done(result)).ok();
             },
             cx,
@@ -392,7 +437,11 @@ impl Crawler {
 
     fn on_search_event(&mut self, event: SearchEvent, cx: &mut Context<Self>) {
         match event {
-            SearchEvent::Batch(progress, found) => {
+            SearchEvent::Batch(progress, mut found) => {
+                // An update re-checks the last line, which may have grown.
+                if let Some(last) = self.filter.read(cx).matches().max() {
+                    found.retain(|&l| l > last);
+                }
                 if !found.is_empty() {
                     self.filter.update(cx, |f, cx| {
                         f.add_matches(&found);
@@ -407,11 +456,17 @@ impl Crawler {
             }
             SearchEvent::Done(Ok(())) => {
                 self.searching = false;
+                self.searched = Some(self.search_covers);
                 let count = self.filter.read(cx).matches().len();
                 self.info.text = format!("{} found", matches_text(count));
-                // klogg: restore the filtered selection near the current line.
-                let line = self.current_line;
-                self.filtered.update(cx, |v, cx| v.show_line(line, cx));
+                if !self.updating {
+                    // klogg: restore the filtered selection near the current
+                    // line.
+                    let line = self.current_line;
+                    self.filtered.update(cx, |v, cx| v.show_line(line, cx));
+                }
+                // The file may have grown during the search.
+                self.refresh_search(cx);
             }
             SearchEvent::Done(Err(Cancelled)) => self.searching = false,
         }
@@ -532,7 +587,27 @@ impl Crawler {
                     cx.listener(|this, on: &bool, _, cx| this.toggle(|o| o.boolean = *on, cx)),
                 ),
             )
+            .child(
+                option(
+                    "auto-refresh",
+                    "⟳",
+                    "Auto-refresh: search new lines",
+                    o.auto_refresh,
+                )
+                .on_click(cx.listener(|this, on: &bool, _, cx| {
+                    this.toggle(|o| o.auto_refresh = *on, cx);
+                    this.refresh_search(cx);
+                })),
+            )
             .child(action_button)
+            .child(
+                Toggle::new("follow")
+                    .label("Follow")
+                    .tooltip("Follow the end of the file (f, F10)")
+                    .checked(self.following)
+                    .small()
+                    .on_click(cx.listener(|this, on: &bool, _, cx| this.set_follow(*on, cx))),
+            )
     }
 }
 
@@ -643,6 +718,9 @@ impl Render for Crawler {
             .on_action(cx.listener(|this, _: &quick_find::Close, window, cx| {
                 this.close_quick_find(window, cx)
             }))
+            .on_action(cx.listener(|this, _: &follow::ToggleFollow, _, cx| {
+                this.set_follow(!this.following, cx)
+            }))
             .on_action(cx.listener(|this, _: &go_to_line::Open, window, cx| {
                 this.open_go_to_line(window, cx)
             }))
@@ -729,6 +807,7 @@ mod tests {
             cx.bind_keys(log_view::key_bindings());
             cx.bind_keys(key_bindings());
             cx.bind_keys(go_to_line::key_bindings());
+            cx.bind_keys(follow::key_bindings());
         });
         let file = Arc::new(LogFile::open(&log.0).unwrap());
         let (crawler, cx) = cx.add_window_view(Crawler::new);
@@ -932,7 +1011,8 @@ mod tests {
                 match_case: false,
                 regex: false,
                 inverse: true,
-                boolean: true
+                boolean: true,
+                auto_refresh: false
             }
         );
         cx.simulate_keystrokes("ctrl-s");
@@ -1074,5 +1154,122 @@ mod tests {
         search(&crawler, cx, "ERROR", SearchOptions::default());
         search(&crawler, cx, "", SearchOptions::default());
         assert_eq!(highlighted(cx), (false, false));
+    }
+
+    fn append(log: &TempLog, text: &str) {
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&log.0)
+            .unwrap()
+            .write_all(text.as_bytes())
+            .unwrap();
+    }
+
+    /// What the watcher does when the file changes.
+    fn file_changed(crawler: &Entity<Crawler>, cx: &mut VisualTestContext) {
+        let tx = crawler.read_with(cx, |c, _| c.watch.changed.clone().unwrap());
+        tx.try_send(()).unwrap();
+        cx.run_until_parked();
+    }
+
+    fn line_count(crawler: &Entity<Crawler>, cx: &mut VisualTestContext) -> usize {
+        crawler.read_with(cx, |c, _| c.log().unwrap().line_count())
+    }
+
+    #[gpui::test]
+    fn growth_keeps_the_view_and_follow_sticks_to_the_bottom(cx: &mut TestAppContext) {
+        let log = TempLog::new("grow", 200);
+        let (crawler, cx) = crawler(cx, &log);
+        let main = crawler.read_with(cx, |c, _| c.main_view().clone());
+        cx.simulate_keystrokes("down down down");
+        let top = main.read_with(cx, |v, _| v.viewport().top());
+        append(&log, "new 200\nnew 201\n");
+        file_changed(&crawler, cx);
+        assert_eq!(line_count(&crawler, cx), 202);
+        assert_eq!(selection(&main, cx), Selection::Line(2));
+        assert_eq!(main.read_with(cx, |v, _| v.viewport().top()), top);
+
+        // f: follow; the view goes to the bottom and stays there.
+        cx.simulate_keystrokes("f");
+        assert!(crawler.read_with(cx, |c, _| c.following));
+        let at_bottom = |cx: &mut VisualTestContext| {
+            main.read_with(cx, |v, _| {
+                let vp = v.viewport();
+                vp.top() >= vp.max_top() - 1e-6 && vp.max_top() > 0.
+            })
+        };
+        append(&log, &"more\n".repeat(100));
+        file_changed(&crawler, cx);
+        cx.run_until_parked();
+        assert_eq!(line_count(&crawler, cx), 302);
+        assert!(at_bottom(cx));
+        // Scrolling up leaves follow mode.
+        cx.simulate_keystrokes("pageup");
+        assert!(!crawler.read_with(cx, |c, _| c.following));
+        // Shift+G twice: to the bottom, then following again (klogg).
+        cx.simulate_keystrokes("shift-g");
+        assert!(!crawler.read_with(cx, |c, _| c.following));
+        cx.simulate_keystrokes("shift-g");
+        assert!(crawler.read_with(cx, |c, _| c.following));
+        assert!(main.read_with(cx, |v, _| v.is_following()));
+        // Ctrl+L jumps elsewhere: not following any more.
+        crawler.update(cx, |c, cx| c.go_to_line(5, cx));
+        assert!(!crawler.read_with(cx, |c, _| c.following));
+    }
+
+    #[gpui::test]
+    fn auto_refresh_searches_new_lines(cx: &mut TestAppContext) {
+        let log = TempLog::new("refresh", 6);
+        let (crawler, cx) = crawler(cx, &log);
+        assert_eq!(
+            search(&crawler, cx, "ERROR", SearchOptions::default()),
+            [0, 3]
+        );
+        // Off (klogg's default): new lines are not searched.
+        append(&log, "x ERROR\n");
+        file_changed(&crawler, cx);
+        assert_eq!(matches(&crawler, cx), [0, 3]);
+        // On: the lines added since the last search are.
+        let on = SearchOptions {
+            auto_refresh: true,
+            ..SearchOptions::default()
+        };
+        assert_eq!(search(&crawler, cx, "ERROR", on), [0, 3, 6]);
+        append(&log, "y\nz ERR");
+        file_changed(&crawler, cx);
+        assert_eq!(matches(&crawler, cx), [0, 3, 6]);
+        // The incomplete last line is searched again once it grows.
+        append(&log, "OR\n");
+        file_changed(&crawler, cx);
+        assert_eq!(matches(&crawler, cx), [0, 3, 6, 8]);
+        assert_eq!(info(&crawler, cx).text, "4 matches found");
+    }
+
+    #[gpui::test]
+    fn truncation_drops_marks_and_results(cx: &mut TestAppContext) {
+        let log = TempLog::new("truncate", 9);
+        let (crawler, cx) = crawler(cx, &log);
+        search(&crawler, cx, "ERROR", SearchOptions::default());
+        crawler.update(cx, |c, cx| c.toggle_marks_for_test(4, cx));
+        std::fs::write(&log.0, "a ERROR\nb\n").unwrap();
+        file_changed(&crawler, cx);
+        assert_eq!(line_count(&crawler, cx), 2);
+        let (marks, rows) = crawler.read_with(cx, |c, cx| {
+            let f = c.filter().read(cx);
+            (f.marks().len(), f.row_count())
+        });
+        assert_eq!((marks, rows), (0, 0));
+        assert!(crawler.read_with(cx, |c, _| c.last_pattern.is_none()));
+
+        // With auto-refresh, the search runs again on the new content.
+        let on = SearchOptions {
+            auto_refresh: true,
+            ..SearchOptions::default()
+        };
+        search(&crawler, cx, "ERROR", on);
+        std::fs::write(&log.0, "ERROR\nERROR\nx\n").unwrap();
+        file_changed(&crawler, cx);
+        assert_eq!(matches(&crawler, cx), [0, 1]);
     }
 }

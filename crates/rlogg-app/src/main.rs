@@ -2,6 +2,7 @@
 
 mod background;
 mod crawler;
+mod follow;
 mod go_to_line;
 mod log_view;
 mod quick_find;
@@ -25,6 +26,7 @@ fn main() {
         cx.bind_keys(crawler::key_bindings());
         cx.bind_keys(quick_find::key_bindings());
         cx.bind_keys(go_to_line::key_bindings());
+        cx.bind_keys(follow::key_bindings());
         cx.bind_keys(workspace::key_bindings());
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.open_window(WindowOptions::default(), |window, cx| {

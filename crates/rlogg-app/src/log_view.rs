@@ -107,6 +107,9 @@ pub fn key_bindings() -> Vec<KeyBinding> {
 pub enum LogViewEvent {
     /// The file line under the keyboard cursor, after a click or a key.
     LineSelected(usize),
+    /// The user left the bottom while following, or asked to follow again
+    /// by going to the bottom (klogg: `followModeChanged`).
+    FollowChanged(bool),
 }
 
 const SCROLLBAR: Pixels = px(12.);
@@ -169,6 +172,9 @@ pub struct LogView {
     /// Search pattern: its matches on visible rows are highlighted (klogg:
     /// `searchPattern_`, "main search highlight").
     search_highlight: Option<Arc<Matcher>>,
+    /// Follow mode: the view stays at the bottom as the file grows (klogg:
+    /// `followElasticHook_`).
+    following: bool,
     /// Digits typed before a command (klogg: `digitsBuffer_`).
     digits: DigitsBuffer,
     /// Overview ticks, with the (filter generation, line count, height) they
@@ -193,6 +199,7 @@ impl LogView {
             hscroll_carry: px(0.),
             quick_find: None,
             search_highlight: None,
+            following: false,
             digits: DigitsBuffer::new(),
             overview: None,
         }
@@ -209,6 +216,43 @@ impl LogView {
     pub fn set_log(&mut self, log: Option<Arc<LogFile>>, cx: &mut Context<Self>) {
         self.log = log;
         self.reset(cx);
+    }
+
+    /// Shows a newer snapshot of the same file (it grew): keeps the
+    /// selection and the scroll position.
+    pub fn update_log(&mut self, log: Arc<LogFile>, cx: &mut Context<Self>) {
+        self.viewport
+            .grow_max_cols(log.index().max_line_len() as usize);
+        self.log = Some(log);
+        cx.notify();
+    }
+
+    /// Turns follow mode on or off; on, the view jumps to the bottom and
+    /// stays there.
+    pub fn set_following(&mut self, following: bool, cx: &mut Context<Self>) {
+        self.following = following;
+        if following {
+            self.viewport.set_top(f64::MAX);
+        }
+        cx.notify();
+    }
+
+    #[cfg(test)]
+    pub fn is_following(&self) -> bool {
+        self.following
+    }
+
+    fn at_bottom(&self) -> bool {
+        self.viewport.top() >= self.viewport.max_top() - 1e-6
+    }
+
+    /// After the user moved the view: leaving the bottom ends follow mode
+    /// (klogg: `disableFollow`).
+    fn check_follow(&mut self, cx: &mut Context<Self>) {
+        if self.following && !self.at_bottom() {
+            self.following = false;
+            cx.emit(LogViewEvent::FollowChanged(false));
+        }
     }
 
     /// Clears the selection and scrolls back to the top, e.g. when the rows
@@ -293,6 +337,7 @@ impl LogView {
         self.cursor = row;
         self.select(Selection::Line(row), cx);
         self.viewport.reveal_line(row);
+        self.check_follow(cx);
         cx.notify();
     }
 
@@ -353,6 +398,7 @@ impl LogView {
         self.viewport.reveal_line(found.row);
         self.viewport.reveal_col(last);
         self.viewport.reveal_col(found.cols.start);
+        self.check_follow(cx);
         cx.notify();
     }
 
@@ -470,6 +516,7 @@ impl LogView {
         self.cursor = line;
         self.select(self.selection.extended_to(line), cx);
         self.viewport.reveal_line(line);
+        self.check_follow(cx);
         cx.notify();
     }
 
@@ -586,6 +633,7 @@ impl LogView {
                 self.select(selection, cx);
             }
         }
+        self.check_follow(cx);
         cx.notify();
     }
 
@@ -648,6 +696,7 @@ impl LogView {
                 self.grab = Some(MouseGrab::Text(drag));
             }
         }
+        self.check_follow(cx);
         cx.notify();
     }
 
@@ -693,8 +742,14 @@ impl LogView {
         } else {
             (delta.x, delta.y)
         };
-        self.viewport
-            .scroll_lines(-f64::from(dy / layout.line_height));
+        let lines = -f64::from(dy / layout.line_height);
+        // klogg (`allowFollowOnScroll`): scrolling down at the bottom
+        // starts following.
+        if lines > 0. && self.at_bottom() && !self.following {
+            cx.emit(LogViewEvent::FollowChanged(true));
+        }
+        self.viewport.scroll_lines(lines);
+        self.check_follow(cx);
         self.hscroll_carry -= dx;
         let cols = (self.hscroll_carry / layout.char_width).trunc();
         if cols != 0. {
@@ -726,6 +781,7 @@ impl Render for LogView {
             .on_action(cx.listener(|v, _: &ExtendDown, _, cx| v.extend_selection(false, cx)))
             .on_action(cx.listener(|v, _: &PageUp, _, cx| {
                 v.viewport.scroll_lines(-v.viewport.page());
+                v.check_follow(cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|v, _: &PageDown, _, cx| {
@@ -758,8 +814,13 @@ impl Render for LogView {
             }))
             .on_action(cx.listener(|v, _: &Top, _, cx| v.select_and_reveal(0, cx)))
             .on_action(cx.listener(|v, _: &Bottom, _, cx| {
+                // klogg: at the bottom already, Shift+G starts following.
+                let was_at_bottom = v.at_bottom();
                 v.select_and_reveal(usize::MAX, cx);
                 v.viewport.set_top(f64::MAX);
+                if was_at_bottom && !v.following {
+                    cx.emit(LogViewEvent::FollowChanged(true));
+                }
             }))
             .on_action(cx.listener(|v, _: &SelectAll, _, cx| {
                 if let Some(last) = v.row_count(cx).checked_sub(1) {
@@ -929,6 +990,9 @@ impl Element for LogElement {
             let rows = f64::from(text_bounds.size.height / metrics.line_height);
             let cols = (text_bounds.size.width / metrics.char_width).max(0.) as usize;
             view.viewport.set_size(line_count, rows, cols);
+            if view.following {
+                view.viewport.set_top(f64::MAX);
+            }
 
             // Visible rows: decode and shape only the visible columns.
             let mut out = Vec::new();

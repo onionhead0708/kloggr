@@ -8,6 +8,30 @@ Newest first. Each entry gives the date, what klogg does, what rlogg does, and w
 
 ---
 
+## 2026-11-09: Changed files are detected by sampling, not by hashing the whole file
+
+**klogg:** when the file changes on disk, klogg hashes the whole indexed part again by default (`fastModificationDetection_ = false`) to tell appended data from a rewrite. A faster header-and-tail hash is an option.
+
+**rlogg:** compares the file's identity (device and inode), its size, and the first and last 64 KiB of the indexed part with the file on disk (`LogFile::check`). This always reads at most 128 KiB.
+
+**Why:** hashing a multi-GB file on every write makes following a busy log impossible. A rewrite of the same size that leaves both ends unchanged goes unnoticed, which is the same limit as klogg's fast mode. If that becomes a problem, add a setting for a full check, as klogg has.
+
+## 2026-11-09: Follow mode starts again from a simple scroll at the bottom
+
+**klogg:** while you're at the bottom, follow mode starts again after you "pull" the view past the end by a set distance (`followElasticHook_`, `HookThreshold`), and the view draws the pull.
+
+**rlogg:** any wheel scroll down while already at the bottom starts follow mode again, as does Shift+G at the bottom (also in klogg). Scrolling up, Page Up, a jump (marks, `g`, Ctrl+L, quick find) or selecting a row in the filtered view stops it.
+
+**Why:** this is simpler, and it doesn't need the elastic animation. Revisit it if starting follow by accident turns out to be annoying.
+
+## 2026-11-09: Auto-refresh searches the incomplete last line again
+
+**klogg:** `updateSearch` continues from the number of lines already processed.
+
+**rlogg:** continues from the last searched line, so a line that was still being written during the last search is searched again once it's complete. Duplicate matches are dropped. Auto-refresh is off by default, as in klogg.
+
+**Why:** logs are often read while a line is half written. Without this, such a line would never match.
+
 ## 2026-11-09: Search matches are highlighted in the text by default
 
 **klogg:** the main search pattern's matches can be highlighted in both views. This option ("main search highlight", `enableMainSearchHighlight_`) is **off** by default, and its colour is light gray. Excluding and boolean patterns are never highlighted.

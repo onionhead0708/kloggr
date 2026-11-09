@@ -26,7 +26,7 @@ stays GPLv3. Keep klogg's copyright notices where code is translated closely.
 | `logdata/` EncodingDetector | `rlogg-core::encoding` | encoding_rs, chardetng |
 | `logdata/` LogFilteredData(Worker) | `rlogg-core::search` (search driver, `LineSet`, `FilteredLines` done) | regex, rayon, roaring |
 | `regex/` (Hyperscan / QRegularExpression, boolean combos; exprtk) | `rlogg-core::search` (done; own boolean parser instead of exprtk) | regex |
-| `filewatch/` (efsw) | `rlogg-core::watch` (todo) | notify |
+| `filewatch/` (efsw) | `rlogg-core::watch` (done), reload in `rlogg-core::file`, app `follow` | notify |
 | `settings/`, `ui/session*`, `ui/recentfiles*` | `rlogg-core::settings` (recent files done) | serde, toml, directories |
 | `ui/abstractlogview`, `logmainview`, `filteredview`, `frozencolumns`, `overview*` | `rlogg-app` log view widget | gpui |
 | `ui/crawlerwidget`, `tabbedcrawlerwidget`, `mainwindow`, `menu` | `rlogg-app` workspace, tabs, menus | gpui-component |
@@ -104,7 +104,7 @@ scripts/bench-vs-klogg.sh 1024   # indexing time vs klogg on the same generated 
 - [x] Follow-up: highlight the search pattern's matches in the text of both views (on by default, unlike klogg: `docs/decisions.md`)
 
 ### Phase 3: live files and workspace
-- [ ] Follow mode / tail: incremental reindex on growth, detect truncation (`filewatch/`)
+- [x] Follow mode / tail: incremental reindex on growth, detect truncation and rotation (`filewatch/`); `f` / F10, search auto-refresh
 - [ ] Tabs and multiple files, sessions
 - [ ] Highlighters and highlighter sets, color labels
 - [ ] Frozen columns (klogg `frozencolumns`)

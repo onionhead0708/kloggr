@@ -115,6 +115,7 @@ impl Crawler {
         };
         let line = line.min(last);
         self.current_line = line;
+        self.set_follow(false, cx);
         self.main.update(cx, |v, cx| v.show_line(line, cx));
         self.filtered.update(cx, |v, cx| v.show_line(line, cx));
     }
