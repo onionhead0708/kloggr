@@ -69,3 +69,29 @@ Observations for later work:
   but a smaller sample would do.
 - Short lines are the slowest case (1.1 GiB/s): the sequential append into the
   compressed index is the bottleneck, not the parallel scan.
+
+## 2026-11-09: search, 1 GiB, rlogg feat/search
+
+Same machine and files. `search::search_all` over the whole file: parallel per-line
+matching with the `regex` crate, results in a Roaring bitmap. Criterion, warm cache.
+
+| benchmark | time | throughput |
+|---|---|---|
+| plain, rare (`id=123456 `) | 286 ms | 3.50 GiB/s |
+| plain, ~20% of lines (`ERROR`) | 301 ms | 3.32 GiB/s |
+| plain, case-insensitive (`error`) | 406 ms | 2.46 GiB/s |
+| regex (`took=\d{4}ms`) | 549 ms | 1.82 GiB/s |
+| exclude (`DEBUG`, inverse) | 334 ms | 2.99 GiB/s |
+| boolean (`"ERROR" and "timeout" and not("worker-1\b")`) | 412 ms | 2.43 GiB/s |
+| plain, short lines (`cache`) | 1996 ms | 0.51 GiB/s |
+| plain, UTF-16LE (`ERROR`, decoded per line) | 431 ms | 2.32 GiB/s |
+
+Notes:
+- **Boolean**: sub-patterns are matched lazily while the expression is evaluated, so
+  `and`/`or` short-circuit. A `RegexSet` that runs every sub-pattern on every line took
+  1187 ms.
+- **Short lines** are bound by per-line overhead (~55M lines). A possible speed-up for
+  UTF-8 files: run the regex over whole blocks and check only the lines where a
+  candidate match starts (care needed with `\A`/`\z` and matches that cross lines).
+- No klogg comparison yet: klogg has no headless search mode to time it the way
+  `scripts/bench-vs-klogg.sh` times indexing.

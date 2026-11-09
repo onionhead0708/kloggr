@@ -23,8 +23,8 @@ stays GPLv3. Keep klogg's copyright notices where code is translated closely.
 |---|---|---|
 | `logdata/` FileHolder, LogData, LinePositionArray, CompressedLineStorage, LogDataWorker | `rlogg-core::{file, line_index}` | memmap2, rayon |
 | `logdata/` EncodingDetector | `rlogg-core::encoding` | encoding_rs, chardetng |
-| `logdata/` LogFilteredData(Worker) | `rlogg-core::filter` (todo) | regex, rayon, crossbeam-channel |
-| `regex/` (Hyperscan / QRegularExpression, boolean combos) | `rlogg-core::search` (todo) | regex, regex-automata (RegexSet) |
+| `logdata/` LogFilteredData(Worker) | `rlogg-core::search` (search driver, `LineSet` done; filtered data + marks todo) | regex, rayon, roaring |
+| `regex/` (Hyperscan / QRegularExpression, boolean combos; exprtk) | `rlogg-core::search` (done; own boolean parser instead of exprtk) | regex |
 | `filewatch/` (efsw) | `rlogg-core::watch` (todo) | notify |
 | `settings/`, `ui/session*`, `ui/recentfiles*` | `rlogg-core::settings` (recent files done) | serde, toml, directories |
 | `ui/abstractlogview`, `logmainview`, `filteredview`, `frozencolumns`, `overview*` | `rlogg-app` log view widget | gpui |
@@ -91,10 +91,10 @@ scripts/bench-vs-klogg.sh 1024   # indexing time vs klogg on the same generated 
 - [x] Encoding detection and decoding: UTF-8, UTF-16LE/BE, Latin-1, etc. (`EncodingDetector`)
 - [x] Custom log view element: line numbers, selection, copy, horizontal scroll, long-line handling
 - [x] Open file (dialog, drag and drop, CLI), recent files
-- [x] Benchmarks (criterion) for indexing and search on 1–10 GB files, compared with klogg (indexing done, 1 GiB results in `docs/benchmarks.md`; add search benches with Phase 2, run 10 GB)
+- [x] Benchmarks (criterion) for indexing and search on 1–10 GB files, compared with klogg (indexing and search done, 1 GiB results in `docs/benchmarks.md`; 10 GB runs still to do)
 
 ### Phase 2: search and filtering
-- [ ] Regex, plain-text and case-insensitive search, plus klogg's boolean combinations (`regex/`)
+- [x] Regex, plain-text and case-insensitive search, plus klogg's boolean combinations (`regex/`): engine in `rlogg-core::search`; the search bar UI comes with the filtered view
 - [ ] Filtered view (bottom pane) synced with the main view; marks
 - [ ] Quick find (incremental, next/previous)
 - [ ] Jump to line: digits then `g`, and Ctrl+L with a small input box (klogg `digitsBuffer_`, `LogViewJumpToLine`)

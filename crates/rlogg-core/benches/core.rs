@@ -16,7 +16,9 @@ use std::time::Duration;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use generate::Profile;
 use rlogg_core::line_index::CompressedOffsets;
+use rlogg_core::search::{self, Matcher, Pattern};
 use rlogg_core::{Encoding, LineIndex, LogFile, encoding, text};
+use std::sync::atomic::AtomicBool;
 
 fn size_mb() -> u64 {
     std::env::var("RLOGG_BENCH_SIZE_MB")
@@ -54,6 +56,48 @@ fn index(c: &mut Criterion) {
             BenchmarkId::new(profile.name(), format!("{}MiB", size_mb())),
             |b| b.iter(|| LogFile::open(black_box(&path)).unwrap()),
         );
+    }
+    group.finish();
+}
+
+/// Full-file search (klogg: `SearchOperation`), on the typical file unless
+/// the case names another profile.
+fn search(c: &mut Criterion) {
+    let cases: [(&str, Profile, Pattern); 8] = [
+        ("plain_rare", Profile::Typical, Pattern::plain("id=123456 ")),
+        ("plain_common", Profile::Typical, Pattern::plain("ERROR")),
+        (
+            "plain_case_insensitive",
+            Profile::Typical,
+            Pattern::plain("error").case_insensitive(),
+        ),
+        ("regex", Profile::Typical, Pattern::regex(r"took=\d{4}ms")),
+        (
+            "exclude",
+            Profile::Typical,
+            Pattern::plain("DEBUG").excluding(),
+        ),
+        (
+            "boolean",
+            Profile::Typical,
+            Pattern::regex(r#""ERROR" and "timeout" and not("worker-1\b")"#).boolean(),
+        ),
+        ("plain_short_lines", Profile::Short, Pattern::plain("cache")),
+        ("plain_utf16", Profile::Utf16, Pattern::plain("ERROR")),
+    ];
+    let mut group = c.benchmark_group("search");
+    group
+        .sample_size(10)
+        .measurement_time(Duration::from_secs(20));
+    let never = AtomicBool::new(false);
+    for (name, profile, pattern) in cases {
+        let path = generate::cached(&data_dir(), profile, size_mb());
+        let log = LogFile::open(&path).unwrap();
+        let matcher = Matcher::new(&pattern).unwrap();
+        group.throughput(Throughput::Bytes(log.bytes().len() as u64));
+        group.bench_function(BenchmarkId::new(name, format!("{}MiB", size_mb())), |b| {
+            b.iter(|| search::search_all(&log, &matcher, 0..usize::MAX, &never).unwrap())
+        });
     }
     group.finish();
 }
@@ -176,6 +220,7 @@ fn compressed_offsets(c: &mut Criterion) {
 criterion_group!(
     benches,
     index,
+    search,
     line_access,
     long_line_window,
     detection,
