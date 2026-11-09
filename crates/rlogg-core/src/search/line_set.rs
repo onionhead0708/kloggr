@@ -93,6 +93,47 @@ impl LineSet {
         self.0.iter().map(|l| l as usize)
     }
 
+    /// Splits `0..total` into `buckets` equal parts and counts the lines of
+    /// the set in each, up to `cap`, leaving out lines where `skip` is true.
+    /// Returns `(bucket, count)` for the non-empty buckets, in order.
+    ///
+    /// Jumps over each bucket once `cap` lines are seen, so the cost depends
+    /// on `buckets` and `cap`, not on the size of the set (the overview bar
+    /// of a file with 100 M matches).
+    pub fn bucket_counts(
+        &self,
+        total: usize,
+        buckets: usize,
+        cap: usize,
+        skip: impl Fn(usize) -> bool,
+    ) -> Vec<(usize, usize)> {
+        let mut out: Vec<(usize, usize)> = Vec::new();
+        if total == 0 || buckets == 0 || cap == 0 {
+            return out;
+        }
+        let bucket_of = |line: u64| (u128::from(line) * buckets as u128 / total as u128) as usize;
+        // First line of bucket `b`: ceil(b * total / buckets).
+        let start_of = |b: usize| (b as u128 * total as u128).div_ceil(buckets as u128) as u64;
+        let mut it = self.0.iter();
+        while let Some(line) = it.next() {
+            if line >= total as u64 {
+                break;
+            }
+            if skip(line as usize) {
+                continue;
+            }
+            let bucket = bucket_of(line);
+            match out.last_mut() {
+                Some((b, count)) if *b == bucket => *count += 1,
+                _ => out.push((bucket, 1)),
+            }
+            if out.last().is_some_and(|&(_, count)| count >= cap) {
+                it.advance_to(start_of(bucket + 1));
+            }
+        }
+        out
+    }
+
     /// Lines in either set (klogg: `marks_and_matches_`).
     pub fn union(&self, other: &LineSet) -> LineSet {
         LineSet(&self.0 | &other.0)

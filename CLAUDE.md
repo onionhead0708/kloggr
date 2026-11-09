@@ -100,7 +100,7 @@ scripts/bench-vs-klogg.sh 1024   # indexing time vs klogg on the same generated 
 - [x] Filtered view (bottom pane) synced with the main view; marks (search bar, bullets, `m` `[` `]`, visibility `v` `1`–`3`; match highlighting in the text still todo)
 - [x] Quick find (incremental, next/previous): Ctrl+F, `'` `"`, `n` `N` F3 Ctrl+G, `*` `.` `/` `,`; occurrences highlighted in both views
 - [x] Jump to line: `[number] g`, `[number] j/k`, and Ctrl+L with a small input box (klogg `digitsBuffer_`, `LogViewJumpToLine`). klogg's `1`–`7` shortcuts are Alt+1…7 (`docs/decisions.md`)
-- [ ] Overview bar showing match and mark positions
+- [x] Overview bar showing match and mark positions (main view; click or drag to scroll)
 
 ### Phase 3: live files and workspace
 - [ ] Follow mode / tail: incremental reindex on growth, detect truncation (`filewatch/`)

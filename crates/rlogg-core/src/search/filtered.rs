@@ -55,6 +55,9 @@ pub struct FilteredLines {
     /// `matches ∪ marks`, kept up to date (klogg: `marks_and_matches_`).
     both: LineSet,
     visibility: Visibility,
+    /// Bumped on every change of matches or marks, to let views cache what
+    /// they compute from them.
+    generation: u64,
 }
 
 impl FilteredLines {
@@ -68,6 +71,10 @@ impl FilteredLines {
 
     pub fn set_visibility(&mut self, visibility: Visibility) {
         self.visibility = visibility;
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     pub fn matches(&self) -> &LineSet {
@@ -112,6 +119,7 @@ impl FilteredLines {
     /// Drops the matches, keeping the marks (klogg: `clearSearch`). A new
     /// search in "Marks" visibility switches back to show its matches.
     pub fn clear_matches(&mut self) {
+        self.generation += 1;
         self.matches.clear();
         self.both = self.marks.clone();
         if !self.visibility.shows_matches() {
@@ -121,6 +129,7 @@ impl FilteredLines {
 
     /// Adds a batch of matches: sorted, and after those already added.
     pub fn add_matches(&mut self, lines: &[usize]) {
+        self.generation += 1;
         self.matches.append_sorted(lines);
         self.both.extend(lines.iter().copied());
     }
@@ -129,6 +138,7 @@ impl FilteredLines {
     /// `markLinesFromMain`). Lines `>= line_count` are ignored.
     pub fn toggle_marks(&mut self, lines: impl IntoIterator<Item = usize>, line_count: usize) {
         let lines: Vec<usize> = lines.into_iter().filter(|&l| l < line_count).collect();
+        self.generation += 1;
         if lines.iter().all(|&l| self.marks.contains(l)) {
             for l in lines {
                 self.marks.remove(l);
@@ -145,6 +155,7 @@ impl FilteredLines {
     }
 
     pub fn clear_marks(&mut self) {
+        self.generation += 1;
         self.marks.clear();
         self.both = self.matches.clone();
     }

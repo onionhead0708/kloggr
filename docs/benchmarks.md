@@ -109,3 +109,18 @@ Notes:
 Blocks of rows are checked in parallel and the first (last) block with a match wins.
 Decoding each block's line offsets once, instead of one index lookup per line,
 took this from 1383 ms to 291 ms. klogg scans line by line on one thread.
+
+### Overview bar (2026-11-09)
+
+`search::overview::Overview::new`: the ticks for a 1000-pixel bar over 10 M lines,
+with marks on every 1000th line.
+
+| matches | time |
+|---|---|
+| every line (10 M) | 0.33 ms |
+| 1 line in 100 (100 k) | 0.56 ms |
+
+Once a pixel row holds 3 lines (the darkest tick), the iterator jumps to the next
+row, so the cost depends on the bar height, not the match count. klogg walks every
+match and mark. The view caches the ticks until the matches, marks, file or bar
+height change.

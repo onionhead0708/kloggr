@@ -245,8 +245,28 @@ fn compressed_offsets(c: &mut Criterion) {
     group.finish();
 }
 
+/// Overview ticks for 10 M lines on a 1000-pixel bar: every line matched
+/// (the worst case, skipped over bucket by bucket) and 1 in 100.
+fn overview(c: &mut Criterion) {
+    use rlogg_core::search::FilteredLines;
+    use rlogg_core::search::overview::Overview;
+    let lines = 10_000_000;
+    let mut group = c.benchmark_group("overview");
+    for (name, step) in [("all", 1), ("1pct", 100)] {
+        let mut f = FilteredLines::new();
+        let matched: Vec<usize> = (0..lines).step_by(step).collect();
+        f.add_matches(&matched);
+        f.toggle_marks((0..lines).step_by(1000), lines);
+        group.bench_function(name, |b| {
+            b.iter(|| black_box(Overview::new(&f, lines, 1000)))
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
+    overview,
     index,
     search,
     quick_find,

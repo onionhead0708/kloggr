@@ -16,6 +16,11 @@
 //! the filtered view (klogg: `FilteredView`) shows the rows of a
 //! [`FilteredLines`]. Both draw klogg's bullet margin: a dot on matching
 //! lines, an arrow on marked ones; clicking the margin toggles a mark.
+//!
+//! The main view also draws klogg's overview bar between the text and the
+//! scrollbar: a tick per pixel row holding matches (red) or marks (blue),
+//! and the visible part of the file. Clicking or dragging on it scrolls
+//! there.
 
 use std::sync::Arc;
 
@@ -29,6 +34,7 @@ use gpui::{
 };
 use gpui_component::ActiveTheme;
 use rlogg_core::search::find::{self, Direction, Found};
+use rlogg_core::search::overview::{self, Overview};
 use rlogg_core::search::{FilteredLines, LineKind, Matcher};
 use rlogg_core::text;
 use rlogg_core::{DigitsBuffer, Drag, LogFile, Position, Selection, Viewport};
@@ -111,6 +117,9 @@ const BULLET_WIDTH: Pixels = px(11.);
 /// Lines longer than this (in bytes) get no quick-find highlights: finding
 /// them would decode the whole line on every frame.
 const MAX_HIGHLIGHT_LINE: usize = 256 << 10;
+/// klogg: `OverviewWidth`, `OverviewWidget::LINE_MARGIN`.
+const OVERVIEW_WIDTH: Pixels = px(27.);
+const OVERVIEW_MARGIN: Pixels = px(4.);
 
 /// Geometry of the last frame, used to map mouse positions.
 #[derive(Debug, Clone, Copy)]
@@ -124,6 +133,8 @@ struct Layout {
     vthumb: Bounds<Pixels>,
     htrack: Bounds<Pixels>,
     hthumb: Bounds<Pixels>,
+    /// The overview bar (main view only).
+    overview: Option<Bounds<Pixels>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -132,6 +143,8 @@ enum MouseGrab {
     /// Dragging a scrollbar thumb; offset of the grab point in the thumb.
     VThumb(Pixels),
     HThumb(Pixels),
+    /// Pressed on the overview bar: scrolls while dragging.
+    Overview,
 }
 
 pub struct LogView {
@@ -155,6 +168,9 @@ pub struct LogView {
     quick_find: Option<Arc<Matcher>>,
     /// Digits typed before a command (klogg: `digitsBuffer_`).
     digits: DigitsBuffer,
+    /// Overview ticks, with the (filter generation, line count, height) they
+    /// were computed for.
+    overview: Option<((u64, usize, usize), Arc<Overview>)>,
 }
 
 impl LogView {
@@ -174,6 +190,7 @@ impl LogView {
             hscroll_carry: px(0.),
             quick_find: None,
             digits: DigitsBuffer::new(),
+            overview: None,
         }
     }
 
@@ -508,7 +525,10 @@ impl LogView {
         window.focus(&self.focus, cx);
         let Some(layout) = self.layout else { return };
         let at = event.position;
-        if layout.vtrack.contains(&at) {
+        if layout.overview.is_some_and(|o| o.contains(&at)) {
+            self.grab = Some(MouseGrab::Overview);
+            self.scroll_to_overview(at, &layout);
+        } else if layout.vtrack.contains(&at) {
             if layout.vthumb.contains(&at) {
                 self.grab = Some(MouseGrab::VThumb(at.y - layout.vthumb.top()));
             } else {
@@ -580,6 +600,7 @@ impl LogView {
                         .set_left((ratio * self.viewport.max_left() as f32).round() as usize);
                 }
             }
+            MouseGrab::Overview => self.scroll_to_overview(at, &layout),
             MouseGrab::Text(drag) => {
                 let mut drag = *drag;
                 // Auto-scroll while dragging outside the text (klogg uses a
@@ -614,6 +635,33 @@ impl LogView {
             }
         }
         cx.notify();
+    }
+
+    /// Centers the line under `at` on the overview bar (klogg: `lineClicked`
+    /// → `jumpToLine`; the selection doesn't change).
+    fn scroll_to_overview(&mut self, at: Point<Pixels>, layout: &Layout) {
+        let Some(bar) = layout.overview else { return };
+        let height = f32::from(bar.size.height).floor().max(1.) as usize;
+        let y = f32::from((at.y - bar.top()).max(px(0.))) as usize;
+        let line = overview::line_at_y(y, self.viewport.line_count(), height);
+        self.viewport
+            .set_top(line as f64 - (self.viewport.rows() / 2.).floor());
+    }
+
+    /// Overview ticks for a bar `height` pixels tall, cached until the
+    /// matches, marks, file or height change.
+    fn overview_ticks(&mut self, height: usize, cx: &App) -> Option<Arc<Overview>> {
+        let filter = self.filter.as_ref()?.read(cx);
+        let line_count = self.log.as_ref()?.line_count();
+        let key = (filter.generation(), line_count, height);
+        match &self.overview {
+            Some((k, ticks)) if *k == key => Some(ticks.clone()),
+            _ => {
+                let ticks = Arc::new(Overview::new(filter, line_count, height));
+                self.overview = Some((key, ticks.clone()));
+                Some(ticks)
+            }
+        }
     }
 
     fn on_mouse_up(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -774,6 +822,13 @@ pub struct Frame {
     gutter: Bounds<Pixels>,
     rows: Vec<Row>,
     focused: bool,
+    overview: Option<OverviewFrame>,
+}
+
+pub struct OverviewFrame {
+    ticks: Arc<Overview>,
+    /// Pixel rows of the first and last visible lines.
+    view: (usize, usize),
 }
 
 struct LogElement {
@@ -843,9 +898,17 @@ impl Element for LogElement {
                 bounds.origin,
                 size(BULLET_WIDTH, bounds.size.height - SCROLLBAR),
             );
+            let with_overview = !view.filtered && view.filter.is_some();
+            let overview_bounds = with_overview.then(|| {
+                Bounds::from_corners(
+                    point(bounds.right() - SCROLLBAR - OVERVIEW_WIDTH, bounds.top()),
+                    point(bounds.right() - SCROLLBAR, bounds.bottom() - SCROLLBAR),
+                )
+            });
+            let text_right = overview_bounds.map_or(bounds.right() - SCROLLBAR, |o| o.left());
             let text_bounds = Bounds::from_corners(
                 point(gutter.right() + GUTTER_PAD / 2., bounds.top()),
-                point(bounds.right() - SCROLLBAR, bounds.bottom() - SCROLLBAR),
+                point(text_right, bounds.bottom() - SCROLLBAR),
             );
             let rows = f64::from(text_bounds.size.height / metrics.line_height);
             let cols = (text_bounds.size.width / metrics.char_width).max(0.) as usize;
@@ -969,14 +1032,29 @@ impl Element for LogElement {
                 vthumb,
                 htrack,
                 hthumb,
+                overview: overview_bounds,
             };
             view.layout = Some(layout);
+            let overview = overview_bounds.and_then(|bar| {
+                let height = f32::from(bar.size.height).floor().max(0.) as usize;
+                let ticks = view.overview_ticks(height, cx)?;
+                // The visible part of the file (klogg: `getViewLines`).
+                let lines = vp.line_count();
+                let top = overview::y_of_line(vp.first_line(), lines, height);
+                let shown = (vp.rows().ceil() as usize).min(lines);
+                let bottom = top + overview::y_of_line(shown, lines, height);
+                Some(OverviewFrame {
+                    ticks,
+                    view: (top, bottom.min(height.saturating_sub(1))),
+                })
+            });
             Frame {
                 hitbox,
                 layout,
                 gutter,
                 rows: out,
                 focused,
+                overview,
             }
         })
     }
@@ -1002,6 +1080,7 @@ impl Element for LogElement {
             theme.scrollbar_thumb,
         );
         let found_bg = theme.yellow.opacity(0.45);
+        let fg = theme.foreground;
         let bullet_colors = BulletColors {
             matched: theme.red,
             marked: theme.blue,
@@ -1073,6 +1152,10 @@ impl Element for LogElement {
             },
         );
 
+        if let (Some(bar), Some(o)) = (layout.overview, &frame.overview) {
+            paint_overview(window, bar, o, &bullet_colors, gutter_bg, border, fg);
+        }
+
         window.paint_quad(fill(layout.vtrack, track));
         window.paint_quad(fill(layout.htrack, track));
         window.paint_quad(fill(layout.vthumb, thumb));
@@ -1124,6 +1207,57 @@ struct BulletColors {
     marked: Hsla,
     /// Marked and matched (klogg: `markedMatchBrush`).
     both: Hsla,
+}
+
+/// klogg's overview bar (`OverviewWidget::paintEvent`): a separator, the
+/// match and mark ticks inset by a margin, and lines around the visible part.
+fn paint_overview(
+    window: &mut Window,
+    bar: Bounds<Pixels>,
+    frame: &OverviewFrame,
+    colors: &BulletColors,
+    bg: Hsla,
+    border: Hsla,
+    fg: Hsla,
+) {
+    window.paint_quad(fill(bar, bg));
+    window.paint_quad(fill(
+        Bounds::new(bar.origin, size(px(1.), bar.size.height)),
+        border,
+    ));
+    let tick = |window: &mut Window, y: usize, color: Hsla| {
+        let left = bar.left() + px(1.) + OVERVIEW_MARGIN;
+        let width = bar.size.width - px(2.) - OVERVIEW_MARGIN * 2.;
+        window.paint_quad(fill(
+            Bounds::new(point(left, bar.top() + px(y as f32)), size(width, px(1.))),
+            color,
+        ));
+    };
+    for t in &frame.ticks.matches {
+        tick(window, t.y, colors.matched.opacity(t.opacity()));
+    }
+    for t in &frame.ticks.marks {
+        tick(window, t.y, colors.marked.opacity(t.opacity()));
+    }
+    // The visible part: a light band between two lines.
+    let (top, bottom) = frame.view;
+    let y = |row: usize| bar.top() + px(row as f32);
+    window.paint_quad(fill(
+        Bounds::from_corners(
+            point(bar.left() + px(1.), y(top)),
+            point(bar.right(), y(bottom) + px(1.)),
+        ),
+        fg.opacity(0.08),
+    ));
+    for row in [top, bottom] {
+        window.paint_quad(fill(
+            Bounds::new(
+                point(bar.left() + px(1.), y(row)),
+                size(bar.size.width - px(1.), px(1.)),
+            ),
+            fg.opacity(0.7),
+        ));
+    }
 }
 
 /// klogg's bullets (`AbstractLogView::drawTextArea`): an arrow on marked
@@ -1317,6 +1451,58 @@ mod tests {
         assert_eq!(selection(&view, cx), Selection::None);
         cx.simulate_click(at, Modifiers::none());
         assert!(filter.read_with(cx, |f, _| f.marks().is_empty()));
+    }
+
+    #[gpui::test]
+    fn overview_bar(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx, "overview.log", &numbered(10_000));
+        // No filter: no bar.
+        assert!(layout(&view, cx).overview.is_none());
+        let filter = cx.new(|_| FilteredLines::new());
+        view.update(cx, |v, cx| v.set_filter(filter.clone(), cx));
+        filter.update(cx, |f, cx| {
+            f.add_matches(&[100, 5000]);
+            f.toggle_marks([9000], 10_000);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let l = layout(&view, cx);
+        let bar = l.overview.expect("main view with a filter has a bar");
+        assert!(l.text.right() <= bar.left() && bar.right() <= l.vtrack.left());
+        let ticks = view.read_with(cx, |v, _| v.overview.clone().unwrap().1);
+        let height = f32::from(bar.size.height).floor() as usize;
+        let y = |line| overview::y_of_line(line, 10_000, height);
+        assert_eq!(
+            ticks.matches.iter().map(|t| t.y).collect::<Vec<_>>(),
+            [y(100), y(5000)]
+        );
+        assert_eq!(
+            ticks.marks.iter().map(|t| t.y).collect::<Vec<_>>(),
+            [y(9000)]
+        );
+
+        // A click scrolls so that the line under it is centered, without
+        // selecting; dragging keeps scrolling.
+        let at = |frac: f32| point(bar.center().x, bar.top() + bar.size.height * frac);
+        cx.simulate_mouse_down(at(0.5), MouseButton::Left, Modifiers::none());
+        let vp = viewport(&view, cx);
+        let middle = vp.top() + (vp.rows() / 2.).floor();
+        assert!((middle - 5000.).abs() < 20., "{middle}");
+        assert_eq!(selection(&view, cx), Selection::None);
+        cx.simulate_mouse_move(at(0.25), MouseButton::Left, Modifiers::none());
+        let vp = viewport(&view, cx);
+        let middle = vp.top() + (vp.rows() / 2.).floor();
+        assert!((middle - 2500.).abs() < 20., "{middle}");
+        cx.simulate_mouse_up(at(0.25), MouseButton::Left, Modifiers::none());
+
+        // New marks are drawn: the cache follows the filter.
+        filter.update(cx, |f, cx| {
+            f.toggle_marks([0], 10_000);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let ticks = view.read_with(cx, |v, _| v.overview.clone().unwrap().1);
+        assert_eq!(ticks.marks.first().map(|t| t.y), Some(0));
     }
 
     #[gpui::test]

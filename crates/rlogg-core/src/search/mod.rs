@@ -14,6 +14,7 @@ mod filtered;
 pub mod find;
 mod line_set;
 mod matcher;
+pub mod overview;
 
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
