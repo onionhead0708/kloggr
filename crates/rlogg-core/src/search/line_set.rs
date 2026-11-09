@@ -48,6 +48,11 @@ impl LineSet {
         }
     }
 
+    /// Adds `lines`, in any order.
+    pub fn extend(&mut self, lines: impl IntoIterator<Item = usize>) {
+        self.0.extend(lines.into_iter().map(|l| l as u64));
+    }
+
     pub fn clear(&mut self) {
         self.0.clear();
     }

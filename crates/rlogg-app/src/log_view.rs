@@ -9,16 +9,24 @@
 //! Interaction follows klogg: click selects a line, drag on the same line
 //! selects a portion, drag across lines selects whole lines, shift+click
 //! extends, double-click selects a word. Keys are bound in [`key_bindings`].
+//!
+//! The same view serves klogg's two panes: the main view shows every line,
+//! the filtered view (klogg: `FilteredView`) shows the rows of a
+//! [`FilteredLines`]. Both draw klogg's bullet margin: a dot on matching
+//! lines, an arrow on marked ones; clicking the margin toggles a mark.
+
+use std::sync::Arc;
 
 use gpui::{
-    App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, Entity, FocusHandle,
-    Focusable, Font, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId,
-    InteractiveElement, IntoElement, KeyBinding, LayoutId, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render, ScrollWheelEvent,
-    ShapedLine, SharedString, Style, Styled, TextAlign, TextRun, Window, actions, div, fill, point,
-    px, relative, size,
+    App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, Entity, EventEmitter,
+    FocusHandle, Focusable, Font, GlobalElementId, Hitbox, HitboxBehavior, Hsla,
+    InspectorElementId, InteractiveElement, IntoElement, KeyBinding, LayoutId, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render,
+    ScrollWheelEvent, ShapedLine, SharedString, Style, Styled, Subscription, TextAlign, TextRun,
+    Window, actions, div, fill, point, px, relative, size,
 };
 use gpui_component::ActiveTheme;
+use rlogg_core::search::{FilteredLines, LineKind};
 use rlogg_core::text;
 use rlogg_core::{Drag, LogFile, Position, Selection, Viewport};
 
@@ -41,10 +49,13 @@ actions!(
         SelectAll,
         Copy,
         CopyWithLineNumbers,
+        Mark,
+        NextMark,
+        PrevMark,
     ]
 );
 
-const CONTEXT: &str = "LogView";
+pub const CONTEXT: &str = "LogView";
 
 /// klogg's default log view shortcuts (`settings/src/shortcuts.cpp`).
 pub fn key_bindings() -> Vec<KeyBinding> {
@@ -74,17 +85,31 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("secondary-a", SelectAll, c),
         KeyBinding::new("secondary-c", Copy, c),
         KeyBinding::new("secondary-shift-c", CopyWithLineNumbers, c),
+        KeyBinding::new("m", Mark, c),
+        KeyBinding::new("]", NextMark, c),
+        KeyBinding::new("[", PrevMark, c),
     ]
+}
+
+/// Emitted when the user selects a line (klogg: `newSelection`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogViewEvent {
+    /// The file line under the keyboard cursor, after a click or a key.
+    LineSelected(usize),
 }
 
 const SCROLLBAR: Pixels = px(12.);
 const MIN_THUMB: Pixels = px(24.);
 const GUTTER_PAD: Pixels = px(8.);
+/// klogg: `BulletAreaWidth`.
+const BULLET_WIDTH: Pixels = px(11.);
 
 /// Geometry of the last frame, used to map mouse positions.
 #[derive(Debug, Clone, Copy)]
 struct Layout {
     text: Bounds<Pixels>,
+    /// The bullet margin; a click there toggles a mark.
+    bullets: Bounds<Pixels>,
     line_height: Pixels,
     char_width: Pixels,
     vtrack: Bounds<Pixels>,
@@ -103,7 +128,12 @@ enum MouseGrab {
 
 pub struct LogView {
     focus: FocusHandle,
-    log: Option<LogFile>,
+    log: Option<Arc<LogFile>>,
+    /// Matches and marks: bullets in both views, the rows of the filtered one.
+    filter: Option<Entity<FilteredLines>>,
+    /// Whether rows are the filter's rows (the filtered view) or all lines.
+    filtered: bool,
+    _observe_filter: Option<Subscription>,
     selection: Selection,
     /// Line moved to by the keyboard (klogg: `selectionCurrentEndPos_`).
     cursor: usize,
@@ -115,10 +145,14 @@ pub struct LogView {
 }
 
 impl LogView {
+    /// The main view: one row per line.
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             focus: cx.focus_handle(),
             log: None,
+            filter: None,
+            filtered: false,
+            _observe_filter: None,
             selection: Selection::None,
             cursor: 0,
             viewport: Viewport::default(),
@@ -128,45 +162,161 @@ impl LogView {
         }
     }
 
-    pub fn set_log(&mut self, log: Option<LogFile>, cx: &mut Context<Self>) {
+    /// The filtered view: one row per line of `filter.rows()`.
+    pub fn filtered(cx: &mut Context<Self>) -> Self {
+        Self {
+            filtered: true,
+            ..Self::new(cx)
+        }
+    }
+
+    pub fn set_log(&mut self, log: Option<Arc<LogFile>>, cx: &mut Context<Self>) {
+        self.log = log;
+        self.reset(cx);
+    }
+
+    /// Clears the selection and scrolls back to the top, e.g. when the rows
+    /// are replaced by a new search.
+    pub fn reset(&mut self, cx: &mut Context<Self>) {
         self.viewport = Viewport::default();
-        if let Some(log) = &log {
+        if let Some(log) = &self.log {
             self.viewport
                 .grow_max_cols(log.index().max_line_len() as usize);
         }
-        self.log = log;
         self.selection = Selection::None;
         self.cursor = 0;
         self.grab = None;
         cx.notify();
     }
 
+    /// Draws `filter`'s matches and marks; the filtered view also takes its
+    /// rows from it. Redraws whenever it changes.
+    pub fn set_filter(&mut self, filter: Entity<FilteredLines>, cx: &mut Context<Self>) {
+        self._observe_filter = Some(cx.observe(&filter, |this, _, cx| {
+            let rows = this.row_count(cx);
+            this.selection = this.selection.cropped(rows);
+            cx.notify();
+        }));
+        self.filter = Some(filter);
+        cx.notify();
+    }
+
     #[cfg(test)]
-    pub fn log(&self) -> Option<&LogFile> {
-        self.log.as_ref()
+    pub fn selection(&self) -> &Selection {
+        &self.selection
     }
 
-    fn line_count(&self) -> usize {
-        self.log.as_ref().map_or(0, LogFile::line_count)
+    #[cfg(test)]
+    pub fn viewport(&self) -> Viewport {
+        self.viewport
     }
 
+    fn row_count(&self, cx: &App) -> usize {
+        match (&self.log, &self.filter) {
+            (None, _) => 0,
+            (Some(_), Some(filter)) if self.filtered => filter.read(cx).row_count(),
+            (Some(_), _) if self.filtered => 0,
+            (Some(log), _) => log.line_count(),
+        }
+    }
+
+    /// The file line shown in `row`.
+    fn line_of(&self, row: usize, cx: &App) -> Option<usize> {
+        if self.filtered {
+            self.filter.as_ref()?.read(cx).line_at(row)
+        } else {
+            (row < self.row_count(cx)).then_some(row)
+        }
+    }
+
+    /// The row showing `line`, or the closest one before it.
+    fn row_of(&self, line: usize, cx: &App) -> usize {
+        match &self.filter {
+            Some(filter) if self.filtered => filter.read(cx).row_of(line),
+            _ => line,
+        }
+    }
+
+    /// Changes the selection on user input, and tells the crawler.
     fn select(&mut self, selection: Selection, cx: &mut Context<Self>) {
         if selection != self.selection {
             self.selection = selection;
             cx.notify();
         }
+        if let Some(line) = self.line_of(self.cursor, cx) {
+            cx.emit(LogViewEvent::LineSelected(line));
+        }
     }
 
-    /// Selects `line` and scrolls to it (klogg: `selectAndDisplayLine`).
-    fn select_and_reveal(&mut self, line: usize, cx: &mut Context<Self>) {
-        let Some(last) = self.line_count().checked_sub(1) else {
+    /// Selects `row` and scrolls to it (klogg: `selectAndDisplayLine`).
+    fn select_and_reveal(&mut self, row: usize, cx: &mut Context<Self>) {
+        let Some(last) = self.row_count(cx).checked_sub(1) else {
             return;
         };
-        let line = line.min(last);
-        self.cursor = line;
-        self.select(Selection::Line(line), cx);
-        self.viewport.reveal_line(line);
+        let row = row.min(last);
+        self.cursor = row;
+        self.select(Selection::Line(row), cx);
+        self.viewport.reveal_line(row);
         cx.notify();
+    }
+
+    /// Selects and reveals the row of file line `line` (or the closest row
+    /// before it), without emitting [`LogViewEvent`]: for syncing the views.
+    pub fn show_line(&mut self, line: usize, cx: &mut Context<Self>) {
+        let Some(last) = self.row_count(cx).checked_sub(1) else {
+            return;
+        };
+        let row = self.row_of(line, cx).min(last);
+        self.cursor = row;
+        self.selection = Selection::Line(row);
+        self.viewport.reveal_line(row);
+        cx.notify();
+    }
+
+    /// Toggles marks on the selected lines (klogg: `markSelected`, `m`).
+    fn mark_selection(&mut self, cx: &mut Context<Self>) {
+        let (Some(filter), Some(rows), Some(log)) =
+            (self.filter.clone(), self.selection.lines(), &self.log)
+        else {
+            return;
+        };
+        let line_count = log.line_count();
+        let lines: Vec<usize> = rows.filter_map(|r| self.line_of(r, cx)).collect();
+        filter.update(cx, |f, cx| {
+            f.toggle_marks(lines, line_count);
+            cx.notify();
+        });
+    }
+
+    fn toggle_mark(&mut self, line: usize, cx: &mut Context<Self>) {
+        let (Some(filter), Some(log)) = (self.filter.clone(), &self.log) else {
+            return;
+        };
+        let line_count = log.line_count();
+        filter.update(cx, |f, cx| {
+            f.toggle_marks([line], line_count);
+            cx.notify();
+        });
+    }
+
+    /// Jumps to the next or previous mark (klogg: `]` and `[`).
+    fn jump_to_mark(&mut self, next: bool, cx: &mut Context<Self>) {
+        let Some(filter) = self.filter.clone() else {
+            return;
+        };
+        let current = self.line_of(self.cursor, cx).unwrap_or(0);
+        let target = {
+            let f = filter.read(cx);
+            if next {
+                f.next_mark(current)
+            } else {
+                f.prev_mark(current)
+            }
+        };
+        if let Some(line) = target {
+            let row = self.row_of(line, cx);
+            self.select_and_reveal(row, cx);
+        }
     }
 
     fn move_selection(&mut self, up: bool, cx: &mut Context<Self>) {
@@ -179,13 +329,13 @@ impl LogView {
     }
 
     fn extend_selection(&mut self, up: bool, cx: &mut Context<Self>) {
-        if self.line_count() == 0 {
+        let Some(last) = self.row_count(cx).checked_sub(1) else {
             return;
-        }
+        };
         let line = if up {
             self.cursor.saturating_sub(1)
         } else {
-            (self.cursor + 1).min(self.line_count() - 1)
+            (self.cursor + 1).min(last)
         };
         self.cursor = line;
         self.select(self.selection.extended_to(line), cx);
@@ -193,46 +343,54 @@ impl LogView {
         cx.notify();
     }
 
+    fn selected_text(&self, line_numbers: bool, cx: &App) -> Option<String> {
+        let log = self.log.as_ref()?;
+        if self.selection.is_empty() {
+            return None;
+        }
+        Some(if self.filtered {
+            self.selection
+                .text_mapped(log, line_numbers, |r| self.line_of(r, cx))
+        } else {
+            self.selection.text(log, line_numbers)
+        })
+    }
+
     fn copy_selection(&self, line_numbers: bool, cx: &mut Context<Self>) {
-        if let Some(log) = &self.log
-            && !self.selection.is_empty()
-        {
-            cx.write_to_clipboard(ClipboardItem::new_string(
-                self.selection.text(log, line_numbers),
-            ));
+        if let Some(text) = self.selected_text(line_numbers, cx) {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
     }
 
     /// X11/Wayland primary selection (klogg: `updateGlobalSelection`).
     fn update_primary(&self, cx: &mut Context<Self>) {
-        if let Some(log) = &self.log
-            && !self.selection.is_empty()
-        {
-            cx.write_to_primary(ClipboardItem::new_string(self.selection.text(log, false)));
+        if let Some(text) = self.selected_text(false, cx) {
+            cx.write_to_primary(ClipboardItem::new_string(text));
         }
     }
 
-    /// Display columns of `line` (expanded), longest of the selection.
-    fn selection_width(&self) -> usize {
-        let (Some(log), Some(lines)) = (&self.log, self.selection.lines()) else {
-            return 0;
-        };
-        log.lines_text(*lines.start()..lines.end() + 1)
-            .map(|l| text::columns(&l))
-            .max()
-            .unwrap_or(0)
-    }
-
-    fn visible_width(&self) -> usize {
+    /// Widest of `rows`, in display columns (expanded).
+    fn rows_width(&self, rows: std::ops::Range<usize>, cx: &App) -> usize {
         let Some(log) = &self.log else { return 0 };
-        log.lines_text(self.viewport.visible_lines())
+        rows.filter_map(|r| self.line_of(r, cx))
+            .filter_map(|l| log.line_text(l))
             .map(|l| text::columns(&l))
             .max()
             .unwrap_or(0)
     }
 
-    fn position_at(&self, at: Point<Pixels>, layout: &Layout) -> Option<Position> {
-        let last = self.line_count().checked_sub(1)?;
+    fn selection_width(&self, cx: &App) -> usize {
+        self.selection
+            .lines()
+            .map_or(0, |rows| self.rows_width(*rows.start()..rows.end() + 1, cx))
+    }
+
+    fn visible_width(&self, cx: &App) -> usize {
+        self.rows_width(self.viewport.visible_lines(), cx)
+    }
+
+    fn position_at(&self, at: Point<Pixels>, layout: &Layout, cx: &App) -> Option<Position> {
+        let last = self.row_count(cx).checked_sub(1)?;
         let rows = (at.y - layout.text.top()) / layout.line_height;
         let line = (self.viewport.top() + f64::from(rows)).max(0.0) as usize;
         let cols = ((at.x - layout.text.left()) / layout.char_width).max(0.0);
@@ -267,15 +425,23 @@ impl LogView {
                 let left = at.x < layout.hthumb.left();
                 self.viewport.scroll_cols(if left { -page } else { page });
             }
-        } else if let Some(pos) = self.position_at(at, &layout) {
+        } else if layout.bullets.contains(&at) {
+            // klogg marks a line clicked in the left margin.
+            if let Some(line) = self
+                .position_at(at, &layout, cx)
+                .and_then(|pos| self.line_of(pos.line, cx))
+            {
+                self.toggle_mark(line, cx);
+            }
+        } else if let Some(pos) = self.position_at(at, &layout, cx) {
             self.cursor = pos.line;
             if event.modifiers.shift {
                 self.select(self.selection.extended_to(pos.line), cx);
             } else if event.click_count == 2 {
                 if let Some(word) = self
-                    .log
-                    .as_ref()
-                    .and_then(|log| log.line_text(pos.line))
+                    .line_of(pos.line, cx)
+                    .zip(self.log.as_ref())
+                    .and_then(|(line, log)| log.line_text(line))
                     .and_then(|line| text::word_at(&text::expand(&line), pos.col))
                 {
                     self.select(Selection::portion(pos.line, word.start, word.end - 1), cx);
@@ -339,7 +505,7 @@ impl LogView {
                     at.x.clamp(text.left(), text.right()),
                     at.y.clamp(text.top(), text.bottom() - px(1.)),
                 );
-                if let Some(pos) = self.position_at(clamped, &layout) {
+                if let Some(pos) = self.position_at(clamped, &layout, cx) {
                     self.cursor = pos.line;
                     if let Some(selection) = drag.update(pos) {
                         self.selection = selection;
@@ -377,6 +543,8 @@ impl LogView {
         cx.notify();
     }
 }
+
+impl EventEmitter<LogViewEvent> for LogView {}
 
 impl Focusable for LogView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
@@ -416,13 +584,13 @@ impl Render for LogView {
                 cx.notify();
             }))
             .on_action(cx.listener(|v, _: &EndOfLine, _, cx| {
-                let width = v.selection_width();
+                let width = v.selection_width(cx);
                 v.viewport.grow_max_cols(width);
                 v.viewport.set_left(width.saturating_sub(v.viewport.cols()));
                 cx.notify();
             }))
             .on_action(cx.listener(|v, _: &RightOfScreen, _, cx| {
-                let width = v.visible_width();
+                let width = v.visible_width(cx);
                 v.viewport.grow_max_cols(width);
                 v.viewport.set_left(width.saturating_sub(v.viewport.cols()));
                 cx.notify();
@@ -433,12 +601,15 @@ impl Render for LogView {
                 v.viewport.set_top(f64::MAX);
             }))
             .on_action(cx.listener(|v, _: &SelectAll, _, cx| {
-                if let Some(last) = v.line_count().checked_sub(1) {
+                if let Some(last) = v.row_count(cx).checked_sub(1) {
                     v.select(Selection::range(0, last), cx);
                 }
             }))
             .on_action(cx.listener(|v, _: &Copy, _, cx| v.copy_selection(false, cx)))
             .on_action(cx.listener(|v, _: &CopyWithLineNumbers, _, cx| v.copy_selection(true, cx)))
+            .on_action(cx.listener(|v, _: &Mark, _, cx| v.mark_selection(cx)))
+            .on_action(cx.listener(|v, _: &NextMark, _, cx| v.jump_to_mark(true, cx)))
+            .on_action(cx.listener(|v, _: &PrevMark, _, cx| v.jump_to_mark(false, cx)))
             .child(LogElement { view: cx.entity() })
     }
 }
@@ -491,6 +662,7 @@ struct Row {
     text: ShapedLine,
     /// Selected columns, relative to the first visible column.
     highlight: Option<(usize, usize)>,
+    kind: LineKind,
 }
 
 pub struct Frame {
@@ -554,13 +726,19 @@ impl Element for LogElement {
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         let focused = self.view.read(cx).focus.is_focused(window);
 
-        self.view.update(cx, |view, _| {
-            let line_count = view.line_count();
-            let digits = line_count.max(1).to_string().len().max(3);
-            let gutter_width = metrics.char_width * digits + GUTTER_PAD * 2.;
+        self.view.update(cx, |view, cx| {
+            // Line numbers are the file's, so the gutter fits the file's.
+            let file_lines = view.log.as_ref().map_or(0, |l| l.line_count());
+            let line_count = view.row_count(cx);
+            let digits = file_lines.max(1).to_string().len().max(3);
+            let gutter_width = BULLET_WIDTH + metrics.char_width * digits + GUTTER_PAD * 2.;
             let gutter = Bounds::new(
                 bounds.origin,
                 size(gutter_width, bounds.size.height - SCROLLBAR),
+            );
+            let bullets = Bounds::new(
+                bounds.origin,
+                size(BULLET_WIDTH, bounds.size.height - SCROLLBAR),
             );
             let text_bounds = Bounds::from_corners(
                 point(gutter.right() + GUTTER_PAD / 2., bounds.top()),
@@ -572,33 +750,49 @@ impl Element for LogElement {
 
             // Visible rows: decode and shape only the visible columns.
             let mut out = Vec::new();
-            if let Some(log) = &view.log {
+            if let Some(log) = view.log.clone() {
                 let vp = view.viewport;
                 let visible = vp.visible_lines();
-                let first = visible.start;
-                for (i, bytes) in log.lines(visible).enumerate() {
-                    let line = first + i;
+                // (row, file line, content) of the visible rows.
+                let shown: Vec<(usize, usize, &[u8])> = if view.filtered {
+                    visible
+                        .filter_map(|row| {
+                            let line = view.line_of(row, cx)?;
+                            Some((row, line, log.line(line)?))
+                        })
+                        .collect()
+                } else {
+                    let first = visible.start;
+                    log.lines(visible)
+                        .enumerate()
+                        .map(|(i, bytes)| (first + i, first + i, bytes))
+                        .collect()
+                };
+                let filter = view.filter.as_ref().map(|f| f.read(cx));
+                for (row, line, bytes) in shown {
+                    let kind = filter.map_or_else(LineKind::default, |f| f.kind(line));
                     let win = text::window(log.encoding(), bytes, vp.left(), vp.cols() + 1);
                     let seen = win
                         .total_cols
                         .unwrap_or(vp.left() + win.text.chars().count() + 1);
                     view.viewport.grow_max_cols(seen);
-                    let highlight = if view.selection.is_line_selected(line) {
+                    let highlight = if view.selection.is_line_selected(row) {
                         Some((0, vp.cols() + 1))
                     } else {
-                        view.selection.portion_of(line).and_then(|cols| {
+                        view.selection.portion_of(row).and_then(|cols| {
                             let start = (*cols.start()).max(vp.left());
                             let end = (*cols.end() + 1).min(vp.left() + vp.cols() + 1);
                             (start < end).then(|| (start - vp.left(), end - vp.left()))
                         })
                     };
                     let y =
-                        text_bounds.top() + metrics.line_height * (line as f64 - vp.top()) as f32;
+                        text_bounds.top() + metrics.line_height * (row as f64 - vp.top()) as f32;
                     out.push(Row {
                         y,
                         number: metrics.shape(window, (line + 1).to_string().into(), muted),
                         text: metrics.shape(window, win.text.into(), fg),
                         highlight,
+                        kind,
                     });
                 }
             }
@@ -650,6 +844,7 @@ impl Element for LogElement {
 
             let layout = Layout {
                 text: text_bounds,
+                bullets,
                 line_height: metrics.line_height,
                 char_width: metrics.char_width,
                 vtrack,
@@ -688,18 +883,21 @@ impl Element for LogElement {
             theme.scrollbar,
             theme.scrollbar_thumb,
         );
+        let (match_color, mark_color) = (theme.danger, theme.info);
         let layout = frame.layout;
         let lh = layout.line_height;
 
         window.paint_quad(fill(bounds, bg));
         window.paint_quad(fill(frame.gutter, gutter_bg));
-        window.paint_quad(fill(
-            Bounds::new(
-                point(frame.gutter.right(), bounds.top()),
-                size(px(1.), frame.gutter.size.height),
-            ),
-            border,
-        ));
+        for x in [layout.bullets.right(), frame.gutter.right()] {
+            window.paint_quad(fill(
+                Bounds::new(
+                    point(x, bounds.top()),
+                    size(px(1.), frame.gutter.size.height),
+                ),
+                border,
+            ));
+        }
 
         let highlight = if frame.focused {
             selection
@@ -718,6 +916,7 @@ impl Element for LogElement {
                         window
                             .paint_quad(fill(Bounds::new(point(x, row.y), size(w, lh)), highlight));
                     }
+                    paint_bullet(window, &layout, row, match_color, mark_color);
                     let x = frame.gutter.right() - GUTTER_PAD - row.number.width;
                     row.number
                         .paint(point(x, row.y), lh, TextAlign::Left, None, window, cx)
@@ -791,10 +990,29 @@ impl Element for LogElement {
     }
 }
 
+/// klogg's bullets: an arrow-like tab on marked lines (red if also
+/// matched), a dot on matching lines.
+fn paint_bullet(window: &mut Window, layout: &Layout, row: &Row, matched: Hsla, marked: Hsla) {
+    let mid_x = layout.bullets.left() + BULLET_WIDTH / 2.;
+    let mid_y = row.y + layout.line_height / 2.;
+    if row.kind.marked {
+        let color = if row.kind.matched { matched } else { marked };
+        let tab = Bounds::from_corners(
+            point(layout.bullets.left() + px(1.), mid_y - px(3.)),
+            point(layout.bullets.right() - px(1.), mid_y + px(3.)),
+        );
+        window.paint_quad(fill(tab, color).corner_radii(px(3.)));
+    } else if row.kind.matched {
+        let r = px(3.);
+        let dot = Bounds::from_corners(point(mid_x - r, mid_y - r), point(mid_x + r, mid_y + r));
+        window.paint_quad(fill(dot, matched).corner_radii(r));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{Modifiers, ScrollDelta, TestAppContext, VisualTestContext};
+    use gpui::{AppContext as _, Modifiers, ScrollDelta, TestAppContext, VisualTestContext};
     use std::io::Write;
 
     fn temp_log(name: &str, content: &str) -> std::path::PathBuf {
@@ -824,7 +1042,7 @@ mod tests {
         std::fs::remove_file(path).unwrap();
         let (view, cx) = cx.add_window_view(|_, cx| LogView::new(cx));
         view.update_in(cx, |v, window, cx| {
-            v.set_log(Some(log), cx);
+            v.set_log(Some(Arc::new(log)), cx);
             window.focus(&v.focus, cx);
         });
         cx.run_until_parked();
@@ -929,6 +1147,25 @@ mod tests {
             cx.read_from_clipboard().and_then(|c| c.text()).as_deref(),
             Some("word_2")
         );
+    }
+
+    #[gpui::test]
+    fn bullet_click_toggles_mark(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx, "bullets.log", &numbered(20));
+        let filter = cx.new(|_| FilteredLines::new());
+        view.update(cx, |v, cx| v.set_filter(filter.clone(), cx));
+        cx.run_until_parked();
+        let l = layout(&view, cx);
+        let at = point(l.bullets.center().x, cell(&l, 3., 0.).y);
+        cx.simulate_click(at, Modifiers::none());
+        assert_eq!(
+            filter.read_with(cx, |f, _| f.marks().iter().collect::<Vec<_>>()),
+            [3]
+        );
+        // A margin click marks without selecting.
+        assert_eq!(selection(&view, cx), Selection::None);
+        cx.simulate_click(at, Modifiers::none());
+        assert!(filter.read_with(cx, |f, _| f.marks().is_empty()));
     }
 
     #[gpui::test]

@@ -1,5 +1,7 @@
 //! rlogg desktop app. See CLAUDE.md for the roadmap.
 
+mod background;
+mod crawler;
 mod log_view;
 mod workspace;
 
@@ -18,6 +20,7 @@ fn main() {
     gpui_platform::application().run(move |cx: &mut App| {
         gpui_component::init(cx);
         cx.bind_keys(log_view::key_bindings());
+        cx.bind_keys(crawler::key_bindings());
         cx.bind_keys(workspace::key_bindings());
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.open_window(WindowOptions::default(), |window, cx| {

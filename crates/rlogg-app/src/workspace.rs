@@ -21,7 +21,8 @@ use rlogg_core::file::OpenError;
 use rlogg_core::settings::Session;
 use rlogg_core::{IndexProgress, LogFile, OpenOptions};
 
-use crate::log_view::LogView;
+use crate::background;
+use crate::crawler::Crawler;
 
 actions!(workspace, [Open, Close, Quit, ClearRecent]);
 
@@ -50,7 +51,7 @@ enum IndexEvent {
 }
 
 pub struct Workspace {
-    view: Entity<LogView>,
+    crawler: Entity<Crawler>,
     /// In-window menu bar; `None` on macOS, which uses the native one.
     menu_bar: Option<Entity<AppMenuBar>>,
     status: String,
@@ -65,11 +66,11 @@ pub struct Workspace {
 impl Workspace {
     pub fn new(config_dir: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let session = config_dir.as_deref().map(Session::load).unwrap_or_default();
-        let view = cx.new(LogView::new);
-        let focus = view.focus_handle(cx);
+        let crawler = cx.new(|cx| Crawler::new(window, cx));
+        let focus = crawler.focus_handle(cx);
         window.focus(&focus, cx);
         let mut this = Self {
-            view,
+            crawler,
             menu_bar: (!cfg!(target_os = "macos")).then(|| AppMenuBar::new(cx)),
             status: IDLE_STATUS.into(),
             config_dir,
@@ -130,7 +131,7 @@ impl Workspace {
     /// the current file (klogg opens a tab; tabs come later).
     pub fn open(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         self.stop_indexing();
-        self.view.update(cx, |v, cx| v.set_log(None, cx));
+        self.crawler.update(cx, |c, cx| c.set_log(None, cx));
         let shown = path.display().to_string();
         self.status = format!("{shown} — indexing…");
         window.set_window_title(&format!("{} — rlogg", file_name(&path)));
@@ -138,7 +139,8 @@ impl Workspace {
         let (tx, rx) = async_channel::unbounded();
         let cancel = self.cancel.clone();
         let thread_path = path.clone();
-        spawn_indexing(
+        background::spawn_blocking(
+            "rlogg-index",
             move || {
                 let result =
                     LogFile::open_with(&thread_path, OpenOptions::default(), &cancel, |p| {
@@ -169,7 +171,8 @@ impl Workspace {
                                 log.line_count(),
                                 log.encoding()
                             );
-                            this.view.update(cx, |v, cx| v.set_log(Some(log), cx));
+                            this.crawler
+                                .update(cx, |c, cx| c.set_log(Some(Arc::new(log)), cx));
                             this.add_recent(&path, cx);
                         }
                         IndexEvent::Done(Err(OpenError::Cancelled(_))) => {}
@@ -203,7 +206,7 @@ impl Workspace {
 
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.stop_indexing();
-        self.view.update(cx, |v, cx| v.set_log(None, cx));
+        self.crawler.update(cx, |c, cx| c.set_log(None, cx));
         self.status = IDLE_STATUS.into();
         window.set_window_title("rlogg");
         cx.notify();
@@ -305,26 +308,9 @@ impl Render for Workspace {
                     .border_color(border)
                     .child(bar)
             }))
-            .child(div().flex_1().min_h_0().child(self.view.clone()))
+            .child(div().flex_1().min_h_0().child(self.crawler.clone()))
             .child(div().px_2().py_1().text_sm().child(self.status.clone()))
     }
-}
-
-/// Runs a blocking indexing job off the UI thread. It gets its own thread
-/// rather than a GPUI background task, so a long indexing run never occupies
-/// GPUI's executor. GPUI's test scheduler rejects wake-ups from foreign
-/// threads, so tests run the job as a (deterministic) background task.
-fn spawn_indexing(job: impl FnOnce() + Send + 'static, cx: &mut Context<Workspace>) {
-    #[cfg(not(test))]
-    {
-        let _ = cx;
-        std::thread::Builder::new()
-            .name("rlogg-index".into())
-            .spawn(job)
-            .expect("failed to spawn indexing thread");
-    }
-    #[cfg(test)]
-    cx.background_spawn(async move { job() }).detach();
 }
 
 fn file_name(path: &Path) -> String {
@@ -389,6 +375,7 @@ mod tests {
         cx.update(|cx| {
             gpui_component::init(cx);
             cx.bind_keys(crate::log_view::key_bindings());
+            cx.bind_keys(crate::crawler::key_bindings());
             cx.bind_keys(key_bindings());
         });
         cx.add_window_view(|window, cx| Workspace::new(Some(config), window, cx))
@@ -398,7 +385,9 @@ mod tests {
     fn wait_indexed(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> usize {
         for _ in 0..500 {
             cx.run_until_parked();
-            let lines = ws.read_with(cx, |ws, cx| ws.view.read(cx).log().map(LogFile::line_count));
+            let lines = ws.read_with(cx, |ws, cx| {
+                ws.crawler.read(cx).log().map(LogFile::line_count)
+            });
             if let Some(lines) = lines {
                 return lines;
             }
@@ -506,7 +495,7 @@ mod tests {
 
         cx.simulate_keystrokes("ctrl-w");
         cx.run_until_parked();
-        assert!(ws.read_with(cx, |ws, cx| ws.view.read(cx).log().is_none()));
+        assert!(ws.read_with(cx, |ws, cx| ws.crawler.read(cx).log().is_none()));
         assert_eq!(ws.read_with(cx, |ws, _| ws.status.clone()), IDLE_STATUS);
         assert_eq!(cx.window_title().as_deref(), Some("rlogg"));
     }

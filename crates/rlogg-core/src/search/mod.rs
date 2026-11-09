@@ -3,10 +3,13 @@
 //! - [`Pattern`] / [`Matcher`]: regex, plain-text, case-insensitive, inverse and
 //!   boolean patterns (klogg: `RegularExpressionPattern`, `PatternMatcher`)
 //! - [`LineSet`]: compact set of matching lines (klogg: `SearchResultArray`)
+//! - [`FilteredLines`]: matches and marks shown by the filtered view (klogg:
+//!   `LogFilteredData`)
 //! - [`search`]: parallel search of a line range, with progress, cancellation
 //!   and incremental results (klogg: `SearchOperation`)
 
 mod boolean;
+mod filtered;
 mod line_set;
 mod matcher;
 
@@ -16,6 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use rayon::prelude::*;
 
 pub use boolean::BooleanError;
+pub use filtered::{FilteredLines, LineKind, Visibility};
 pub use line_set::LineSet;
 pub use matcher::{Matcher, Pattern, PatternError};
 

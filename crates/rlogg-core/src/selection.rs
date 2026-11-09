@@ -149,6 +149,44 @@ impl Selection {
             }
         }
     }
+
+    /// Like [`text`](Self::text), for a view whose row `r` shows file line
+    /// `line_of(r)` (the filtered view). Line numbers are the file's.
+    pub fn text_mapped(
+        &self,
+        log: &LogFile,
+        line_numbers: bool,
+        line_of: impl Fn(usize) -> Option<usize>,
+    ) -> String {
+        let prefix = |n: usize| {
+            if line_numbers {
+                format!("{}: ", n + 1)
+            } else {
+                String::new()
+            }
+        };
+        match *self {
+            Self::None => String::new(),
+            Self::Portion {
+                line: row,
+                start,
+                end,
+            } => line_of(row)
+                .map(|line| {
+                    let expanded = text::expand(&log.line_text(line).unwrap_or_default());
+                    prefix(line) + &text::slice_columns(&expanded, start..end + 1)
+                })
+                .unwrap_or_default(),
+            Self::Line(_) | Self::Range { .. } => {
+                let rows = self.lines().expect("not empty");
+                let lines: Vec<String> = rows
+                    .filter_map(&line_of)
+                    .map(|line| prefix(line) + &log.line_text(line).unwrap_or_default())
+                    .collect();
+                lines.join("\n")
+            }
+        }
+    }
 }
 
 /// Mouse-drag selection (klogg: `selectionStarted_`, `selectionStartPos_`,
@@ -314,6 +352,20 @@ mod tests {
             // Portions use display columns: the tab expands to col 3..8.
             assert_eq!(Selection::portion(0, 2, 8).text(&log, false), "e     a");
             assert_eq!(Selection::portion(2, 1, 99).text(&log, true), "3: hree");
+            std::fs::remove_file(path).unwrap();
+        }
+
+        #[test]
+        fn selected_text_of_filtered_rows() {
+            let (log, path) = log("a\nb\nc\nd\ne\n");
+            // Rows show lines 1, 3, 4.
+            let rows = [1, 3, 4];
+            let line_of = |r: usize| rows.get(r).copied();
+            let text = |s: Selection, n| s.text_mapped(&log, n, line_of);
+            assert_eq!(text(Selection::Line(1), false), "d");
+            assert_eq!(text(Selection::range(0, 2), true), "2: b\n4: d\n5: e");
+            assert_eq!(text(Selection::portion(2, 0, 0), true), "5: e");
+            assert_eq!(text(Selection::Line(7), false), "");
             std::fs::remove_file(path).unwrap();
         }
     }

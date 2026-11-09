@@ -23,7 +23,7 @@ stays GPLv3. Keep klogg's copyright notices where code is translated closely.
 |---|---|---|
 | `logdata/` FileHolder, LogData, LinePositionArray, CompressedLineStorage, LogDataWorker | `rlogg-core::{file, line_index}` | memmap2, rayon |
 | `logdata/` EncodingDetector | `rlogg-core::encoding` | encoding_rs, chardetng |
-| `logdata/` LogFilteredData(Worker) | `rlogg-core::search` (search driver, `LineSet` done; filtered data + marks todo) | regex, rayon, roaring |
+| `logdata/` LogFilteredData(Worker) | `rlogg-core::search` (search driver, `LineSet`, `FilteredLines` done) | regex, rayon, roaring |
 | `regex/` (Hyperscan / QRegularExpression, boolean combos; exprtk) | `rlogg-core::search` (done; own boolean parser instead of exprtk) | regex |
 | `filewatch/` (efsw) | `rlogg-core::watch` (todo) | notify |
 | `settings/`, `ui/session*`, `ui/recentfiles*` | `rlogg-core::settings` (recent files done) | serde, toml, directories |
@@ -95,7 +95,7 @@ scripts/bench-vs-klogg.sh 1024   # indexing time vs klogg on the same generated 
 
 ### Phase 2: search and filtering
 - [x] Regex, plain-text and case-insensitive search, plus klogg's boolean combinations (`regex/`): engine in `rlogg-core::search`; the search bar UI comes with the filtered view
-- [ ] Filtered view (bottom pane) synced with the main view; marks
+- [x] Filtered view (bottom pane) synced with the main view; marks (search bar, bullets, `m` `[` `]`, visibility `v` `1`–`3`; match highlighting in the text still todo)
 - [ ] Quick find (incremental, next/previous)
 - [ ] Jump to line: digits then `g`, and Ctrl+L with a small input box (klogg `digitsBuffer_`, `LogViewJumpToLine`)
 - [ ] Overview bar showing match and mark positions
