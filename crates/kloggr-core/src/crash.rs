@@ -152,6 +152,46 @@ pub fn mark_shown(config_dir: &Path) -> Vec<PathBuf> {
     moved
 }
 
+/// A link to a new GitHub issue for `report` (klogg: `IssueReporter`),
+/// titled by its first line. Browsers and GitHub cut long links, so the
+/// body holds at most `max_body` bytes of the report; the rest is left
+/// for the user to paste.
+pub fn issue_url(report: &str, max_body: usize) -> String {
+    let first = report.lines().next().unwrap_or("kloggr crashed");
+    let title = format!("Crash: {}", first.trim_start_matches("kloggr crashed: "));
+    let mut body = String::from("#### What did you do?\n\n\n#### Crash report\n\n```\n");
+    if report.len() <= max_body {
+        body += report;
+    } else {
+        let mut end = max_body;
+        while !report.is_char_boundary(end) {
+            end -= 1;
+        }
+        body += &report[..end];
+        body += "\n… (cut: paste the rest of the report here)";
+    }
+    body += "\n```\n";
+    format!(
+        "{}/issues/new?title={}&body={}",
+        crate::REPOSITORY,
+        percent_encode(&title),
+        percent_encode(&body)
+    )
+}
+
+/// Percent-encodes everything but RFC 3986's unreserved characters.
+fn percent_encode(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() * 3);
+    for b in text.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+            out.push(b as char);
+        } else {
+            out += &format!("%{b:02X}");
+        }
+    }
+    out
+}
+
 /// Installs a panic hook that saves a [`Report`] before the default hook
 /// prints the panic.
 pub fn install_hook(config_dir: PathBuf) {
@@ -217,6 +257,17 @@ mod tests {
         assert!(text.contains(&format!("> kloggr {} (", env!("CARGO_PKG_VERSION"))));
         assert!(text.contains("> time 42 "));
         assert!(text.ends_with("Backtrace:\n0: frame\n"));
+    }
+
+    #[test]
+    fn issue_link() {
+        let url = issue_url("kloggr crashed: boom é\nat x.rs:1:2\n", 1000);
+        assert!(url.starts_with("https://github.com/onionhead0708/kloggr/issues/new?title=Crash%3A%20boom%20%C3%A9&body="));
+        assert!(url.contains("at%20x.rs%3A1%3A2"));
+        // Cut on a character boundary.
+        let long = issue_url(&"é".repeat(100), 51);
+        assert!(long.contains("cut%3A%20paste"));
+        assert_eq!(percent_encode("a b/~"), "a%20b%2F~");
     }
 
     #[test]

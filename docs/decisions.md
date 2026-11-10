@@ -180,9 +180,9 @@ klogg also has a digits buffer: `[number] g` jumps to a line, and `[number] j/k`
 **kloggr:**
 - A panic hook writes a plain-text report (message, place, thread, version, OS, backtrace) to `<config dir>/crashes/new/`. It covers panics on any thread; native crashes (signals) aren't caught.
 - At the next start a dialog shows the first line and where the report is, with a "Copy report" button. The report then moves to `crashes/`, which keeps the last 10.
-- Nothing is sent anywhere.
+- Nothing is sent automatically. "Report issue" copies the report and opens a new GitHub issue on github.com/onionhead0708/kloggr with the start of the report filled in (klogg's `IssueReporter` does the same for exceptions).
 
-**Why:** kloggr has no issue tracker or crash server yet. A text report is enough to paste into a bug report and has no extra dependencies.
+**Why:** there is no crash server. A text report is enough for a bug report and needs no extra dependencies.
 
 **Code:** `kloggr_core::crash`, `crate::crash_report`.
 
@@ -205,3 +205,18 @@ klogg also has a digits buffer: `[number] g` jumps to a line, and `[number] j/k`
 **Now:** kloggr (crates `kloggr-core`, `kloggr-app`, binary `kloggr`, `~/.config/kloggr`, `KLOGGR_*` variables). On first start, settings in `~/.config/rlogg` move to `~/.config/kloggr`. Older entries in this file were updated to the new name.
 
 **Why:** github.com/jmichaelsturm/rlogg is another Rust viewer for very large text files. The new name keeps the link to klogg and avoids confusing the two.
+
+## 2026-11-10: Version check against GitHub releases
+
+**klogg:** when "check for new versions" is on (the default), downloads a version file from klogg's site at most once every 7 days and announces a newer version with its changes.
+
+**kloggr:**
+- Same option (on by default, Options > General) and the same 7-day interval, saved in `version_check.toml`. A failed check also waits a week.
+- Asks GitHub's API for the latest release of github.com/onionhead0708/kloggr, on a worker thread with a 20 s timeout. The request carries only a `kloggr/<version>` user agent.
+- A newer version shows its version, the start of the release notes and "Open download page".
+- HTTPS uses rustls with the system's certificate store (`rustls-platform-verifier`), not a bundled CA list.
+- Debug builds read `KLOGGR_RELEASE_URL` to try the notice against another repository.
+
+**Why:** GitHub releases are where the packages are published, so no separate version file is needed.
+
+**Code:** `kloggr_core::version_check`, `crate::update_check`.

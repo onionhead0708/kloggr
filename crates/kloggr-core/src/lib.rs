@@ -22,6 +22,9 @@
 //! - [`highlight`]: highlighters, highlighter sets and color labels (klogg:
 //!   `HighlighterSet`, `ColorLabelsManager`)
 
+/// Where kloggr is developed and released.
+pub const REPOSITORY: &str = "https://github.com/onionhead0708/kloggr";
+
 pub mod archive;
 pub mod crash;
 pub mod digits;
@@ -36,6 +39,7 @@ pub mod searches;
 pub mod selection;
 pub mod settings;
 pub mod text;
+pub mod version_check;
 pub mod viewport;
 pub mod watch;
 

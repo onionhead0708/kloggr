@@ -369,6 +369,14 @@ impl OptionsEditor {
                 |o, v| o.general.follow_on_load = v,
                 cx,
             ))
+            .child(heading("Updates"))
+            .child(self.check(
+                "check-updates",
+                "Check for new versions once a week",
+                o.general.check_for_updates,
+                |o, v| o.general.check_for_updates = v,
+                cx,
+            ))
             .child(heading("Search options for new files"))
             .child(
                 h_flex()

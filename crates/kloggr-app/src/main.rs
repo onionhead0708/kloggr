@@ -16,6 +16,7 @@ mod quick_find;
 mod saved_searches;
 mod scratchpad;
 mod shortcuts;
+mod update_check;
 mod workspace;
 
 use std::path::PathBuf;
@@ -54,27 +55,32 @@ fn main() {
                 app_id: Some(APP_ID.into()),
                 ..Default::default()
             };
-            cx.open_window(options, |window, cx| {
-                let crash_dir = config_dir.clone();
-                let workspace = cx.new(|cx| {
-                    let mut workspace = Workspace::new(config_dir, window, cx);
-                    // klogg: the last session first, then the file given.
-                    if preferences::Preferences::get(cx).general.load_last_session {
-                        workspace.restore_session(window, cx);
-                    }
-                    if let Some(path) = path {
-                        workspace.open(path, window, cx);
-                    }
-                    workspace
-                });
-                if let Some(dir) = crash_dir {
-                    window.defer(cx, move |window, cx| {
-                        crash_report::show_pending(&dir, window, cx)
+            let update_dir = config_dir.clone();
+            let main_window = cx
+                .open_window(options, |window, cx| {
+                    let crash_dir = config_dir.clone();
+                    let workspace = cx.new(|cx| {
+                        let mut workspace = Workspace::new(config_dir, window, cx);
+                        // klogg: the last session first, then the file given.
+                        if preferences::Preferences::get(cx).general.load_last_session {
+                            workspace.restore_session(window, cx);
+                        }
+                        if let Some(path) = path {
+                            workspace.open(path, window, cx);
+                        }
+                        workspace
                     });
-                }
-                cx.new(|cx| Root::new(workspace, window, cx))
-            })
-            .expect("failed to open window");
+                    if let Some(dir) = crash_dir {
+                        window.defer(cx, move |window, cx| {
+                            crash_report::show_pending(&dir, window, cx)
+                        });
+                    }
+                    cx.new(|cx| Root::new(workspace, window, cx))
+                })
+                .expect("failed to open window");
+            if let Some(dir) = update_dir {
+                update_check::start(dir, main_window.into(), cx);
+            }
             // The scratchpad window doesn't keep the app open (klogg's is
             // a child of the main window).
             cx.on_window_closed(|cx, _| {

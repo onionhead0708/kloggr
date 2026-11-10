@@ -35,6 +35,9 @@ pub struct General {
     pub load_last_session: bool,
     /// Follow files when they are opened (klogg: `session.followOnLoad`).
     pub follow_on_load: bool,
+    /// Ask GitHub for a newer release once a week (klogg:
+    /// `versionchecker.enabled`, also on by default).
+    pub check_for_updates: bool,
 }
 
 impl Default for General {
@@ -42,6 +45,7 @@ impl Default for General {
         Self {
             load_last_session: true,
             follow_on_load: false,
+            check_for_updates: true,
         }
     }
 }
@@ -232,6 +236,7 @@ mod tests {
     fn defaults_follow_klogg() {
         let o = Options::default();
         assert!(o.general.load_last_session && !o.general.follow_on_load);
+        assert!(o.general.check_for_updates);
         assert!(o.search.match_case && o.search.regex && !o.search.boolean);
         assert!(!o.search.auto_refresh);
         assert!(o.search.quickfind_incremental && !o.search.quickfind_regex);

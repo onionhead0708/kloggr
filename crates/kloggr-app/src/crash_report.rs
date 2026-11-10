@@ -7,6 +7,9 @@ use gpui::{App, ClipboardItem, Window};
 use gpui_component::WindowExt;
 use kloggr_core::crash;
 
+/// Report bytes put in the issue link; GitHub refuses links of about 8 KB.
+const ISSUE_BODY_MAX: usize = 4000;
+
 /// If the last run crashed, says so once, with its report to copy.
 pub fn show_pending(config_dir: &Path, window: &mut Window, cx: &mut App) {
     let pending = crash::pending(config_dir);
@@ -26,13 +29,15 @@ pub fn show_pending(config_dir: &Path, window: &mut Window, cx: &mut App) {
             .title("kloggr closed unexpectedly")
             .description(format!(
                 "{first}\n\nThe report is saved in {saved}.{others} \
-                 Copy it to include in a bug report."
+                 Report issue opens a new GitHub issue with it, and copies it \
+                 to the clipboard."
             ))
-            .ok_text("Copy report")
+            .ok_text("Report issue")
             .show_cancel(true)
             .cancel_text("Close")
             .on_ok(move |_, _, cx| {
                 cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                cx.open_url(&crash::issue_url(&text, ISSUE_BODY_MAX));
                 true
             })
     });

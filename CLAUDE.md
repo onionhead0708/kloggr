@@ -38,7 +38,7 @@ stays GPLv3. Keep klogg's copyright notices where code is translated closely.
 | `ui/highlightersdialog`, `highlighterset(edit)`, `highlighteredit` | `kloggr-app` highlighters_dialog (done), `kloggr-core::highlight::klogg_conf` | gpui-component |
 | `ui/predefinedfilters*`, `savedsearches` | `kloggr-core::searches`, app `saved_searches` (done) | |
 | `ui/scratchpad`, `tabbedscratchpad` | `kloggr-core::scratch`, app `scratchpad` (done) | base64, serde_json, quick-xml, crc32fast |
-| `versioncheck/`, `logging/`, `crash_handler/` | `kloggr-core::crash` (done), app `crash_report`; version check later | ureq (rustls), tracing, panic hook |
+| `versioncheck/`, `logging/`, `crash_handler/` | `kloggr-core::{crash, version_check}` (done), app `crash_report`, `update_check` | ureq (rustls), tracing, panic hook |
 
 ## Architecture
 
@@ -141,7 +141,7 @@ check new shortcuts in the real app too (see the color-label entry in `docs/deci
 - [x] Predefined filters, saved searches, scratchpad (search history and Filters drop-downs, Tools > Predefined Filters…, Add/Exclude/Replace search, scratchpad window with transforms)
 - [x] Archive/compressed file opening (klogg `decompressor`): gzip, bzip2, xz, lzma, zip, 7z, tar (also compressed), extracted to a temporary folder
 - [ ] Packaging: tarball, .deb and AppImage done (`scripts/package-linux.sh`, `packaging/linux/`; `appimagetool` in `~/.local/bin`); then Windows (.msi) and macOS (.dmg) CI
-- [ ] Version check (needs a release URL), crash/panic reporting (done: local report shown at the next start, `kloggr-core::crash`)
+- [x] Version check against GitHub releases (`kloggr-core::version_check`, app `update_check`), crash/panic reporting (`kloggr-core::crash`, report shown at the next start with a GitHub issue link)
 - [x] Copying large selections: size from the line index, ask above 64 MiB and copy on a worker thread, refuse above 1 GiB (`docs/decisions.md`)
 
 ## Conventions
