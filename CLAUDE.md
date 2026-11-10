@@ -78,6 +78,7 @@ bacon                            # watch mode
 cargo deny check                 # license / advisory check (GPL-compatible deps only)
 cargo bench -p rlogg-core        # criterion benches (RLOGG_BENCH_SIZE_MB=10240 for 10 GB)
 scripts/bench-vs-klogg.sh 1024   # indexing time vs klogg on the same generated files
+scripts/package-linux.sh         # tarball, .deb (and AppImage with appimagetool) in target/package/
 ```
 
 ### Visual check (headless)
@@ -137,7 +138,7 @@ check new shortcuts in the real app too (see the color-label entry in `docs/deci
 ### Phase 4: extras and release
 - [x] Predefined filters, saved searches, scratchpad (search history and Filters drop-downs, Tools > Predefined Filters…, Add/Exclude/Replace search, scratchpad window with transforms)
 - [x] Archive/compressed file opening (klogg `decompressor`): gzip, bzip2, xz, lzma, zip, 7z, tar (also compressed), extracted to a temporary folder
-- [ ] Packaging: AppImage, .deb, tarball; then Windows (.msi) and macOS (.dmg) CI
+- [ ] Packaging: tarball and .deb done (`scripts/package-linux.sh`, `packaging/linux/`); AppImage needs `appimagetool`; then Windows (.msi) and macOS (.dmg) CI
 - [ ] Version check (needs a release URL), crash/panic reporting (done: local report shown at the next start, `rlogg-core::crash`)
 - [x] Copying large selections: size from the line index, ask above 64 MiB and copy on a worker thread, refuse above 1 GiB (`docs/decisions.md`)
 

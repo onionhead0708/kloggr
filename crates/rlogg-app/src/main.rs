@@ -24,6 +24,10 @@ use gpui::{App, AppContext, WindowOptions};
 use gpui_component::Root;
 use workspace::{Quit, Workspace};
 
+/// Window app id (Wayland) and class (X11): the `.desktop` file's name, so
+/// desktops show the launcher's icon for rlogg's windows.
+pub const APP_ID: &str = "rlogg";
+
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -46,7 +50,11 @@ fn main() {
             preferences::Preferences::apply_style(None, cx);
             highlighters::Highlighters::init(config_dir.clone(), cx);
             saved_searches::SavedSearches::init(config_dir.clone(), cx);
-            cx.open_window(WindowOptions::default(), |window, cx| {
+            let options = WindowOptions {
+                app_id: Some(APP_ID.into()),
+                ..Default::default()
+            };
+            cx.open_window(options, |window, cx| {
                 let crash_dir = config_dir.clone();
                 let workspace = cx.new(|cx| {
                     let mut workspace = Workspace::new(config_dir, window, cx);

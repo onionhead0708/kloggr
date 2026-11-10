@@ -308,6 +308,7 @@ pub fn show(
                         size(px(980.), px(640.)),
                         cx,
                     ))),
+                    app_id: Some(crate::APP_ID.into()),
                     ..Default::default()
                 };
                 let mut pad = None;

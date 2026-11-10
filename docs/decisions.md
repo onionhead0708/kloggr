@@ -185,3 +185,15 @@ klogg also has a digits buffer: `[number] g` jumps to a line, and `[number] j/k`
 **Why:** rlogg has no issue tracker or crash server yet. A text report is enough to paste into a bug report and has no extra dependencies.
 
 **Code:** `rlogg_core::crash`, `crate::crash_report`.
+
+## 2026-11-10: Linux packages from a script, no RPM yet
+
+**klogg:** CMake's CPack builds .deb and .rpm (dependencies found with shlibdeps), and linuxdeployqt builds an AppImage that bundles Qt and other libraries.
+
+**rlogg:**
+- `scripts/package-linux.sh` builds a tarball (a `bin/` + `share/` tree to extract into `~/.local` or `/usr/local`) and a .deb with `dpkg-deb`. The .deb's dependencies come from `dpkg-shlibdeps`, plus `libvulkan1` and `libwayland-client0`, which GPUI loads at run time.
+- An AppImage is built only when `appimagetool` is installed. It bundles nothing besides the binary: rlogg links only libc, libxcb and libxkbcommon, which desktops have.
+- No .rpm yet.
+- The icon is rlogg's own (`packaging/linux/rlogg.svg`), not klogg's. Windows use app id `rlogg`, matching `rlogg.desktop`.
+
+**Why:** a Rust binary has few shared-library dependencies, so plain tools are enough and no extra cargo tools are needed. Using klogg's icon would make the two apps look the same.
