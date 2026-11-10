@@ -27,6 +27,7 @@ use rlogg_core::{IndexProgress, LogFile, OpenOptions};
 
 use crate::background;
 use crate::crawler::{Crawler, CrawlerEvent};
+use crate::highlighters::{Highlighters, NoHighlighters, ToggleHighlighterSet};
 
 actions!(
     workspace,
@@ -161,7 +162,7 @@ impl Workspace {
         self.tabs.get(self.active).map(|t| &t.crawler)
     }
 
-    fn menus(&self) -> Vec<Menu> {
+    fn menus(&self, cx: &App) -> Vec<Menu> {
         let recent = self.session.recent_files.shown();
         let mut recent_items: Vec<MenuItem> = recent
             .iter()
@@ -185,13 +186,14 @@ impl Workspace {
                 MenuItem::action("Close All", CloseAllTabs),
                 MenuItem::action("Quit", Quit),
             ]),
+            Menu::new("Tools").items([MenuItem::submenu(Highlighters::menu(cx))]),
         ]
     }
 
     /// Publishes the menus: native on macOS, the in-window bar elsewhere.
     fn update_menus(&mut self, cx: &mut Context<Self>) {
-        cx.set_menus(self.menus());
-        let owned = self.menus().into_iter().map(Menu::owned).collect();
+        cx.set_menus(self.menus(cx));
+        let owned = self.menus(cx).into_iter().map(Menu::owned).collect();
         GlobalState::global_mut(cx).set_app_menus(owned);
         if let Some(bar) = &self.menu_bar {
             bar.update(cx, |bar, cx| bar.reload(cx));
@@ -607,6 +609,22 @@ impl Render for Workspace {
                 this.open_recent(a.path.clone(), window, cx)
             }))
             .on_action(cx.listener(|this, _: &ClearRecent, _, cx| this.clear_recent(cx)))
+            // klogg: `HighlightersMenu::saveCurrentHighlighterFromAction`.
+            .on_action(cx.listener(|this, a: &ToggleHighlighterSet, _, cx| {
+                let id = a.id.clone();
+                Highlighters::update(cx, |sets| {
+                    if sets.is_active(&id) {
+                        sets.deactivate(&id)
+                    } else {
+                        sets.activate(&id)
+                    }
+                });
+                this.update_menus(cx);
+            }))
+            .on_action(cx.listener(|this, _: &NoHighlighters, _, cx| {
+                Highlighters::update(cx, |sets| sets.deactivate_all());
+                this.update_menus(cx);
+            }))
             .on_action(cx.listener(|this, _: &Close, window, cx| {
                 let index = this.active;
                 this.close_tab(index, window, cx)
@@ -1063,5 +1081,52 @@ mod tests {
         assert_eq!(following, (false, true));
         // The missing file is dropped from the saved session.
         assert_eq!(Session::load(&fx.config()).open_files.len(), 2);
+    }
+
+    #[gpui::test]
+    fn highlighter_sets_menu(cx: &mut TestAppContext) {
+        use rlogg_core::highlight::{Highlighter, HighlighterSet, HighlighterSets};
+        let fx = Fixture::new("highlighters");
+        let mut set = HighlighterSet::new("Errors");
+        set.highlighters.push(Highlighter {
+            pattern: "ERROR".into(),
+            ..Highlighter::default()
+        });
+        let id = set.id.clone();
+        let mut sets = HighlighterSets::default();
+        sets.sets.push(set);
+        sets.save(&fx.config()).unwrap();
+        cx.update(|cx| Highlighters::init(Some(fx.config()), cx));
+        let (_ws, cx) = workspace(cx, fx.config());
+        assert!(menu_labels(cx).contains(&"Errors".to_string()));
+        let active =
+            |cx: &mut VisualTestContext| cx.update(|_, cx| !Highlighters::active(cx).is_empty());
+        assert!(!active(cx));
+
+        cx.dispatch_action(ToggleHighlighterSet { id: id.clone() });
+        assert!(active(cx));
+        // Saved, and checked in the menu.
+        assert_eq!(
+            HighlighterSets::load(&fx.config()).active,
+            std::slice::from_ref(&id)
+        );
+        let checked = cx.update(|_, cx| {
+            GlobalState::global(cx).app_menus().iter().any(|m| {
+                m.items.iter().any(|i| match i {
+                    gpui::OwnedMenuItem::Submenu(sub) => sub.items.iter().any(|i| {
+                        matches!(i, gpui::OwnedMenuItem::Action { name, checked: true, .. } if name == "Errors")
+                    }),
+                    _ => false,
+                })
+            })
+        });
+        assert!(checked);
+
+        cx.dispatch_action(ToggleHighlighterSet { id: id.clone() });
+        assert!(!active(cx));
+        cx.dispatch_action(ToggleHighlighterSet { id });
+        cx.dispatch_action(NoHighlighters);
+        assert!(!active(cx));
+        assert!(HighlighterSets::load(&fx.config()).active.is_empty());
     }
 }

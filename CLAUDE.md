@@ -31,7 +31,8 @@ stays GPLv3. Keep klogg's copyright notices where code is translated closely.
 | `ui/abstractlogview`, `logmainview`, `filteredview`, `frozencolumns`, `overview*` | `rlogg-app` log view widget | gpui |
 | `ui/crawlerwidget`, `tabbedcrawlerwidget`, `mainwindow`, `menu` | `rlogg-app` workspace, tabs, menus | gpui-component |
 | `ui/quickfind*` (QuickFind engine) | `rlogg-core::search::find`, `rlogg-app` quick_find | rayon |
-| `ui/highlighter*`, `predefinedfilters*`, `savedsearches`, `scratchpad` | `rlogg-app` features | gpui-component |
+| `ui/highlighterset`, `colorlabelsmanager`, `highlightedmatch` | `rlogg-core::highlight` (done), app `highlighters` | regex |
+| `ui/highlighters*dialog`, `predefinedfilters*`, `savedsearches`, `scratchpad` | `rlogg-app` features | gpui-component |
 | `versioncheck/`, `logging/`, `crash_handler/` | later | ureq (rustls), tracing, panic hook |
 
 ## Architecture
@@ -106,7 +107,7 @@ scripts/bench-vs-klogg.sh 1024   # indexing time vs klogg on the same generated 
 ### Phase 3: live files and workspace
 - [x] Follow mode / tail: incremental reindex on growth, detect truncation and rotation (`filewatch/`); `f` / F10, search auto-refresh
 - [x] Tabs and multiple files, sessions (open tabs restored at startup with search options, follow and marks; tab renaming not done)
-- [ ] Highlighters and highlighter sets, color labels
+- [ ] Highlighters and highlighter sets, color labels (engine, line colouring, Tools and context menus, color labels `Ctrl+Shift+1`–`9` / `Ctrl+D` / `Ctrl+Shift+0` done; still todo: the highlighters dialog to edit sets and label styles, import/export of klogg `.conf` files)
 - [ ] Frozen columns (klogg `frozencolumns`)
 - [ ] Wide characters (CJK, emoji): map columns using real glyph widths instead of one column per `char`
 - [ ] Settings and options dialog, keyboard shortcuts matching klogg's defaults (include the search-match highlight: on/off and its colour, as klogg's "main search highlight" checkbox and colour button)

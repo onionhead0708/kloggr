@@ -25,8 +25,10 @@ use rlogg_core::{Cancelled, LogFile};
 use crate::background;
 use crate::follow::{self, Watch};
 use crate::go_to_line::{self, GoToLine};
-use crate::log_view::{self, LogView, LogViewEvent};
+use crate::highlighters::Highlighters;
+use crate::log_view::{self, LabelOp, LogView, LogViewEvent};
 use crate::quick_find::{self, QuickFind, Target};
+use rlogg_core::highlight::ColorLabels;
 use rlogg_core::search::find::Direction;
 
 actions!(
@@ -157,6 +159,9 @@ pub struct Crawler {
     /// Marks from the session, set once the file is loaded (klogg:
     /// `savedMarkedLines_`).
     pending_marks: Vec<u64>,
+    /// Strings marked with a color label in this tab (klogg:
+    /// `colorLabelsManager_`).
+    pub(crate) color_labels: ColorLabels,
     cancel: Arc<AtomicBool>,
     _search: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -186,23 +191,22 @@ impl Crawler {
                     this.start_search(cx);
                 }
             }),
-            cx.subscribe(&main, |this, _, event: &LogViewEvent, cx| match *event {
-                LogViewEvent::LineSelected(line) => this.current_line = line,
-                LogViewEvent::FollowChanged(on) => this.set_follow(on, cx),
+            cx.subscribe(&main, |this, _, event: &LogViewEvent, cx| match event {
+                &LogViewEvent::LineSelected(line) => this.current_line = line,
+                &LogViewEvent::FollowChanged(on) => this.set_follow(on, cx),
+                LogViewEvent::ColorLabel(op, text) => this.color_label(*op, text, cx),
             }),
-            cx.subscribe(
-                &filtered,
-                |this, _, event: &LogViewEvent, cx| match *event {
-                    LogViewEvent::LineSelected(line) => {
-                        // klogg: `jumpToMatchingLine`, which also stops
-                        // following.
-                        this.current_line = line;
-                        this.set_follow(false, cx);
-                        this.main.update(cx, |v, cx| v.show_line(line, cx));
-                    }
-                    LogViewEvent::FollowChanged(on) => this.set_follow(on, cx),
-                },
-            ),
+            cx.subscribe(&filtered, |this, _, event: &LogViewEvent, cx| match event {
+                &LogViewEvent::LineSelected(line) => {
+                    // klogg: `jumpToMatchingLine`, which also stops
+                    // following.
+                    this.current_line = line;
+                    this.set_follow(false, cx);
+                    this.main.update(cx, |v, cx| v.show_line(line, cx));
+                }
+                &LogViewEvent::FollowChanged(on) => this.set_follow(on, cx),
+                LogViewEvent::ColorLabel(op, text) => this.color_label(*op, text, cx),
+            }),
             cx.observe(&filter, |_, _, cx| cx.notify()),
             cx.on_focus_in(&main_focus, window, |this, _, _| this.target = Target::Main),
             cx.on_focus_in(&filtered_focus, window, |this, _, _| {
@@ -254,6 +258,7 @@ impl Crawler {
             search_covers: (0, 0),
             updating: false,
             pending_marks: Vec::new(),
+            color_labels: ColorLabels::new(),
             cancel: Arc::default(),
             _search: None,
             _subscriptions: subscriptions,
@@ -409,6 +414,35 @@ impl Crawler {
     /// Highlights the search pattern's matches in both views (klogg:
     /// `setSearchPattern`). Excluding and boolean patterns highlight nothing,
     /// as in klogg.
+    /// Applies a color label change from either view (klogg:
+    /// `addColorLabelToSelection`, `clearColorLabels`), then shows the
+    /// labels in both views (klogg: `updateColorLabels`).
+    fn color_label(&mut self, op: LabelOp, text: &str, cx: &mut Context<Self>) {
+        let labels = &mut self.color_labels;
+        match op {
+            LabelOp::Set(label) => labels.set(label, text),
+            LabelOp::Remove => labels.remove(text),
+            LabelOp::Next => {
+                let cycle: Vec<bool> = Highlighters::color_label_styles(cx)
+                    .iter()
+                    .map(|s| s.cycle)
+                    .collect();
+                labels.set_next(text, &cycle)
+            }
+            LabelOp::ClearAll => labels.clear(),
+        }
+        self.show_color_labels(cx);
+    }
+
+    fn show_color_labels(&mut self, cx: &mut Context<Self>) {
+        let styles = Highlighters::color_label_styles(cx);
+        let compiled = Arc::new(self.color_labels.compile(&styles));
+        for view in [&self.main, &self.filtered] {
+            let (labels, compiled) = (self.color_labels.clone(), compiled.clone());
+            view.update(cx, |v, cx| v.set_color_labels(labels, compiled, cx));
+        }
+    }
+
     fn set_search_highlight(&mut self, matcher: Option<Arc<Matcher>>, cx: &mut Context<Self>) {
         for view in [&self.main, &self.filtered] {
             let matcher = matcher.clone();
@@ -1329,5 +1363,49 @@ mod tests {
         std::fs::write(&log.0, "ERROR\nERROR\nx\n").unwrap();
         file_changed(&crawler, cx);
         assert_eq!(matches(&crawler, cx), [0, 1]);
+    }
+
+    #[gpui::test]
+    fn color_labels(cx: &mut TestAppContext) {
+        use rlogg_core::search::find::Found;
+        let log = TempLog::new("labels", 9);
+        let (crawler, cx) = crawler(cx, &log);
+        cx.update(|_, cx| cx.bind_keys(crate::highlighters::key_bindings()));
+        let (main, filtered) = crawler.read_with(cx, |c, _| (c.main.clone(), c.filtered.clone()));
+        let select = |cx: &mut VisualTestContext, row: usize, cols: std::ops::Range<usize>| {
+            main.update(cx, |v, cx| v.show_found(&Found { row, cols }, cx));
+        };
+        let label = |cx: &mut VisualTestContext, view: &Entity<LogView>, text: &str| {
+            view.read_with(cx, |v, _| v.color_labels().label_of(text))
+        };
+
+        // "ERROR" in "line 0 ERROR": Ctrl+Shift+2 gives it label 2, in both
+        // views; the same key again removes it.
+        select(cx, 0, 7..12);
+        cx.simulate_keystrokes("ctrl-shift-2");
+        assert_eq!(label(cx, &main, "ERROR"), Some(1));
+        assert_eq!(label(cx, &filtered, "ERROR"), Some(1));
+        cx.simulate_keystrokes("ctrl-shift-5");
+        assert_eq!(label(cx, &main, "ERROR"), Some(4));
+        cx.simulate_keystrokes("ctrl-shift-5");
+        assert_eq!(label(cx, &main, "ERROR"), None);
+
+        // Ctrl+D: the next label of the cycle.
+        cx.simulate_keystrokes("ctrl-d");
+        assert_eq!(label(cx, &main, "ERROR"), Some(0));
+        select(cx, 0, 0..4);
+        cx.simulate_keystrokes("ctrl-d");
+        assert_eq!(label(cx, &main, "line"), Some(1));
+
+        // A single selected line labels the whole line; several lines don't.
+        cx.simulate_keystrokes("down ctrl-shift-3");
+        assert_eq!(label(cx, &main, "line 1 error"), Some(2));
+        cx.simulate_keystrokes("shift-down ctrl-shift-4");
+        assert!(crawler.read_with(cx, |c, _| c.color_labels.words()[3].is_empty()));
+
+        // Ctrl+Shift+0 clears every label.
+        cx.simulate_keystrokes("ctrl-shift-0");
+        assert!(crawler.read_with(cx, |c, _| c.color_labels.is_empty()));
+        assert!(filtered.read_with(cx, |v, _| v.color_labels().is_empty()));
     }
 }

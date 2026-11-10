@@ -14,10 +14,13 @@
 //!   `LogFilteredDataWorker`)
 //!
 //! - [`watch`]: file change notifications (klogg: `filewatch/`)
+//! - [`highlight`]: highlighters, highlighter sets and color labels (klogg:
+//!   `HighlighterSet`, `ColorLabelsManager`)
 
 pub mod digits;
 pub mod encoding;
 pub mod file;
+pub mod highlight;
 pub mod line_index;
 pub mod search;
 pub mod selection;

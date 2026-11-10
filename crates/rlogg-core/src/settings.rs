@@ -162,48 +162,61 @@ impl Session {
     /// unreadable or unknown-version file is logged and ignored, as klogg
     /// does, so a bad file never prevents startup.
     pub fn load(dir: &Path) -> Self {
-        let path = dir.join(SESSION_FILE);
-        let text = match std::fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Self::default(),
-            Err(e) => {
-                tracing::warn!("cannot read {}: {e}", path.display());
-                return Self::default();
-            }
-        };
-        match toml::from_str::<Self>(&text) {
-            Ok(mut session) if session.version == SESSION_VERSION => {
+        match load_toml::<Self>(dir, SESSION_FILE) {
+            Some(mut session) if session.version == SESSION_VERSION => {
                 session.recent_files.sanitize();
                 session
             }
-            Ok(session) => {
+            Some(session) => {
                 tracing::warn!(
-                    "ignoring {}: unknown version {}",
-                    path.display(),
+                    "ignoring {SESSION_FILE}: unknown version {}",
                     session.version
                 );
                 Self::default()
             }
-            Err(e) => {
-                tracing::warn!("ignoring {}: {e}", path.display());
-                Self::default()
-            }
+            None => Self::default(),
         }
     }
 
-    /// Saves to `dir`, creating it if needed. Writes a temporary file and
-    /// renames it, so a crash never leaves a truncated file.
+    /// Saves to `dir`, creating it if needed.
     pub fn save(&self, dir: &Path) -> Result<(), SettingsError> {
-        let io = |path: &Path| {
-            let path = path.to_path_buf();
-            move |source| SettingsError::Io { path, source }
-        };
-        std::fs::create_dir_all(dir).map_err(io(dir))?;
-        let path = dir.join(SESSION_FILE);
-        let tmp = dir.join(format!("{SESSION_FILE}.tmp"));
-        std::fs::write(&tmp, toml::to_string_pretty(self)?).map_err(io(&tmp))?;
-        std::fs::rename(&tmp, &path).map_err(io(&path))
+        save_toml(self, dir, SESSION_FILE)
     }
+}
+
+/// Reads `dir/name` as TOML. `None` if it is missing (silently) or
+/// unreadable or invalid (logged).
+pub(crate) fn load_toml<T: serde::de::DeserializeOwned>(dir: &Path, name: &str) -> Option<T> {
+    let path = dir.join(name);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => {
+            tracing::warn!("cannot read {}: {e}", path.display());
+            return None;
+        }
+    };
+    toml::from_str(&text)
+        .inspect_err(|e| tracing::warn!("ignoring {}: {e}", path.display()))
+        .ok()
+}
+
+/// Writes `value` to `dir/name` as TOML, creating `dir` if needed. Writes a
+/// temporary file and renames it, so a crash never leaves a truncated file.
+pub(crate) fn save_toml<T: Serialize>(
+    value: &T,
+    dir: &Path,
+    name: &str,
+) -> Result<(), SettingsError> {
+    let io = |path: &Path| {
+        let path = path.to_path_buf();
+        move |source| SettingsError::Io { path, source }
+    };
+    std::fs::create_dir_all(dir).map_err(io(dir))?;
+    let path = dir.join(name);
+    let tmp = dir.join(format!("{name}.tmp"));
+    std::fs::write(&tmp, toml::to_string_pretty(value)?).map_err(io(&tmp))?;
+    std::fs::rename(&tmp, &path).map_err(io(&path))
 }
 
 /// Directory for rlogg's settings: `$RLOGG_CONFIG_DIR`, else the platform

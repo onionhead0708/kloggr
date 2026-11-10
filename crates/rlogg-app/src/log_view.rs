@@ -17,6 +17,10 @@
 //! [`FilteredLines`]. Both draw klogg's bullet margin: a dot on matching
 //! lines, an arrow on marked ones; clicking the margin toggles a mark.
 //!
+//! Lines are coloured by the active highlighter sets and the tab's color
+//! labels (see [`crate::highlighters`]), under the search-match, quick-find
+//! and selection highlights.
+//!
 //! The main view also draws klogg's overview bar between the text and the
 //! scrollbar: a tick per pixel row holding matches (red) or marks (blue),
 //! and the visible part of the file. Clicking or dragging on it scrolls
@@ -33,11 +37,17 @@ use gpui::{
     Window, actions, div, fill, point, px, relative, size,
 };
 use gpui_component::ActiveTheme;
+use gpui_component::menu::{ContextMenuExt, PopupMenu};
+use rlogg_core::highlight::{ColorLabels, Colors, CompiledSet};
 use rlogg_core::search::find::{self, Direction, Found};
 use rlogg_core::search::overview::{self, Overview};
 use rlogg_core::search::{FilteredLines, LineKind, Matcher};
 use rlogg_core::text;
 use rlogg_core::{DigitsBuffer, Drag, LogFile, Position, Selection, Viewport};
+
+use crate::highlighters::{
+    self, ClearColorLabels, Highlighters, NextColorLabel, RemoveColorLabel, SetColorLabel, hsla,
+};
 
 actions!(
     log_view,
@@ -103,13 +113,25 @@ pub fn key_bindings() -> Vec<KeyBinding> {
 }
 
 /// Emitted when the user selects a line (klogg: `newSelection`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LogViewEvent {
     /// The file line under the keyboard cursor, after a click or a key.
     LineSelected(usize),
+    /// A color label change for the selected text (klogg: `addColorLabel`,
+    /// `clearColorLabels`). The text is empty for [`LabelOp::ClearAll`].
+    ColorLabel(LabelOp, String),
     /// The user left the bottom while following, or asked to follow again
     /// by going to the bottom (klogg: `followModeChanged`).
     FollowChanged(bool),
+}
+
+/// What a color label action does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LabelOp {
+    Set(usize),
+    Remove,
+    Next,
+    ClearAll,
 }
 
 const SCROLLBAR: Pixels = px(12.);
@@ -172,6 +194,10 @@ pub struct LogView {
     /// Search pattern: its matches on visible rows are highlighted (klogg:
     /// `searchPattern_`, "main search highlight").
     search_highlight: Option<Arc<Matcher>>,
+    /// The tab's color labels (klogg: `quickHighlighters_`), and as
+    /// highlighters.
+    color_labels: ColorLabels,
+    labels_compiled: Arc<CompiledSet>,
     /// Follow mode: the view stays at the bottom as the file grows (klogg:
     /// `followElasticHook_`).
     following: bool,
@@ -199,6 +225,8 @@ impl LogView {
             hscroll_carry: px(0.),
             quick_find: None,
             search_highlight: None,
+            color_labels: ColorLabels::new(),
+            labels_compiled: Arc::default(),
             following: false,
             digits: DigitsBuffer::new(),
             overview: None,
@@ -355,6 +383,11 @@ impl LogView {
     }
 
     #[cfg(test)]
+    pub fn color_labels(&self) -> &ColorLabels {
+        &self.color_labels
+    }
+
+    #[cfg(test)]
     pub fn has_search_highlight(&self) -> bool {
         self.search_highlight.is_some()
     }
@@ -362,6 +395,40 @@ impl LogView {
     pub fn set_search_highlight(&mut self, matcher: Option<Arc<Matcher>>, cx: &mut Context<Self>) {
         self.search_highlight = matcher;
         cx.notify();
+    }
+
+    pub fn set_color_labels(
+        &mut self,
+        labels: ColorLabels,
+        compiled: Arc<CompiledSet>,
+        cx: &mut Context<Self>,
+    ) {
+        self.color_labels = labels;
+        self.labels_compiled = compiled;
+        cx.notify();
+    }
+
+    /// The text a color label applies to (klogg: enabled for a portion or a
+    /// single selected line): the selected part, or the whole line.
+    pub fn label_text(&self, cx: &App) -> Option<String> {
+        match (&self.selection, self.selection.lines()) {
+            (Selection::Portion { .. }, _) => self.selected_text(false, cx),
+            (_, Some(rows)) if rows.start() == rows.end() => self.selected_text(false, cx),
+            _ => None,
+        }
+    }
+
+    /// Emits a color label change for the selected text, if a label can
+    /// apply to the selection.
+    fn color_label(&mut self, op: LabelOp, cx: &mut Context<Self>) {
+        let text = match op {
+            LabelOp::ClearAll => String::new(),
+            _ => match self.label_text(cx) {
+                Some(text) if !text.is_empty() => text,
+                _ => return,
+            },
+        };
+        cx.emit(LogViewEvent::ColorLabel(op, text));
     }
 
     pub fn set_quick_find(&mut self, matcher: Option<Arc<Matcher>>, cx: &mut Context<Self>) {
@@ -833,8 +900,97 @@ impl Render for LogView {
             .on_action(cx.listener(|v, _: &NextMark, _, cx| v.jump_to_mark(true, cx)))
             .on_action(cx.listener(|v, _: &PrevMark, _, cx| v.jump_to_mark(false, cx)))
             .on_action(cx.listener(|v, _: &JumpToLineNumber, _, cx| v.jump_to_line_number(cx)))
+            .on_action(
+                cx.listener(|v, a: &SetColorLabel, _, cx| v.color_label(LabelOp::Set(a.label), cx)),
+            )
+            .on_action(
+                cx.listener(|v, _: &RemoveColorLabel, _, cx| v.color_label(LabelOp::Remove, cx)),
+            )
+            .on_action(cx.listener(|v, _: &NextColorLabel, _, cx| v.color_label(LabelOp::Next, cx)))
+            .on_action(
+                cx.listener(|v, _: &ClearColorLabels, _, cx| v.color_label(LabelOp::ClearAll, cx)),
+            )
             .on_key_down(cx.listener(|v, event, _, cx| v.on_key_down(event, cx)))
             .child(LogElement { view: cx.entity() })
+            .context_menu({
+                let view = cx.entity().downgrade();
+                move |menu, window, cx| {
+                    let Some(view) = view.upgrade() else {
+                        return menu;
+                    };
+                    LogView::context_menu(&view, menu, window, cx)
+                }
+            })
+    }
+}
+
+impl LogView {
+    /// klogg's log view popup menu (`AbstractLogView::createMenu`): copy,
+    /// color labels for the selected text, and the highlighter sets.
+    fn context_menu(
+        view: &Entity<Self>,
+        menu: PopupMenu,
+        window: &mut Window,
+        cx: &mut Context<PopupMenu>,
+    ) -> PopupMenu {
+        let this = view.read(cx);
+        let text = this.label_text(cx).filter(|t| !t.is_empty());
+        let current = text.as_deref().and_then(|t| this.color_labels.label_of(t));
+        let no_text = text.is_none();
+        let (focus, nothing_selected) = (this.focus.clone(), this.selection == Selection::None);
+        let styles = Highlighters::color_label_styles(cx);
+        let sets: Vec<(String, String, bool)> = cx
+            .try_global::<Highlighters>()
+            .map(|h| {
+                h.sets
+                    .sets
+                    .iter()
+                    .map(|s| (s.id.clone(), s.name.clone(), h.sets.is_active(&s.id)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        menu.action_context(focus)
+            .menu_with_disabled("Copy", Box::new(Copy), nothing_selected)
+            .separator()
+            .submenu("Color labels", window, cx, move |menu, _, _| {
+                let mut menu = menu
+                    .menu_with_check_and_disabled(
+                        "None",
+                        current.is_none(),
+                        Box::new(RemoveColorLabel),
+                        no_text,
+                    )
+                    .separator();
+                for (label, style) in styles.iter().enumerate() {
+                    menu = menu.menu_with_check_and_disabled(
+                        style.name.clone(),
+                        current == Some(label),
+                        Box::new(SetColorLabel { label }),
+                        no_text,
+                    );
+                }
+                menu.separator()
+                    .menu("Clear all", Box::new(ClearColorLabels))
+            })
+            .submenu("Highlighters", window, cx, move |menu, _, _| {
+                let any_active = sets.iter().any(|s| s.2);
+                let mut menu = menu.menu_with_disabled(
+                    "None",
+                    Box::new(highlighters::NoHighlighters),
+                    !any_active,
+                );
+                if !sets.is_empty() {
+                    menu = menu.separator();
+                }
+                for (id, name, active) in &sets {
+                    menu = menu.menu_with_check(
+                        name.clone(),
+                        *active,
+                        Box::new(highlighters::ToggleHighlighterSet { id: id.clone() }),
+                    );
+                }
+                menu
+            })
     }
 }
 
@@ -865,6 +1021,30 @@ impl Metrics {
         }
     }
 
+    /// Shapes `text` with a colour per byte range: `runs` are (length,
+    /// colour) pairs covering the text.
+    fn shape_runs(
+        &self,
+        window: &mut Window,
+        text: SharedString,
+        runs: &[(usize, Hsla)],
+    ) -> ShapedLine {
+        let runs: Vec<TextRun> = runs
+            .iter()
+            .map(|&(len, color)| TextRun {
+                len,
+                font: self.font.clone(),
+                color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            })
+            .collect();
+        window
+            .text_system()
+            .shape_line(text, self.font_size, &runs, None)
+    }
+
     fn shape(&self, window: &mut Window, text: SharedString, color: Hsla) -> ShapedLine {
         let run = TextRun {
             len: text.len(),
@@ -890,6 +1070,11 @@ struct Row {
     found: Vec<(usize, usize)>,
     /// Search pattern matches, relative to the first visible column.
     searched: Vec<(usize, usize)>,
+    /// Background of the whole row, from a whole-line highlighter.
+    line_back: Option<Hsla>,
+    /// Highlighter and color label backgrounds, relative to the first
+    /// visible column.
+    colored: Vec<(usize, usize, Hsla)>,
     kind: LineKind,
 }
 
@@ -1015,6 +1200,9 @@ impl Element for LogElement {
                         .collect()
                 };
                 let filter = view.filter.as_ref().map(|f| f.read(cx));
+                let highlighters = Highlighters::active(cx);
+                let labels = view.labels_compiled.clone();
+                let colouring = !highlighters.is_empty() || !labels.is_empty();
                 for (row, line, bytes) in shown {
                     let kind = filter.map_or_else(LineKind::default, |f| f.kind(line));
                     let win = text::window(log.encoding(), bytes, vp.left(), vp.cols() + 1);
@@ -1053,15 +1241,32 @@ impl Element for LogElement {
                         Some(m) if short && kind.matched => visible_matches(m),
                         _ => Vec::new(),
                     };
+                    // Highlighters and color labels (klogg: not on lines
+                    // selected whole, which are drawn reversed).
+                    let (line_colors, spans) = if colouring
+                        && short
+                        && !view.selection.is_line_selected(row)
+                    {
+                        colored_columns(&log, line, &highlighters, &labels, vp.left(), window_end)
+                    } else {
+                        (None, Vec::new())
+                    };
+                    let line_fg = line_colors.and_then(|c| c.fore).map_or(fg, hsla);
+                    let runs = text_runs(&win.text, line_fg, &spans);
                     let y =
                         text_bounds.top() + metrics.line_height * (row as f64 - vp.top()) as f32;
                     out.push(Row {
                         y,
                         number: metrics.shape(window, (line + 1).to_string().into(), muted),
-                        text: metrics.shape(window, win.text.into(), fg),
+                        text: metrics.shape_runs(window, win.text.into(), &runs),
                         highlight,
                         found,
                         searched,
+                        line_back: line_colors.and_then(|c| c.back).map(hsla),
+                        colored: spans
+                            .iter()
+                            .filter_map(|(from, to, c)| Some((*from, *to, hsla(c.back?))))
+                            .collect(),
                         kind,
                     });
                 }
@@ -1204,6 +1409,18 @@ impl Element for LogElement {
             }),
             |window| {
                 for row in &frame.rows {
+                    if let Some(back) = row.line_back {
+                        let w = layout.text.size.width;
+                        window.paint_quad(fill(
+                            Bounds::new(point(layout.text.left(), row.y), size(w, lh)),
+                            back,
+                        ));
+                    }
+                    for &(from, to, back) in &row.colored {
+                        let x = layout.text.left() + layout.char_width * from;
+                        let w = layout.char_width * (to - from);
+                        window.paint_quad(fill(Bounds::new(point(x, row.y), size(w, lh)), back));
+                    }
                     for &(from, to) in &row.searched {
                         let x = layout.text.left() + layout.char_width * from;
                         let w = layout.char_width * (to - from);
@@ -1298,6 +1515,67 @@ impl Element for LogElement {
             }
         });
     }
+}
+
+/// Highlighter and color-label colours of `line`: the whole line's colours,
+/// and the coloured parts as columns relative to `left`, clipped to
+/// `left..right` (klogg: the `highlighterMatches` of `drawTextArea`).
+fn colored_columns(
+    log: &LogFile,
+    line: usize,
+    highlighters: &CompiledSet,
+    labels: &CompiledSet,
+    left: usize,
+    right: usize,
+) -> (Option<Colors>, Vec<(usize, usize, Colors)>) {
+    let Some(text) = log.line_text(line) else {
+        return (None, Vec::new());
+    };
+    let mut found = highlighters.match_line(&text);
+    labels.add_matches(&text, &mut found.spans);
+    let columns = text::column_ranges(&text, &found.spans.ranges());
+    let spans = found
+        .spans
+        .with_ranges(columns)
+        .into_vec()
+        .into_iter()
+        .filter_map(|s| {
+            let start = s.range.start.max(left);
+            let end = s.range.end.min(right);
+            (start < end).then(|| (start - left, end - left, s.colors))
+        })
+        .collect();
+    (found.line, spans)
+}
+
+/// Text runs for `text` (one char per column): `fg`, except in `spans`
+/// (column ranges) with a foreground colour.
+fn text_runs(text: &str, fg: Hsla, spans: &[(usize, usize, Colors)]) -> Vec<(usize, Hsla)> {
+    // Byte offset of each column, and of the end.
+    let offsets: Vec<usize> = text
+        .char_indices()
+        .map(|(i, _)| i)
+        .chain(std::iter::once(text.len()))
+        .collect();
+    let byte = |col: usize| offsets[col.min(offsets.len() - 1)];
+    let mut runs = Vec::new();
+    let mut at = 0;
+    for &(from, to, colors) in spans {
+        let Some(fore) = colors.fore else { continue };
+        let (start, end) = (byte(from), byte(to));
+        if start >= end {
+            continue;
+        }
+        if start > at {
+            runs.push((start - at, fg));
+        }
+        runs.push((end - start, hsla(fore)));
+        at = end;
+    }
+    if at < text.len() || runs.is_empty() {
+        runs.push((text.len() - at, fg));
+    }
+    runs
 }
 
 struct BulletColors {
@@ -1683,5 +1961,67 @@ mod tests {
         assert_eq!(viewport(&view, cx).left(), 0);
         cx.simulate_keystrokes("down $");
         assert_eq!(viewport(&view, cx).left(), 200_000 - vp.cols());
+    }
+
+    #[test]
+    fn text_runs_colour_spans() {
+        use rlogg_core::highlight::Color;
+        let fg = gpui::black();
+        let red = Colors {
+            fore: Some(Color::rgb(255, 0, 0)),
+            back: None,
+        };
+        let back_only = Colors {
+            fore: None,
+            back: Some(Color::rgb(0, 0, 255)),
+        };
+        let r = hsla(Color::rgb(255, 0, 0));
+        assert_eq!(
+            text_runs("abcdef", fg, &[(1, 3, red), (3, 4, back_only)]),
+            [(1, fg), (2, r), (3, fg)]
+        );
+        // Columns are chars: "é" is two bytes.
+        assert_eq!(text_runs("éab", fg, &[(0, 2, red)]), [(3, r), (1, fg)]);
+        // Spans past the end are clipped; empty text gets one run.
+        assert_eq!(text_runs("ab", fg, &[(1, 9, red)]), [(1, fg), (1, r)]);
+        assert_eq!(text_runs("", fg, &[]), [(0, fg)]);
+    }
+
+    #[test]
+    fn colored_columns_map_bytes_to_visible_columns() {
+        use rlogg_core::highlight::{Highlighter, HighlighterSet};
+        let path = temp_log("colored", "\tERROR é x\nplain\n");
+        let log = LogFile::open(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        let mut set = HighlighterSet::new("s");
+        set.highlighters.push(Highlighter {
+            pattern: "ERROR".into(),
+            match_only: true,
+            ..Highlighter::default()
+        });
+        set.highlighters.push(Highlighter {
+            pattern: "plain".into(),
+            ..Highlighter::default()
+        });
+        let (compiled, _) = CompiledSet::compile(&set.highlighters);
+        let mut labels = ColorLabels::new();
+        labels.set(0, "x");
+        let styles = rlogg_core::highlight::ColorLabelStyle::defaults();
+        let labels = labels.compile(&styles);
+
+        // The tab expands to 8 columns: ERROR is 8..13, "x" (after "é ") 16..17.
+        let (line, spans) = colored_columns(&log, 0, &compiled, &labels, 0, 100);
+        assert_eq!(line, None);
+        let cols: Vec<_> = spans.iter().map(|s| (s.0, s.1)).collect();
+        assert_eq!(cols, [(8, 13), (16, 17)]);
+        assert_eq!(spans[1].2, styles[0].colors());
+        // Scrolled to column 10, 4 columns wide.
+        let (_, spans) = colored_columns(&log, 0, &compiled, &labels, 10, 14);
+        let cols: Vec<_> = spans.iter().map(|s| (s.0, s.1)).collect();
+        assert_eq!(cols, [(0, 3)]);
+        // A whole-line highlighter.
+        let (line, spans) = colored_columns(&log, 1, &compiled, &labels, 0, 100);
+        assert_eq!(line, Some(Highlighter::default().colors()));
+        assert!(spans.is_empty());
     }
 }

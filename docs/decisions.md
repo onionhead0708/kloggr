@@ -8,6 +8,20 @@ Newest first. Each entry gives the date, what klogg does, what rlogg does, and w
 
 ---
 
+## 2026-11-10: Highlighters: TOML settings, empty patterns, colour variance and layering
+
+**klogg:** highlighter sets and color label styles are kept in `QSettings` (`HighlighterSetCollection`), exported and imported as `.conf` files. A highlighter with an empty pattern matches every line (an empty `QRegularExpression` matches anywhere), so an empty whole-line highlighter colours the whole file. "Variate colours" seeds `std::minstd_rand0` with the CRC32 of the matched text and draws a factor from `uniform_int_distribution`. Color labels are drawn over the search-match highlight.
+
+**rlogg:**
+- Sets, active sets and color label styles are saved in `highlighters.toml` next to `session.toml`, with colours as klogg's `#aarrggbb` strings. Importing klogg's `.conf` files is not done yet.
+- A highlighter with an empty pattern never matches.
+- "Variate colours" hashes the matched text with FNV-1a for the factor (same range, `100 ± variance`, and Qt's `darker`). The shades differ from klogg's, but each string still always gets the same colour.
+- Highlighter and color label colours are opaque and drawn first. The search-match highlight (translucent gray), quick-find occurrences and the selection are drawn over them, so the search highlight tints a labelled word instead of hiding under it.
+
+**Why:** TOML matches the rest of rlogg's settings. An empty pattern is almost always a highlighter that hasn't been filled in yet, and colouring every line would be surprising. The standard library's distribution algorithm isn't specified, so klogg's exact shades can't be reproduced portably anyway. The layering keeps the translucent search highlight (see the 2026-11-09 entry) visible everywhere.
+
+**Code:** `rlogg_core::highlight`, `crate::highlighters` (app), `LogView::context_menu`, `colored_columns`.
+
 ## 2026-11-09: Changed files are detected by sampling, not by hashing the whole file
 
 **klogg:** when the file changes on disk, klogg hashes the whole indexed part again by default (`fastModificationDetection_ = false`) to tell appended data from a rewrite. A faster header-and-tail hash is an option.

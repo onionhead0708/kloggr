@@ -4,6 +4,7 @@ mod background;
 mod crawler;
 mod follow;
 mod go_to_line;
+mod highlighters;
 mod log_view;
 mod quick_find;
 mod workspace;
@@ -27,10 +28,12 @@ fn main() {
         cx.bind_keys(quick_find::key_bindings());
         cx.bind_keys(go_to_line::key_bindings());
         cx.bind_keys(follow::key_bindings());
+        cx.bind_keys(highlighters::key_bindings());
         cx.bind_keys(workspace::key_bindings());
         cx.on_action(|_: &Quit, cx| cx.quit());
+        let config_dir = rlogg_core::settings::config_dir();
+        highlighters::Highlighters::init(config_dir.clone(), cx);
         cx.open_window(WindowOptions::default(), |window, cx| {
-            let config_dir = rlogg_core::settings::config_dir();
             let workspace = cx.new(|cx| {
                 let mut workspace = Workspace::new(config_dir, window, cx);
                 // klogg: the last session first, then the file given.
