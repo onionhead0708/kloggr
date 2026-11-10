@@ -578,7 +578,7 @@ mod tests {
     #[gpui::test]
     fn incremental_then_next_and_previous(cx: &mut TestAppContext) {
         let (c, _f, cx) = setup(cx, "incremental");
-        keys(cx, "ctrl-f");
+        keys(cx, "secondary-f");
         assert!(c.read_with(cx, |c, _| c.qf.open));
         // "line 0 ERROR x": ERROR at columns 7..12.
         keys(cx, "E R");
@@ -611,7 +611,7 @@ mod tests {
     #[gpui::test]
     fn end_of_file_and_case(cx: &mut TestAppContext) {
         let (c, _f, cx) = setup(cx, "eof");
-        keys(cx, "ctrl-end ctrl-f e r r o r");
+        keys(cx, "ctrl-end secondary-f e r r o r");
         // Case-sensitive: "error" only on line 15, before the selection.
         assert_eq!(info(&c, cx), "Reached end of file, no occurrence found.");
         assert_eq!(main_selection(&c, cx), Selection::Line(99));
@@ -637,7 +637,7 @@ mod tests {
     fn invalid_regex(cx: &mut TestAppContext) {
         let (c, _f, cx) = setup(cx, "regex");
         c.update(cx, |c, _| c.qf.regex = true);
-        keys(cx, "ctrl-f ( enter");
+        keys(cx, "secondary-f ( enter");
         let (error, info) = c.read_with(cx, |c, _| (c.qf.error, c.qf.info.clone()));
         assert!(error && info.contains("unclosed group"), "{info}");
         keys(cx, "backspace l i n e space 1 \\ d");
@@ -684,7 +684,7 @@ mod tests {
         cx.run_until_parked();
 
         c.update(cx, |c, _| c.qf.match_case = false);
-        keys(cx, "ctrl-f x");
+        keys(cx, "secondary-f x");
         // The search left row 0 selected, so the find starts at row 1
         // (line 10, "x" at column 14); the main view follows.
         let filtered = c.read_with(cx, |c, cx| c.filtered.read(cx).selection().clone());

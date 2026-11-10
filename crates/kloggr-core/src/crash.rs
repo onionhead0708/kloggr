@@ -125,14 +125,20 @@ fn reports_in(dir: &Path) -> Vec<PathBuf> {
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|e| e == "txt"))
         .collect();
-    // By modification time: names sort crash-…-10 before crash-…-2.
-    files.sort_by_key(|p| {
-        (
-            std::fs::metadata(p).and_then(|m| m.modified()).ok(),
-            p.clone(),
-        )
-    });
+    // By the time and number in the name (`crash-<time>[-<n>].txt`):
+    // modification times can be equal, and plain names sort `-1` first.
+    files.sort_by_key(|p| (order_key(p), p.clone()));
     files
+}
+
+/// `(time, n)` from `crash-<time>[-<n>].txt`; other names sort last.
+fn order_key(path: &Path) -> (u64, u64) {
+    let parse = || {
+        let stem = path.file_stem()?.to_str()?.strip_prefix("crash-")?;
+        let (time, n) = stem.split_once('-').unwrap_or((stem, "0"));
+        Some((time.parse().ok()?, n.parse().ok()?))
+    };
+    parse().unwrap_or((u64::MAX, u64::MAX))
 }
 
 /// Moves the pending reports to `crashes/`, where only the last [`KEEP`]

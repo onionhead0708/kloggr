@@ -230,5 +230,6 @@ klogg also has a digits buffer: `[number] g` jumps to a line, and `[number] j/k`
 - macOS: one universal `kloggr.app` (Apple Silicon and Intel) in a .dmg, ad-hoc signed only: no Developer ID, no notarization. The README explains how to allow it.
 - The X11/Wayland primary selection only exists on Linux and FreeBSD; elsewhere selecting text no longer touches it.
 - macOS doesn't yet open files from Finder (*Open With*): it would need GPUI's open-URL events and document types in `Info.plist`.
+- Known Windows limitation: kloggr memory-maps the files it shows, and Windows refuses to truncate a file while another program has it mapped (error 1224, found by CI). A program that truncates or rewrites its log in place gets an error while the log is open in kloggr. Appending works. klogg reads files in blocks instead of mapping them, so it doesn't have this problem. The two truncation tests are skipped on Windows until this is fixed (by reading in blocks, or by mapping and releasing on each read).
 
 **Why:** signing needs a paid Apple Developer account and a Windows code-signing certificate. GitHub's Windows and macOS runners build and test the code on each push, since it can't be run on those systems here.

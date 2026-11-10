@@ -1645,6 +1645,10 @@ mod tests {
         assert_eq!(info(&crawler, cx).text, "4 matches found");
     }
 
+    #[cfg_attr(
+        windows,
+        ignore = "Windows refuses to truncate a mapped file (docs/decisions.md)"
+    )]
     #[gpui::test]
     fn truncation_drops_marks_and_results(cx: &mut TestAppContext) {
         let log = TempLog::new("truncate", 9);

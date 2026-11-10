@@ -49,6 +49,10 @@ on most Linux systems).
 The packages are not code-signed, so SmartScreen may show *"Windows protected
 your PC"* the first time. Click **More info**, then **Run anyway**.
 
+Known issue: while a log is open in kloggr, Windows doesn't let other programs
+truncate it (appending works). A program that clears or rewrites its log in
+place may get an error until you close the file in kloggr.
+
 ### macOS (11 or later, Apple Silicon and Intel)
 
 Open `kloggr-*-macos-universal.dmg` and drag **kloggr** to **Applications**.

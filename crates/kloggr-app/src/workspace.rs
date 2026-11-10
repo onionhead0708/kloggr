@@ -410,8 +410,16 @@ impl Workspace {
 
     /// Files taken out of an archive aren't remembered: they are gone
     /// after quitting.
+    /// Paths are compared resolved too: opened files are canonical, and the
+    /// temporary directory may not be (`/var` is `/private/var` on macOS,
+    /// Windows has short names and the `\\?\` prefix).
     fn is_temporary(path: &Path) -> bool {
-        path.starts_with(Self::temp_root())
+        let root = Self::temp_root();
+        let resolved = |p: &Path| std::fs::canonicalize(p).ok();
+        path.starts_with(&root)
+            || resolved(&root).is_some_and(|root| {
+                path.starts_with(&root) || resolved(path).is_some_and(|path| path.starts_with(root))
+            })
     }
 
     /// Decompresses or extracts `path` on a thread, with progress in the

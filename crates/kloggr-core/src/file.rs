@@ -409,6 +409,10 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    #[cfg_attr(
+        windows,
+        ignore = "Windows refuses to truncate a mapped file (docs/decisions.md)"
+    )]
     #[test]
     fn detects_truncation_and_rewrites() {
         let path = temp_file("truncate.log", b"aaaa\nbbbb\n");
