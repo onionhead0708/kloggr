@@ -11,6 +11,7 @@ mod log_view;
 mod options_dialog;
 mod preferences;
 mod quick_find;
+mod saved_searches;
 mod shortcuts;
 mod workspace;
 
@@ -37,6 +38,7 @@ fn main() {
             preferences::Preferences::init(config_dir.clone(), cx);
             preferences::Preferences::apply_style(None, cx);
             highlighters::Highlighters::init(config_dir.clone(), cx);
+            saved_searches::SavedSearches::init(config_dir.clone(), cx);
             cx.open_window(WindowOptions::default(), |window, cx| {
                 let workspace = cx.new(|cx| {
                     let mut workspace = Workspace::new(config_dir, window, cx);

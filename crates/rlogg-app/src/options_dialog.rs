@@ -22,6 +22,7 @@ use rlogg_core::options::{Options, Style};
 use crate::highlighters::hsla;
 use crate::key_capture;
 use crate::preferences::Preferences;
+use crate::saved_searches::SavedSearches;
 use crate::shortcuts::{self, Shortcut};
 
 /// Emitted when the dialog should close.
@@ -52,6 +53,8 @@ pub struct OptionsEditor {
     font_family: Entity<InputState>,
     font_size: Entity<InputState>,
     recent_files: Entity<InputState>,
+    /// klogg: "Search history size" (kept with the history).
+    history_size: Entity<InputState>,
     search_color: Entity<ColorPickerState>,
     quickfind_color: Entity<ColorPickerState>,
     shortcuts: Vec<ShortcutRow>,
@@ -93,6 +96,12 @@ impl OptionsEditor {
             cx,
         );
         let recent_files = input(options.file.recent_files.to_string(), "", window, cx);
+        let history_size = input(
+            SavedSearches::get(cx).history_size.to_string(),
+            "",
+            window,
+            cx,
+        );
         let picker = |color: Option<Color>, window: &mut Window, cx: &mut Context<Self>| {
             cx.new(|cx| {
                 let mut s = ColorPickerState::new(window, cx);
@@ -131,6 +140,7 @@ impl OptionsEditor {
             font_family,
             font_size,
             recent_files,
+            history_size,
             search_color,
             quickfind_color,
             shortcuts,
@@ -232,8 +242,22 @@ impl OptionsEditor {
 
     /// Installs the edited options; false if a field is invalid.
     pub fn apply(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let size = self.history_size.read(cx).value().trim().to_owned();
+        let history_size = match size.parse::<usize>() {
+            Ok(n) if (1..=1000).contains(&n) => n,
+            _ => {
+                self.error = Some(format!(
+                    "Search history size: {size:?} is not a number from 1 to 1000"
+                ));
+                cx.notify();
+                return false;
+            }
+        };
         match self.edited(cx) {
             Ok(options) => {
+                if SavedSearches::get(cx).history_size != history_size {
+                    SavedSearches::update(cx, |s| s.set_history_size(history_size));
+                }
                 self.options = options.clone();
                 self.error = None;
                 Preferences::set(options, Some(window), cx);
@@ -392,6 +416,16 @@ impl OptionsEditor {
                 |o| o.search.highlight_color = None,
                 cx,
             ))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(div().w(px(160.)).text_sm().child("Search history size"))
+                    .child(
+                        div()
+                            .w(px(64.))
+                            .child(Input::new(&self.history_size).small()),
+                    ),
+            )
             .child(heading("Quick find"))
             .child(
                 h_flex()

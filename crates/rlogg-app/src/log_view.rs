@@ -76,6 +76,9 @@ actions!(
         PrevMark,
         JumpToLineNumber,
         ToggleFreezeColumns,
+        AddToSearch,
+        ExcludeFromSearch,
+        ReplaceSearch,
     ]
 );
 
@@ -207,6 +210,27 @@ pub fn shortcuts() -> Vec<Shortcut> {
             PrevMark,
         ),
         Shortcut::new(
+            "logview.add_to_search",
+            "Add selection to search pattern",
+            c,
+            &["shift-a"],
+            AddToSearch,
+        ),
+        Shortcut::new(
+            "logview.exclude_from_search",
+            "Exclude selection from search pattern",
+            c,
+            &["shift-e"],
+            ExcludeFromSearch,
+        ),
+        Shortcut::new(
+            "logview.replace_search",
+            "Replace search pattern with selection",
+            c,
+            &["shift-r"],
+            ReplaceSearch,
+        ),
+        Shortcut::new(
             "logview.jump_to_line_number",
             "Jump to line number typed before",
             c,
@@ -229,12 +253,23 @@ pub enum LogViewEvent {
     /// The user changed the frozen columns: toggled them, or dragged the
     /// separator (klogg: `frozenColumnsChanged`).
     FreezeChanged(FrozenView),
+    /// The selected text goes into the search pattern.
+    Search(SearchOp, String),
     /// A color label change for the selected text (klogg: `addColorLabel`,
     /// `clearColorLabels`). The text is empty for [`LabelOp::ClearAll`].
     ColorLabel(LabelOp, String),
     /// The user left the bottom while following, or asked to follow again
     /// by going to the bottom (klogg: `followModeChanged`).
     FollowChanged(bool),
+}
+
+/// What the selection does to the search (klogg: `addToSearch`,
+/// `excludeFromSearch`, `replaceSearch`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchOp {
+    Add,
+    Exclude,
+    Replace,
 }
 
 /// What a color label action does.
@@ -588,6 +623,12 @@ impl LogView {
             },
         };
         cx.emit(LogViewEvent::ColorLabel(op, text));
+    }
+
+    fn search_op(&mut self, op: SearchOp, cx: &mut Context<Self>) {
+        if let Some(text) = self.label_text(cx).filter(|t| !t.is_empty()) {
+            cx.emit(LogViewEvent::Search(op, text));
+        }
     }
 
     pub fn set_quick_find(&mut self, matcher: Option<Arc<Matcher>>, cx: &mut Context<Self>) {
@@ -1054,6 +1095,13 @@ impl Render for LogView {
                 cx.notify();
             }))
             .on_action(cx.listener(|v, _: &ToggleFreezeColumns, _, cx| v.toggle_freeze(cx)))
+            .on_action(cx.listener(|v, _: &AddToSearch, _, cx| v.search_op(SearchOp::Add, cx)))
+            .on_action(
+                cx.listener(|v, _: &ExcludeFromSearch, _, cx| v.search_op(SearchOp::Exclude, cx)),
+            )
+            .on_action(
+                cx.listener(|v, _: &ReplaceSearch, _, cx| v.search_op(SearchOp::Replace, cx)),
+            )
             .on_action(cx.listener(|v, _: &StartOfLine, _, cx| {
                 v.viewport.set_left(0);
                 cx.notify();
@@ -1143,6 +1191,10 @@ impl LogView {
             .unwrap_or_default();
         menu.action_context(focus)
             .menu_with_disabled("Copy", Box::new(Copy), nothing_selected)
+            .separator()
+            .menu_with_disabled("Add to search", Box::new(AddToSearch), no_text)
+            .menu_with_disabled("Exclude from search", Box::new(ExcludeFromSearch), no_text)
+            .menu_with_disabled("Replace search", Box::new(ReplaceSearch), no_text)
             .separator()
             .menu_with_check("Freeze columns", frozen, Box::new(ToggleFreezeColumns))
             .separator()

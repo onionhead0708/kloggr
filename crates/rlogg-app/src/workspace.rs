@@ -27,7 +27,9 @@ use rlogg_core::settings::{FileContext, OpenFile, Session};
 use rlogg_core::{IndexProgress, LogFile, OpenOptions};
 
 use crate::background;
-use crate::crawler::{Crawler, CrawlerEvent, ToggleFreezeFiltered, ToggleFreezeMain};
+use crate::crawler::{
+    Crawler, CrawlerEvent, EditPredefinedFilters, ToggleFreezeFiltered, ToggleFreezeMain,
+};
 use crate::highlighters::{EditHighlighters, Highlighters, NoHighlighters, ToggleHighlighterSet};
 use crate::highlighters_dialog;
 use crate::options_dialog;
@@ -304,6 +306,7 @@ impl Workspace {
             ]),
             Menu::new("Tools").items([
                 MenuItem::action("Options…", ShowOptions),
+                MenuItem::action("Predefined Filters…", EditPredefinedFilters),
                 MenuItem::separator(),
                 MenuItem::action("Highlighters…", EditHighlighters),
                 MenuItem::submenu(Highlighters::menu(cx)),
@@ -849,6 +852,9 @@ impl Render for Workspace {
             .on_action(
                 cx.listener(|_, _: &ShowOptions, window, cx| options_dialog::open(window, cx)),
             )
+            .on_action(cx.listener(|_, _: &EditPredefinedFilters, window, cx| {
+                crate::saved_searches::edit_filters(window, cx)
+            }))
             .on_action(cx.listener(|_, _: &ToggleOverview, window, cx| {
                 toggle_view_option(|v| &mut v.overview, window, cx)
             }))

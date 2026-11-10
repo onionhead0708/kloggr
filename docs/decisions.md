@@ -8,6 +8,22 @@ Newest first. Each entry gives the date, what klogg does, what rlogg does, and w
 
 ---
 
+## 2026-11-10: Search history and predefined filters
+
+**klogg:** the search box is an editable combo box that lists the history. Predefined filters are a check-list combo box, and checking one replaces the search with the checked filters joined by `|` (or `or`). In boolean mode, pieces are quoted without escaping their quotes, and "Exclude from search" on an empty search gives `"" and not(...)`. The predefined filters dialog can import and export `.conf` files.
+
+**rlogg:**
+- The history is a drop-down button next to the search box: a recent search runs at once. It also has "Clear search history" and "Edit search history…".
+- The filters are a "Filters" drop-down with check marks. It also has "Save search as filter…" (klogg has this in the search box's context menu) and "Edit predefined filters…".
+- In boolean mode, quotes inside a piece are escaped (`\"`), and excluding from an empty search gives just `not("...")`.
+- A filter counts as checked when it is exactly one of the alternatives of the search.
+- Importing and exporting predefined filters is not done.
+- History, history size and filters are saved in `searches.toml`.
+
+**Why:** GPUI has no editable combo box. Escaping the quotes keeps the boolean search valid. Filter import and export can follow if it's asked for.
+
+**Code:** `rlogg_core::searches`, `crate::saved_searches`, `Crawler::{history_button, filters_button, search_from_view}`.
+
 ## 2026-11-10: Options dialog: line numbers on by default, fewer options
 
 **klogg:** the main view hides line numbers by default (`lineNumbersVisibleInMain_ = false`). The options dialog also has text wrap, language, High DPI, ANSI colour hiding, archives, https verification, the regex engine, read buffers, the search cache, logging and version checking.

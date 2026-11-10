@@ -17,7 +17,7 @@ use gpui_component::button::{Button, ButtonVariants, Toggle};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{DropdownMenu, PopupMenu};
 use gpui_component::resizable::{resizable_panel, v_resizable};
-use gpui_component::{ActiveTheme, Sizable};
+use gpui_component::{ActiveTheme, IconName, Sizable};
 use rlogg_core::search::{self, FilteredLines, Matcher, Pattern, SearchProgress, Visibility};
 use rlogg_core::settings::{FileContext, FrozenView};
 use rlogg_core::{Cancelled, LogFile};
@@ -26,11 +26,13 @@ use crate::background;
 use crate::follow::{self, Watch};
 use crate::go_to_line::{self, GoToLine};
 use crate::highlighters::Highlighters;
-use crate::log_view::{self, LabelOp, LogView, LogViewEvent};
+use crate::log_view::{self, LabelOp, LogView, LogViewEvent, SearchOp};
 use crate::quick_find::{self, QuickFind, Target};
+use crate::saved_searches::{self, SavedSearches};
 use crate::shortcuts::Shortcut;
 use rlogg_core::highlight::ColorLabels;
 use rlogg_core::search::find::Direction;
+use rlogg_core::searches::{self as compose, Mode};
 
 actions!(
     crawler,
@@ -47,8 +49,27 @@ actions!(
         ToggleBoolean,
         ToggleFreezeMain,
         ToggleFreezeFiltered,
+        ClearSearchHistory,
+        EditSearchHistory,
+        SaveSearchAsFilter,
+        EditPredefinedFilters,
     ]
 );
+
+/// Runs a search from the history (the search box's dropdown).
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = crawler, no_json)]
+pub struct UseSearch {
+    pub text: String,
+}
+
+/// Checks or unchecks a predefined filter: the search becomes the checked
+/// filters combined (klogg: `PredefinedFiltersComboBox::filterChanged`).
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = crawler, no_json)]
+pub struct TogglePredefinedFilter {
+    pub index: usize,
+}
 
 pub(crate) const CONTEXT: &str = "Crawler";
 
@@ -274,24 +295,34 @@ impl Crawler {
                     this.start_search(cx);
                 }
             }),
-            cx.subscribe(&main, |this, _, event: &LogViewEvent, cx| match event {
-                &LogViewEvent::LineSelected(line) => this.current_line = line,
-                &LogViewEvent::FollowChanged(on) => this.set_follow(on, cx),
-                LogViewEvent::ColorLabel(op, text) => this.color_label(*op, text, cx),
-                LogViewEvent::FreezeChanged(_) => cx.emit(CrawlerEvent::FrozenChanged),
-            }),
-            cx.subscribe(&filtered, |this, _, event: &LogViewEvent, cx| match event {
-                &LogViewEvent::LineSelected(line) => {
-                    // klogg: `jumpToMatchingLine`, which also stops
-                    // following.
-                    this.current_line = line;
-                    this.set_follow(false, cx);
-                    this.main.update(cx, |v, cx| v.show_line(line, cx));
-                }
-                &LogViewEvent::FollowChanged(on) => this.set_follow(on, cx),
-                LogViewEvent::ColorLabel(op, text) => this.color_label(*op, text, cx),
-                LogViewEvent::FreezeChanged(_) => cx.emit(CrawlerEvent::FrozenChanged),
-            }),
+            cx.subscribe_in(
+                &main,
+                window,
+                |this, _, event: &LogViewEvent, window, cx| match event {
+                    &LogViewEvent::LineSelected(line) => this.current_line = line,
+                    &LogViewEvent::FollowChanged(on) => this.set_follow(on, cx),
+                    LogViewEvent::ColorLabel(op, text) => this.color_label(*op, text, cx),
+                    LogViewEvent::FreezeChanged(_) => cx.emit(CrawlerEvent::FrozenChanged),
+                    LogViewEvent::Search(op, text) => this.search_from_view(*op, text, window, cx),
+                },
+            ),
+            cx.subscribe_in(
+                &filtered,
+                window,
+                |this, _, event: &LogViewEvent, window, cx| match event {
+                    &LogViewEvent::LineSelected(line) => {
+                        // klogg: `jumpToMatchingLine`, which also stops
+                        // following.
+                        this.current_line = line;
+                        this.set_follow(false, cx);
+                        this.main.update(cx, |v, cx| v.show_line(line, cx));
+                    }
+                    &LogViewEvent::FollowChanged(on) => this.set_follow(on, cx),
+                    LogViewEvent::ColorLabel(op, text) => this.color_label(*op, text, cx),
+                    LogViewEvent::FreezeChanged(_) => cx.emit(CrawlerEvent::FrozenChanged),
+                    LogViewEvent::Search(op, text) => this.search_from_view(*op, text, window, cx),
+                },
+            ),
             cx.observe(&filter, |_, _, cx| cx.notify()),
             // Color label styles may change in the highlighters dialog.
             cx.observe_global::<Highlighters>(|this, cx| this.show_color_labels(cx)),
@@ -482,6 +513,8 @@ impl Crawler {
             self.clear_search(cx);
             return;
         }
+        // klogg: `savedSearches_->addRecent`.
+        SavedSearches::update(cx, |s| s.add_recent(&text));
         self.run(self.options.pattern(&text), cx);
     }
 
@@ -710,9 +743,133 @@ impl Crawler {
         self.filter.read(cx).visibility()
     }
 
+    fn search_mode(&self) -> Mode {
+        Mode {
+            regex: self.options.regex,
+            boolean: self.options.boolean,
+        }
+    }
+
+    fn search_text(&self, cx: &gpui::App) -> String {
+        self.input.read(cx).value().to_string()
+    }
+
+    /// Puts `text` in the search box and focuses it, ready for Enter
+    /// (klogg: `setSearchPattern`; searching at once is an option there,
+    /// off by default).
+    fn set_search_pattern(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.input.update(cx, |input, cx| {
+            input.set_value(text, window, cx);
+            input.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    /// klogg: `addToSearch`, `excludeFromSearch`, `replaceSearch`.
+    fn search_from_view(
+        &mut self,
+        op: SearchOp,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mode = self.search_mode();
+        let current = self.search_text(cx);
+        let search = match op {
+            SearchOp::Add => compose::combine(&current, &compose::escape(text, false, mode), mode),
+            SearchOp::Replace => compose::escape(text, false, mode),
+            SearchOp::Exclude => {
+                let (search, mode) = compose::exclude(&current, text, mode);
+                self.options.boolean = mode.boolean;
+                search
+            }
+        };
+        self.set_search_pattern(search, window, cx);
+    }
+
+    fn toggle_filter(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let filters = SavedSearches::get(cx).filters;
+        let mode = self.search_mode();
+        let mut checked = compose::checked_filters(&self.search_text(cx), &filters, mode);
+        let Some(on) = checked.get_mut(index) else {
+            return;
+        };
+        *on = !*on;
+        let search = compose::from_filters(
+            filters
+                .iter()
+                .zip(&checked)
+                .filter(|(_, on)| **on)
+                .map(|(f, _)| f),
+            mode,
+        );
+        self.set_search_pattern(search, window, cx);
+    }
+
     fn toggle(&mut self, f: impl FnOnce(&mut SearchOptions), cx: &mut Context<Self>) {
         f(&mut self.options);
         cx.notify();
+    }
+
+    /// The search history (klogg: the search combo box's list), with
+    /// klogg's "Clear search history" and "Edit search history".
+    fn history_button(&self, _: &mut Context<Self>) -> impl IntoElement {
+        Button::new("history")
+            .icon(IconName::ChevronDown)
+            .tooltip("Recent searches")
+            .small()
+            .ghost()
+            .dropdown_menu(|menu, _, cx| {
+                let history = SavedSearches::get(cx).history;
+                let mut menu = menu.max_h(px(420.));
+                if history.is_empty() {
+                    menu = menu.label("No recent searches");
+                }
+                for text in history {
+                    let label: String = text.chars().take(80).collect();
+                    menu = menu.menu(label, Box::new(UseSearch { text }));
+                }
+                menu.separator()
+                    .menu("Clear search history", Box::new(ClearSearchHistory))
+                    .menu("Edit search history…", Box::new(EditSearchHistory))
+            })
+    }
+
+    /// klogg's predefined filters drop-down: check filters to search for
+    /// them combined.
+    fn filters_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let this = cx.entity().downgrade();
+        Button::new("predefined-filters")
+            .label("Filters")
+            .tooltip("Predefined filters")
+            .small()
+            .outline()
+            .dropdown_caret(true)
+            .dropdown_menu(move |menu, _, cx| {
+                let filters = SavedSearches::get(cx).filters;
+                let checked = this
+                    .upgrade()
+                    .map(|c| {
+                        let c = c.read(cx);
+                        compose::checked_filters(&c.search_text(cx), &filters, c.search_mode())
+                    })
+                    .unwrap_or_default();
+                let mut menu = menu.max_h(px(420.));
+                if filters.is_empty() {
+                    menu = menu.label("No predefined filters");
+                }
+                for (index, f) in filters.iter().enumerate() {
+                    let on = checked.get(index).copied().unwrap_or(false);
+                    menu = menu.menu_with_check(
+                        f.name.clone(),
+                        on,
+                        Box::new(TogglePredefinedFilter { index }),
+                    );
+                }
+                menu.separator()
+                    .menu("Save search as filter…", Box::new(SaveSearchAsFilter))
+                    .menu("Edit predefined filters…", Box::new(EditPredefinedFilters))
+            })
     }
 
     fn render_search_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -773,6 +930,8 @@ impl Crawler {
                     }),
             )
             .child(div().flex_1().child(Input::new(&self.input).small()))
+            .child(self.history_button(cx))
+            .child(self.filters_button(cx))
             .child(
                 option("match-case", "Aa", "Match case (Alt+4)", o.match_case).on_click(
                     cx.listener(|this, on: &bool, _, cx| this.toggle(|o| o.match_case = *on, cx)),
@@ -932,6 +1091,28 @@ impl Render for Crawler {
             }))
             .on_action(cx.listener(|this, _: &follow::ToggleFollow, _, cx| {
                 this.set_follow(!this.following, cx)
+            }))
+            .on_action(cx.listener(|this, a: &UseSearch, window, cx| {
+                this.set_search_pattern(a.text.clone(), window, cx);
+                this.start_search(cx);
+            }))
+            .on_action(cx.listener(|this, a: &TogglePredefinedFilter, window, cx| {
+                this.toggle_filter(a.index, window, cx)
+            }))
+            .on_action(cx.listener(|_, _: &ClearSearchHistory, _, cx| {
+                SavedSearches::update(cx, |s| s.history.clear())
+            }))
+            .on_action(cx.listener(|_, _: &EditSearchHistory, window, cx| {
+                saved_searches::edit_history(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SaveSearchAsFilter, window, cx| {
+                let text = this.search_text(cx);
+                if !text.is_empty() {
+                    saved_searches::save_as_filter(text, this.options.regex, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|_, _: &EditPredefinedFilters, window, cx| {
+                saved_searches::edit_filters(window, cx)
             }))
             .on_action(
                 cx.listener(|this, _: &ToggleFreezeMain, _, cx| this.toggle_freeze(false, cx)),
@@ -1543,5 +1724,80 @@ mod tests {
         cx.simulate_keystrokes("ctrl-shift-0");
         assert!(crawler.read_with(cx, |c, _| c.color_labels.is_empty()));
         assert!(filtered.read_with(cx, |v, _| v.color_labels().is_empty()));
+    }
+
+    #[gpui::test]
+    fn selection_into_search_filters_and_history(cx: &mut TestAppContext) {
+        use rlogg_core::search::find::Found;
+        use rlogg_core::searches::PredefinedFilter;
+        let log = TempLog::new("compose", 9);
+        let (crawler, cx) = crawler(cx, &log);
+        cx.update(|_, cx| SavedSearches::init(None, cx));
+        let main = crawler.read_with(cx, |c, _| c.main.clone());
+        let select = |cx: &mut VisualTestContext, row: usize, cols: std::ops::Range<usize>| {
+            main.update_in(cx, |v, window, cx| {
+                v.show_found(&Found { row, cols }, cx);
+                let focus = v.focus_handle(cx);
+                window.focus(&focus, cx);
+            });
+        };
+        let text = |cx: &mut VisualTestContext| crawler.read_with(cx, |c, cx| c.search_text(cx));
+
+        // klogg: Shift+A adds, Shift+R replaces, Shift+E excludes.
+        select(cx, 0, 7..12);
+        cx.simulate_keystrokes("shift-a");
+        assert_eq!(text(cx), "ERROR");
+        select(cx, 2, 7..10);
+        cx.simulate_keystrokes("shift-a");
+        assert_eq!(text(cx), r"ERROR|a\.b");
+        select(cx, 1, 7..12);
+        cx.simulate_keystrokes("shift-r");
+        assert_eq!(text(cx), "error");
+        select(cx, 0, 0..4);
+        cx.simulate_keystrokes("shift-e");
+        assert_eq!(text(cx), r#""error" and not("line")"#);
+        assert!(crawler.read_with(cx, |c, _| c.options.boolean));
+
+        // Predefined filters: checking them builds the search.
+        cx.update(|_, cx| {
+            SavedSearches::update(cx, |s| {
+                s.filters = vec![
+                    PredefinedFilter {
+                        name: "Errors".into(),
+                        pattern: "ERROR".into(),
+                        regex: true,
+                    },
+                    PredefinedFilter {
+                        name: "Dots".into(),
+                        pattern: "a.b".into(),
+                        regex: false,
+                    },
+                ]
+            })
+        });
+        crawler.update_in(cx, |c, window, cx| {
+            c.options.boolean = false;
+            c.set_search_pattern(String::new(), window, cx);
+            c.toggle_filter(0, window, cx);
+            assert_eq!(c.search_text(cx), "ERROR");
+            c.toggle_filter(1, window, cx);
+            assert_eq!(c.search_text(cx), r"ERROR|a\.b");
+            c.toggle_filter(0, window, cx);
+            assert_eq!(c.search_text(cx), r"a\.b");
+        });
+
+        // Searches go into the history; picking one runs it.
+        crawler.update(cx, |c, cx| c.start_search(cx));
+        cx.run_until_parked();
+        assert_eq!(cx.update(|_, cx| SavedSearches::get(cx).history), [r"a\.b"]);
+        cx.dispatch_action(UseSearch {
+            text: "ERROR".into(),
+        });
+        cx.run_until_parked();
+        assert_eq!(matches(&crawler, cx), [0, 3, 6]);
+        assert_eq!(
+            cx.update(|_, cx| SavedSearches::get(cx).history),
+            ["ERROR", r"a\.b"]
+        );
     }
 }
