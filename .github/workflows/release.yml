@@ -1,10 +1,13 @@
 name: Release
 
-# Push a tag like v0.1.0 to build the Linux packages and attach them to a
-# GitHub release of that name.
+# Pushing a tag like v0.1.0 builds the packages for Linux, Windows and macOS
+# and publishes them as a GitHub release of that name. Started by hand
+# (Actions > Release > Run workflow), it only builds the packages and keeps
+# them as workflow artifacts, to try them.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -34,18 +37,65 @@ jobs:
             https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x "$RUNNER_TEMP/appimagetool"
           echo "APPIMAGETOOL=$RUNNER_TEMP/appimagetool" >> "$GITHUB_ENV"
-      - name: Version matches the tag
-        run: |
-          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          test "v$version" = "$GITHUB_REF_NAME" || { echo "Cargo.toml has $version, tag is $GITHUB_REF_NAME"; exit 1; }
       - name: Packages
         env:
           # Runners have no FUSE: let the AppImage tool unpack itself.
           APPIMAGE_EXTRACT_AND_RUN: 1
         run: scripts/package-linux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: target/package/*
+
+  windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust (version from rust-toolchain.toml)
+        shell: bash
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: WiX
+        run: dotnet tool install --global wix --version 5.0.2
+      - name: Packages
+        shell: bash
+        run: scripts/package-windows.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: target/package/*
+
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust (version from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Packages
+        run: scripts/package-macos.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: target/package/*
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Version matches the tag
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "Cargo.toml has $version, tag is $GITHUB_REF_NAME"; exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          path: packages
+          merge-multiple: true
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" target/package/* \
+          gh release create "$GITHUB_REF_NAME" packages/* \
             --title "kloggr $GITHUB_REF_NAME" --generate-notes

@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- kloggr installer (WiX 5). Built by scripts/package-windows.sh:
+     wix build kloggr.wxs -arch x64 -d Version=… -d BinFile=… -d IconFile=… -d LicenseFile=… -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <!-- UpgradeCode stays the same for every version, so a new installer
+       replaces the old one. -->
+  <Package Name="kloggr"
+           Manufacturer="kloggr"
+           Version="$(var.Version)"
+           UpgradeCode="50d1c517-1a59-4d6d-9659-33e1a8160aa1"
+           Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of kloggr is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="kloggr.ico" SourceFile="$(var.IconFile)" />
+    <Property Id="ARPPRODUCTICON" Value="kloggr.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/onionhead0708/kloggr" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="kloggr" />
+    </StandardDirectory>
+
+    <ComponentGroup Id="Files" Directory="INSTALLFOLDER">
+      <Component>
+        <File Source="$(var.BinFile)" KeyPath="yes">
+          <Shortcut Name="kloggr"
+                    Description="Log file viewer"
+                    Directory="ProgramMenuFolder"
+                    WorkingDirectory="INSTALLFOLDER"
+                    Icon="kloggr.ico"
+                    Advertise="yes" />
+        </File>
+      </Component>
+      <Component>
+        <File Source="$(var.LicenseFile)" Name="LICENSE.txt" />
+      </Component>
+    </ComponentGroup>
+
+    <Feature Id="Main">
+      <ComponentGroupRef Id="Files" />
+    </Feature>
+  </Package>
+</Wix>

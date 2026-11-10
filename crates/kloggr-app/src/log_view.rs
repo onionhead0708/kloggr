@@ -273,6 +273,7 @@ struct CopyLimits {
     /// in memory, often more than once.
     max: u64,
     /// The primary selection, updated on every mouse selection.
+    #[cfg_attr(not(any(target_os = "linux", target_os = "freebsd")), allow(dead_code))]
     primary: u64,
     /// Sending to the scratchpad.
     scratchpad: u64,
@@ -961,6 +962,8 @@ impl LogView {
 
     /// X11/Wayland primary selection (klogg: `updateGlobalSelection`). Set
     /// on every mouse selection, so a big one is left out.
+    /// Linux and FreeBSD only: other systems have no primary selection.
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     fn update_primary(&self, cx: &mut Context<Self>) {
         if self.selection_bytes(cx) > self.limits.primary {
             return;
@@ -969,6 +972,9 @@ impl LogView {
             cx.write_to_primary(ClipboardItem::new_string(text));
         }
     }
+
+    #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+    fn update_primary(&self, _: &mut Context<Self>) {}
 
     /// Widest of `rows`, in display columns (expanded).
     fn rows_width(&self, rows: std::ops::Range<usize>, cx: &App) -> usize {
@@ -2421,6 +2427,7 @@ mod tests {
         );
     }
 
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     #[gpui::test]
     fn big_selection_skips_primary(cx: &mut TestAppContext) {
         let (view, cx) = open(cx, "primary.log", &numbered(10));

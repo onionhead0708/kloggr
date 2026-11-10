@@ -80,6 +80,8 @@ cargo deny check                 # license / advisory check (GPL-compatible deps
 cargo bench -p kloggr-core        # criterion benches (KLOGGR_BENCH_SIZE_MB=10240 for 10 GB)
 scripts/bench-vs-klogg.sh 1024   # indexing time vs klogg on the same generated files
 scripts/package-linux.sh         # tarball, .deb (and AppImage with appimagetool) in target/package/
+scripts/package-windows.sh       # Windows .zip and .msi (Git Bash on Windows, WiX 5); CI runs it
+scripts/package-macos.sh         # macOS universal .dmg (on a Mac); CI runs it
 ```
 
 ### Visual check (headless)
@@ -107,7 +109,7 @@ check new shortcuts in the real app too (see the color-label entry in `docs/deci
 - For headless visual checks: `xvfb xdotool imagemagick`
 - For packaging: `dpkg-dev fakeroot`, and `appimagetool` (github.com/AppImage/appimagetool releases) on PATH
 - Platforms: develop and test on Linux (X11 and Wayland). Keep code portable; Windows
-  and macOS CI come later.
+  and macOS are built and tested by CI (`.github/workflows/ci.yml`) on every push.
 
 ## Roadmap
 
@@ -140,7 +142,7 @@ check new shortcuts in the real app too (see the color-label entry in `docs/deci
 ### Phase 4: extras and release
 - [x] Predefined filters, saved searches, scratchpad (search history and Filters drop-downs, Tools > Predefined Filters…, Add/Exclude/Replace search, scratchpad window with transforms)
 - [x] Archive/compressed file opening (klogg `decompressor`): gzip, bzip2, xz, lzma, zip, 7z, tar (also compressed), extracted to a temporary folder
-- [ ] Packaging: tarball, .deb and AppImage done (`scripts/package-linux.sh`, `packaging/linux/`; `appimagetool` in `~/.local/bin`); then Windows (.msi) and macOS (.dmg) CI
+- [x] Packaging: Linux tarball, .deb and AppImage (`scripts/package-linux.sh`; `appimagetool` in `~/.local/bin`), Windows .zip and .msi (`scripts/package-windows.sh`, WiX 5), macOS universal .dmg (`scripts/package-macos.sh`), unsigned; built by `.github/workflows/release.yml` on `v*` tags. Windows/macOS are only checked by CI, never run here
 - [x] Version check against GitHub releases (`kloggr-core::version_check`, app `update_check`), crash/panic reporting (`kloggr-core::crash`, report shown at the next start with a GitHub issue link)
 - [x] Copying large selections: size from the line index, ask above 64 MiB and copy on a worker thread, refuse above 1 GiB (`docs/decisions.md`)
 

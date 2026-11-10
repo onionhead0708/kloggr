@@ -26,3 +26,7 @@ ureq.workspace = true
 [dev-dependencies]
 flate2.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
+
+[build-dependencies]
+# Puts the icon and version into kloggr.exe (Windows targets only).
+winresource = { version = "0.1", default-features = false }

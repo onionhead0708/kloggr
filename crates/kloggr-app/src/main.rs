@@ -1,5 +1,9 @@
 //! kloggr desktop app. See CLAUDE.md for the roadmap.
 
+// No console window next to the app on Windows (debug builds keep it for
+// logs and panics).
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod archives;
 mod background;
 mod crash_report;

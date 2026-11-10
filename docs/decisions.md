@@ -220,3 +220,15 @@ klogg also has a digits buffer: `[number] g` jumps to a line, and `[number] j/k`
 **Why:** GitHub releases are where the packages are published, so no separate version file is needed.
 
 **Code:** `kloggr_core::version_check`, `crate::update_check`.
+
+## 2026-11-10: Unsigned Windows and macOS packages
+
+**klogg:** ships an .msi and a portable .zip for Windows, and a .dmg for macOS. Its macOS app is unsigned too.
+
+**kloggr:**
+- Windows: `kloggr.exe` carries the icon and has no console window in release builds. Packages are a portable .zip and an .msi made with WiX 5 (per-machine, Start menu shortcut, upgrades in place). Not code-signed.
+- macOS: one universal `kloggr.app` (Apple Silicon and Intel) in a .dmg, ad-hoc signed only: no Developer ID, no notarization. The README explains how to allow it.
+- The X11/Wayland primary selection only exists on Linux and FreeBSD; elsewhere selecting text no longer touches it.
+- macOS doesn't yet open files from Finder (*Open With*): it would need GPUI's open-URL events and document types in `Info.plist`.
+
+**Why:** signing needs a paid Apple Developer account and a Windows code-signing certificate. GitHub's Windows and macOS runners build and test the code on each push, since it can't be run on those systems here.
