@@ -2,6 +2,7 @@
 
 mod archives;
 mod background;
+mod crash_report;
 mod crawler;
 mod follow;
 mod go_to_line;
@@ -28,6 +29,9 @@ fn main() {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     let path = std::env::args_os().nth(1).map(PathBuf::from);
+    if let Some(dir) = rlogg_core::settings::config_dir() {
+        rlogg_core::crash::install_hook(dir);
+    }
 
     gpui_platform::application()
         // SVG icons used by gpui-component (menu check marks, chevrons).
@@ -43,6 +47,7 @@ fn main() {
             highlighters::Highlighters::init(config_dir.clone(), cx);
             saved_searches::SavedSearches::init(config_dir.clone(), cx);
             cx.open_window(WindowOptions::default(), |window, cx| {
+                let crash_dir = config_dir.clone();
                 let workspace = cx.new(|cx| {
                     let mut workspace = Workspace::new(config_dir, window, cx);
                     // klogg: the last session first, then the file given.
@@ -54,6 +59,11 @@ fn main() {
                     }
                     workspace
                 });
+                if let Some(dir) = crash_dir {
+                    window.defer(cx, move |window, cx| {
+                        crash_report::show_pending(&dir, window, cx)
+                    });
+                }
                 cx.new(|cx| Root::new(workspace, window, cx))
             })
             .expect("failed to open window");

@@ -172,3 +172,16 @@ klogg also has a digits buffer: `[number] g` jumps to a line, and `[number] j/k`
 **Why:** GPUI's clipboard takes one string, so the text can't be streamed in chunks. The clipboard and the receiving app hold the whole text in memory, often more than once.
 
 **Code:** `Selection::{byte_len, byte_len_mapped}`, `LogView::{copy_selection, copy_in_background}`, `CopyLimits`.
+
+## 2026-11-10: Crash reports stay local
+
+**klogg:** Crashpad writes a minidump on a crash. At the next start klogg asks whether to send it to Sentry, and on an exception it offers to open a pre-filled GitHub issue.
+
+**rlogg:**
+- A panic hook writes a plain-text report (message, place, thread, version, OS, backtrace) to `<config dir>/crashes/new/`. It covers panics on any thread; native crashes (signals) aren't caught.
+- At the next start a dialog shows the first line and where the report is, with a "Copy report" button. The report then moves to `crashes/`, which keeps the last 10.
+- Nothing is sent anywhere.
+
+**Why:** rlogg has no issue tracker or crash server yet. A text report is enough to paste into a bug report and has no extra dependencies.
+
+**Code:** `rlogg_core::crash`, `crate::crash_report`.

@@ -23,6 +23,7 @@
 //!   `HighlighterSet`, `ColorLabelsManager`)
 
 pub mod archive;
+pub mod crash;
 pub mod digits;
 pub mod encoding;
 pub mod file;

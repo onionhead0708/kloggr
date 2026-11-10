@@ -1,0 +1,39 @@
+//! Shows the crash report left by the last run (klogg: `CrashHandler`'s
+//! "send report" dialog at startup). See [`rlogg_core::crash`].
+
+use std::path::Path;
+
+use gpui::{App, ClipboardItem, Window};
+use gpui_component::WindowExt;
+use rlogg_core::crash;
+
+/// If the last run crashed, says so once, with its report to copy.
+pub fn show_pending(config_dir: &Path, window: &mut Window, cx: &mut App) {
+    let pending = crash::pending(config_dir);
+    let Some(newest) = pending.last() else { return };
+    let text = std::fs::read_to_string(newest).unwrap_or_default();
+    let moved = crash::mark_shown(config_dir);
+    let saved = moved.last().unwrap_or(newest).display().to_string();
+    let first = text.lines().next().unwrap_or("rlogg crashed").to_owned();
+    let others = match pending.len() - 1 {
+        0 => String::new(),
+        1 => " There is 1 older report next to it.".to_owned(),
+        n => format!(" There are {n} older reports next to it."),
+    };
+    window.open_alert_dialog(cx, move |alert, _, _| {
+        let text = text.clone();
+        alert
+            .title("rlogg closed unexpectedly")
+            .description(format!(
+                "{first}\n\nThe report is saved in {saved}.{others} \
+                 Copy it to include in a bug report."
+            ))
+            .ok_text("Copy report")
+            .show_cancel(true)
+            .cancel_text("Close")
+            .on_ok(move |_, _, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                true
+            })
+    });
+}
