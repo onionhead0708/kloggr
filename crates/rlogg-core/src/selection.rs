@@ -150,6 +150,41 @@ impl Selection {
         }
     }
 
+    /// Raw bytes of the selected lines, terminators included: about the
+    /// size of [`text`](Self::text), found from the line index without
+    /// reading the file. A portion counts its whole line.
+    pub fn byte_len(&self, log: &LogFile) -> u64 {
+        let Some(lines) = self.lines() else { return 0 };
+        let index = log.index();
+        let start = index.line_span(*lines.start()).map_or(0, |s| s.start);
+        let end = index
+            .line_span(*lines.end())
+            .or_else(|| index.line_span(log.line_count().checked_sub(1)?))
+            .map_or(start, |s| s.end);
+        end.saturating_sub(start) as u64
+    }
+
+    /// Like [`byte_len`](Self::byte_len) for a view whose row `r` shows file
+    /// line `line_of(r)`. Stops counting once past `cap`: a big filtered
+    /// selection doesn't walk every row.
+    pub fn byte_len_mapped(
+        &self,
+        log: &LogFile,
+        line_of: impl Fn(usize) -> Option<usize>,
+        cap: u64,
+    ) -> u64 {
+        let Some(rows) = self.lines() else { return 0 };
+        let index = log.index();
+        let mut total = 0;
+        for line in rows.filter_map(line_of) {
+            total += index.line_span(line).map_or(0, |s| s.len() as u64);
+            if total > cap {
+                break;
+            }
+        }
+        total
+    }
+
     /// Like [`text`](Self::text), for a view whose row `r` shows file line
     /// `line_of(r)` (the filtered view). Line numbers are the file's.
     pub fn text_mapped(
@@ -366,6 +401,25 @@ mod tests {
             assert_eq!(text(Selection::range(0, 2), true), "2: b\n4: d\n5: e");
             assert_eq!(text(Selection::portion(2, 0, 0), true), "5: e");
             assert_eq!(text(Selection::Line(7), false), "");
+            std::fs::remove_file(path).unwrap();
+        }
+
+        #[test]
+        fn byte_len() {
+            let (log, path) = log("one\ntwo\r\nthree\nlast");
+            assert_eq!(Selection::None.byte_len(&log), 0);
+            assert_eq!(Selection::Line(1).byte_len(&log), 5);
+            assert_eq!(Selection::range(0, 3).byte_len(&log), 19);
+            assert_eq!(Selection::portion(2, 1, 2).byte_len(&log), 6);
+            // Past the end (the file shrank): up to the last line.
+            assert_eq!(Selection::range(2, 9).byte_len(&log), 10);
+            let rows = [0, 2, 3];
+            let line_of = |r: usize| rows.get(r).copied();
+            let mapped = |s: Selection, cap| s.byte_len_mapped(&log, line_of, cap);
+            assert_eq!(mapped(Selection::range(0, 2), 100), 14);
+            assert_eq!(mapped(Selection::Line(1), 100), 6);
+            // Stops once past the cap.
+            assert_eq!(mapped(Selection::range(0, 2), 5), 10);
             std::fs::remove_file(path).unwrap();
         }
     }

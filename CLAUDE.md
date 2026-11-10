@@ -139,7 +139,7 @@ check new shortcuts in the real app too (see the color-label entry in `docs/deci
 - [x] Archive/compressed file opening (klogg `decompressor`): gzip, bzip2, xz, lzma, zip, 7z, tar (also compressed), extracted to a temporary folder
 - [ ] Packaging: AppImage, .deb, tarball; then Windows (.msi) and macOS (.dmg) CI
 - [ ] Version check, crash/panic reporting
-- [ ] Copying large selections: stream to the clipboard in chunks, or warn above a size limit
+- [x] Copying large selections: size from the line index, ask above 64 MiB and copy on a worker thread, refuse above 1 GiB (`docs/decisions.md`)
 
 ## Conventions
 

@@ -107,7 +107,7 @@ impl Render for ArchivePicker {
     }
 }
 
-fn human_size(bytes: u64) -> SharedString {
+pub fn human_size(bytes: u64) -> SharedString {
     const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
     let mut size = bytes as f64;
     let mut unit = 0;

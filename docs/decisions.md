@@ -158,3 +158,17 @@ klogg also has a digits buffer: `[number] g` jumps to a line, and `[number] j/k`
 **Why:** the filtered view shows file line numbers, so a number typed there should mean the same thing as the number shown.
 
 **Code:** `LogView::jump_to_line_number`.
+
+## 2026-11-10: Large selections: size limits for copying
+
+**klogg:** copies any selection at once on the UI thread, and also puts every mouse selection into the X11 primary selection. Selecting all of a multi-GB file and copying freezes the window while the whole text is built.
+
+**rlogg:**
+- The selection's size is found from the line index, without reading the file.
+- Up to 64 MiB is copied at once. Above that, rlogg asks "The selection is … Copy it to the clipboard?" and builds the text on a worker thread; the window stays usable.
+- Above 1 GiB nothing is copied: a message says the selection is too large.
+- The primary selection is only set for selections up to 8 MiB. Sending to the scratchpad stops at 8 MiB too, as its text editor lays out all of it.
+
+**Why:** GPUI's clipboard takes one string, so the text can't be streamed in chunks. The clipboard and the receiving app hold the whole text in memory, often more than once.
+
+**Code:** `Selection::{byte_len, byte_len_mapped}`, `LogView::{copy_selection, copy_in_background}`, `CopyLimits`.

@@ -36,7 +36,9 @@ use gpui::{
     ShapedLine, SharedString, Style, Styled, Subscription, TextAlign, TextRun, Window, actions,
     div, fill, point, px, relative, size,
 };
-use gpui_component::ActiveTheme;
+use gpui_component::{ActiveTheme, WindowExt};
+
+use crate::archives::human_size;
 use gpui_component::menu::{ContextMenuExt, PopupMenu};
 use rlogg_core::highlight::{ColorLabels, Colors, CompiledSet};
 use rlogg_core::search::find::{self, Direction, Found};
@@ -261,6 +263,42 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
     crate::shortcuts::default_bindings(shortcuts())
 }
 
+/// Selection sizes (raw bytes) above which copying changes. klogg has no
+/// limits; see `docs/decisions.md`.
+#[derive(Debug, Clone, Copy)]
+struct CopyLimits {
+    /// Larger copies ask first and are built on a worker thread.
+    ask: u64,
+    /// Larger selections aren't copied: the clipboard holds the whole text
+    /// in memory, often more than once.
+    max: u64,
+    /// The primary selection, updated on every mouse selection.
+    primary: u64,
+    /// Sending to the scratchpad.
+    scratchpad: u64,
+}
+
+impl Default for CopyLimits {
+    fn default() -> Self {
+        Self {
+            ask: 64 << 20,
+            max: 1 << 30,
+            primary: 8 << 20,
+            scratchpad: 8 << 20,
+        }
+    }
+}
+
+fn too_large(bytes: u64, max: u64, what: &'static str, window: &mut Window, cx: &mut App) {
+    window.open_alert_dialog(cx, move |alert, _, _| {
+        alert.title("Selection too large").description(format!(
+            "The selection is {}. At most {} can be {what}.",
+            human_size(bytes),
+            human_size(max)
+        ))
+    });
+}
+
 /// Emitted when the user selects a line (klogg: `newSelection`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LogViewEvent {
@@ -354,6 +392,7 @@ enum MouseGrab {
 pub struct LogView {
     focus: FocusHandle,
     log: Option<Arc<LogFile>>,
+    limits: CopyLimits,
     /// Matches and marks: bullets in both views, the rows of the filtered one.
     filter: Option<Entity<FilteredLines>>,
     /// Whether rows are the filter's rows (the filtered view) or all lines.
@@ -395,6 +434,7 @@ impl LogView {
         Self {
             focus: cx.focus_handle(),
             log: None,
+            limits: CopyLimits::default(),
             filter: None,
             filtered: false,
             _observe_filter: None,
@@ -642,7 +682,19 @@ impl LogView {
     }
 
     /// klogg: `sendSelectionToScratchpad`, `replaceScratchpadWithSelection`.
-    fn send_to_scratchpad(&mut self, replace: bool, cx: &mut Context<Self>) {
+    fn send_to_scratchpad(&mut self, replace: bool, window: &mut Window, cx: &mut Context<Self>) {
+        // Its text editor holds and lays out all of it.
+        let bytes = self.selection_bytes(cx);
+        if bytes > self.limits.scratchpad {
+            too_large(
+                bytes,
+                self.limits.scratchpad,
+                "sent to the scratchpad",
+                window,
+                cx,
+            );
+            return;
+        }
         let Some(text) = self.selected_text(false, cx).filter(|t| !t.is_empty()) else {
             return;
         };
@@ -830,14 +882,89 @@ impl LogView {
         })
     }
 
-    fn copy_selection(&self, line_numbers: bool, cx: &mut Context<Self>) {
-        if let Some(text) = self.selected_text(line_numbers, cx) {
-            cx.write_to_clipboard(ClipboardItem::new_string(text));
+    /// About the size of the selected text, from the line index. Counts up
+    /// to just past [`CopyLimits::max`] in the filtered view.
+    fn selection_bytes(&self, cx: &App) -> u64 {
+        let Some(log) = &self.log else { return 0 };
+        if self.filtered {
+            self.selection
+                .byte_len_mapped(log, |r| self.line_of(r, cx), self.limits.max)
+        } else {
+            self.selection.byte_len(log)
         }
     }
 
-    /// X11/Wayland primary selection (klogg: `updateGlobalSelection`).
+    /// klogg copies any selection at once, on the UI thread. Here a big one
+    /// asks first and is built on a worker thread; above
+    /// [`CopyLimits::max`] it isn't copied (`docs/decisions.md`).
+    fn copy_selection(&mut self, line_numbers: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let bytes = self.selection_bytes(cx);
+        if bytes <= self.limits.ask {
+            if let Some(text) = self.selected_text(line_numbers, cx) {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+            }
+        } else if bytes > self.limits.max {
+            too_large(bytes, self.limits.max, "copied", window, cx);
+        } else {
+            let this = cx.entity().downgrade();
+            window.open_alert_dialog(cx, move |alert, _, _| {
+                let this = this.clone();
+                alert
+                    .title("Copy")
+                    .description(format!(
+                        "The selection is {}. Copy it to the clipboard?",
+                        human_size(bytes)
+                    ))
+                    .show_cancel(true)
+                    .ok_text("Copy")
+                    .on_ok(move |_, _, cx| {
+                        this.update(cx, |v, cx| v.copy_in_background(line_numbers, cx))
+                            .ok();
+                        true
+                    })
+            });
+        }
+    }
+
+    /// Builds the selected text on a worker thread, then puts it on the
+    /// clipboard.
+    fn copy_in_background(&mut self, line_numbers: bool, cx: &mut Context<Self>) {
+        let (Some(log), Some(rows)) = (self.log.clone(), self.selection.lines()) else {
+            return;
+        };
+        let selection = self.selection.clone();
+        let first = *rows.start();
+        // The filtered view's rows are resolved here: the filter lives on
+        // the UI thread.
+        let lines: Option<Vec<Option<usize>>> = self
+            .filtered
+            .then(|| rows.map(|r| self.line_of(r, cx)).collect());
+        let executor = cx.background_executor().clone();
+        cx.spawn(async move |this, cx| {
+            let text =
+                crate::background::run_blocking("rlogg-copy", &executor, move || match lines {
+                    Some(lines) => selection.text_mapped(&log, line_numbers, |r| {
+                        lines.get(r.checked_sub(first)?).copied().flatten()
+                    }),
+                    None => selection.text(&log, line_numbers),
+                })
+                .await;
+            if let Some(text) = text {
+                this.update(cx, |_, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text))
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// X11/Wayland primary selection (klogg: `updateGlobalSelection`). Set
+    /// on every mouse selection, so a big one is left out.
     fn update_primary(&self, cx: &mut Context<Self>) {
+        if self.selection_bytes(cx) > self.limits.primary {
+            return;
+        }
         if let Some(text) = self.selected_text(false, cx) {
             cx.write_to_primary(ClipboardItem::new_string(text));
         }
@@ -1127,10 +1254,10 @@ impl Render for LogView {
             .on_action(cx.listener(|v, _: &ToggleFreezeColumns, _, cx| v.toggle_freeze(cx)))
             .on_action(cx.listener(|v, _: &AddToSearch, _, cx| v.search_op(SearchOp::Add, cx)))
             .on_action(
-                cx.listener(|v, _: &SendToScratchpad, _, cx| v.send_to_scratchpad(false, cx)),
+                cx.listener(|v, _: &SendToScratchpad, w, cx| v.send_to_scratchpad(false, w, cx)),
             )
             .on_action(
-                cx.listener(|v, _: &ReplaceScratchpad, _, cx| v.send_to_scratchpad(true, cx)),
+                cx.listener(|v, _: &ReplaceScratchpad, w, cx| v.send_to_scratchpad(true, w, cx)),
             )
             .on_action(
                 cx.listener(|v, _: &ExcludeFromSearch, _, cx| v.search_op(SearchOp::Exclude, cx)),
@@ -1169,8 +1296,10 @@ impl Render for LogView {
                     v.select(Selection::range(0, last), cx);
                 }
             }))
-            .on_action(cx.listener(|v, _: &Copy, _, cx| v.copy_selection(false, cx)))
-            .on_action(cx.listener(|v, _: &CopyWithLineNumbers, _, cx| v.copy_selection(true, cx)))
+            .on_action(cx.listener(|v, _: &Copy, w, cx| v.copy_selection(false, w, cx)))
+            .on_action(
+                cx.listener(|v, _: &CopyWithLineNumbers, w, cx| v.copy_selection(true, w, cx)),
+            )
             .on_action(cx.listener(|v, _: &Mark, _, cx| v.mark_selection(cx)))
             .on_action(cx.listener(|v, _: &NextMark, _, cx| v.jump_to_mark(true, cx)))
             .on_action(cx.listener(|v, _: &PrevMark, _, cx| v.jump_to_mark(false, cx)))
@@ -2263,6 +2392,53 @@ mod tests {
         assert_eq!(
             cx.read_from_clipboard().and_then(|c| c.text()).as_deref(),
             Some("a\tb\nsecond\nthird")
+        );
+    }
+
+    #[gpui::test]
+    fn big_copy_runs_in_background(cx: &mut TestAppContext) {
+        let (_, cx) = open(cx, "unused.log", "");
+        let path = temp_log("bigcopy.log", "a\nb ERR\nc\nd ERR\ne\n");
+        let log = Arc::new(LogFile::open(&path).unwrap());
+        std::fs::remove_file(path).unwrap();
+        let filter = cx.new(|_| FilteredLines::new());
+        filter.update(cx, |f, _| f.add_matches(&[1, 3]));
+        let view = cx.new(|cx| {
+            let mut v = LogView::filtered(cx);
+            v.set_log(Some(log.clone()), cx);
+            v.set_filter(filter.clone(), cx);
+            v
+        });
+        view.update(cx, |v, cx| {
+            v.selection = Selection::range(0, 1);
+            assert_eq!(v.selection_bytes(cx), 12);
+            v.copy_in_background(true, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|c| c.text()).as_deref(),
+            Some("2: b ERR\n4: d ERR")
+        );
+    }
+
+    #[gpui::test]
+    fn big_selection_skips_primary(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx, "primary.log", &numbered(10));
+        view.update(cx, |v, cx| {
+            v.limits.primary = 20;
+            v.selection = Selection::range(0, 9);
+            v.update_primary(cx);
+        });
+        assert_eq!(cx.update(|_, cx| cx.read_from_primary()), None);
+        view.update(cx, |v, cx| {
+            v.selection = Selection::Line(1);
+            v.update_primary(cx);
+        });
+        assert_eq!(
+            cx.update(|_, cx| cx.read_from_primary())
+                .and_then(|c| c.text())
+                .as_deref(),
+            Some("line 1 word_1")
         );
     }
 
