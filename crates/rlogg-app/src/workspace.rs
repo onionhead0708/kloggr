@@ -17,10 +17,11 @@ use gpui::{
     Subscription, Task, Window, actions, div, px,
 };
 use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{AppMenuBar, ContextMenuExt};
 use gpui_component::tab::{Tab as GuiTab, TabBar};
 use gpui_component::tooltip::Tooltip;
-use gpui_component::{ActiveTheme, GlobalState, Sizable};
+use gpui_component::{ActiveTheme, GlobalState, Sizable, WindowExt};
 use rlogg_core::file::OpenError;
 use rlogg_core::settings::{FileContext, OpenFile, Session};
 use rlogg_core::{IndexProgress, LogFile, OpenOptions};
@@ -74,7 +75,10 @@ tab_action!(
     CloseOtherTabs,
     CloseTabsLeft,
     CloseTabsRight,
-    CopyTabPath
+    CopyTabPath,
+    OpenTabFolder,
+    RenameTab,
+    ResetTabName
 );
 
 /// klogg's defaults: `QKeySequence::Open`, `Close`, `Quit`, and the tab keys
@@ -206,6 +210,8 @@ pub struct Workspace {
     focus: FocusHandle,
     /// Why the last file could not be opened, when no tab is left to show it.
     error: Option<String>,
+    /// Enter in the rename dialog's input.
+    _rename: Option<gpui::Subscription>,
 }
 
 impl Workspace {
@@ -231,6 +237,7 @@ impl Workspace {
             tab_scroll: ScrollHandle::new(),
             focus,
             error: None,
+            _rename: None,
         };
         this.update_menus(cx);
         // Set names and active sets show in the menus.
@@ -640,6 +647,93 @@ impl Workspace {
     }
 
     /// The tab bar, shown with two tabs or more (klogg hides it for one).
+    /// The tab's text: the name the user gave it, else the file name
+    /// (klogg: `TabNameMapping`).
+    fn tab_label(&self, tab: &Tab) -> String {
+        self.session
+            .tab_name(&tab.path)
+            .map_or_else(|| file_name(&tab.path), str::to_owned)
+    }
+
+    pub fn rename_tab(&mut self, index: usize, name: &str, cx: &mut Context<Self>) {
+        if let Some(tab) = self.tabs.get(index) {
+            self.session.set_tab_name(&tab.path, name);
+            self.save_session();
+            cx.notify();
+        }
+    }
+
+    /// Asks for the tab's new name (klogg: "Rename tab", `QInputDialog`).
+    fn prompt_rename(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.get(index) else {
+            return;
+        };
+        let current = self.tab_label(tab);
+        let input = cx.new(|cx| {
+            let mut s = InputState::new(window, cx);
+            s.set_value(current, window, cx);
+            s
+        });
+        let this = cx.entity().downgrade();
+        // Enter confirms.
+        self._rename = Some(cx.subscribe_in(
+            &input,
+            window,
+            move |ws, input, e: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = e {
+                    let name = input.read(cx).value().to_string();
+                    ws.rename_tab(index, &name, cx);
+                    window.close_dialog(cx);
+                }
+            },
+        ));
+        let first = std::cell::Cell::new(true);
+        window.open_dialog(cx, move |dialog, window, cx| {
+            if first.replace(false) {
+                input.focus_handle(cx).focus(window, cx);
+            }
+            let ok = {
+                let (this, input) = (this.clone(), input.clone());
+                move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
+                    let name = input.read(cx).value().to_string();
+                    this.update(cx, |ws, cx| ws.rename_tab(index, &name, cx))
+                        .ok();
+                    window.close_dialog(cx);
+                }
+            };
+            dialog
+                .title("Rename tab")
+                .w(px(420.))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(div().text_sm().child("Tab name (empty for the file name)"))
+                        .child(Input::new(&input)),
+                )
+                .footer(
+                    div()
+                        .flex()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            Button::new("rename-cancel")
+                                .label("Cancel")
+                                .small()
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(
+                            Button::new("rename-ok")
+                                .label("OK")
+                                .small()
+                                .primary()
+                                .on_click(ok),
+                        ),
+                )
+        });
+    }
+
     fn render_tabs(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         if self.tabs.len() < 2 {
             return None;
@@ -656,7 +750,7 @@ impl Workspace {
                     tab.new_data
                         .then(|| div().size(px(6.)).rounded_full().bg(accent)),
                 )
-                .child(file_name(&tab.path))
+                .child(self.tab_label(tab))
                 .tooltip({
                     let path: SharedString = tab.path.display().to_string().into();
                     move |window, cx| Tooltip::new(path.clone()).build(window, cx)
@@ -677,6 +771,10 @@ impl Workspace {
                         .menu("Close all", Box::new(CloseAllTabs))
                         .separator()
                         .menu("Copy full path", Box::new(CopyTabPath { index }))
+                        .menu("Open containing folder", Box::new(OpenTabFolder { index }))
+                        .separator()
+                        .menu("Rename tab", Box::new(RenameTab { index }))
+                        .menu("Reset tab name", Box::new(ResetTabName { index }))
                 });
             GuiTab::new()
                 .child(label)
@@ -798,6 +896,17 @@ impl Render for Workspace {
             .on_action(
                 cx.listener(|this, a: &ActivateTab, window, cx| this.activate(a.index, window, cx)),
             )
+            .on_action(cx.listener(|this, a: &RenameTab, window, cx| {
+                this.prompt_rename(a.index, window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, a: &ResetTabName, _, cx| this.rename_tab(a.index, "", cx)),
+            )
+            .on_action(cx.listener(|this, a: &OpenTabFolder, _, cx| {
+                if let Some(tab) = this.tabs.get(a.index) {
+                    cx.reveal_path(&tab.path);
+                }
+            }))
             .on_action(cx.listener(|this, _: &LastTab, window, cx| {
                 let last = this.tabs.len().saturating_sub(1);
                 this.activate(last, window, cx)
@@ -1312,5 +1421,55 @@ mod tests {
         cx.dispatch_action(ToggleFreezeMain);
         let (main, filtered) = Session::load(&fx.config()).frozen_columns(&a);
         assert!(!main.enabled && filtered.enabled);
+    }
+
+    #[gpui::test]
+    fn rename_tab(cx: &mut TestAppContext) {
+        let fx = Fixture::new("rename");
+        let (a, b) = (fx.log("a.log", 3), fx.log("b.log", 3));
+        // Dialogs need gpui-component's Root around the window.
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.bind_keys(key_bindings());
+        });
+        let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let window = cx.add_window({
+            let (slot, config) = (slot.clone(), fx.config());
+            move |window, cx| {
+                let ws = cx.new(|cx| Workspace::new(Some(config), window, cx));
+                *slot.borrow_mut() = Some(ws.clone());
+                gpui_component::Root::new(ws, window, cx)
+            }
+        });
+        let ws: Entity<Workspace> = slot.borrow().clone().unwrap();
+        let cx = &mut VisualTestContext::from_window(window.into(), cx);
+        for path in [&a, &b] {
+            ws.update_in(cx, |ws, window, cx| ws.open(path.clone(), window, cx));
+            wait_indexed(&ws, cx);
+        }
+        let label = |ws: &Entity<Workspace>, cx: &mut VisualTestContext, i: usize| {
+            ws.read_with(cx, |ws, _| ws.tab_label(&ws.tabs[i]))
+        };
+        assert_eq!(label(&ws, cx, 0), "a.log");
+
+        // klogg: "Rename tab" asks for the name; Enter confirms.
+        cx.dispatch_action(RenameTab { index: 0 });
+        cx.run_until_parked();
+        cx.simulate_keystrokes("ctrl-a");
+        cx.simulate_input("API server");
+        cx.simulate_keystrokes("enter");
+        assert_eq!(label(&ws, cx, 0), "API server");
+        assert_eq!(Session::load(&fx.config()).tab_name(&a), Some("API server"));
+        // The name stays with the file.
+        ws.update_in(cx, |ws, window, cx| {
+            ws.close_tab(0, window, cx);
+            ws.open(a.clone(), window, cx)
+        });
+        wait_indexed(&ws, cx);
+        assert_eq!(label(&ws, cx, 1), "API server");
+
+        ws.update(cx, |ws, cx| ws.rename_tab(1, "", cx));
+        assert_eq!(label(&ws, cx, 1), "a.log");
+        assert_eq!(Session::load(&fx.config()).tab_name(&a), None);
     }
 }

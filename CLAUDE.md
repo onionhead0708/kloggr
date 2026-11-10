@@ -125,9 +125,9 @@ check new shortcuts in the real app too (see the color-label entry in `docs/deci
 - [x] Overview bar showing match and mark positions (main view; click or drag to scroll)
 - [x] Follow-up: highlight the search pattern's matches in the text of both views (on by default, unlike klogg: `docs/decisions.md`)
 
-### Phase 3: live files and workspace
+### Phase 3: live files and workspace ✅
 - [x] Follow mode / tail: incremental reindex on growth, detect truncation and rotation (`filewatch/`); `f` / F10, search auto-refresh
-- [x] Tabs and multiple files, sessions (open tabs restored at startup with search options, follow and marks; tab renaming not done)
+- [x] Tabs and multiple files, sessions (open tabs restored at startup with search options, follow and marks), tab renaming and "Open containing folder" (klogg `TabNameMapping`)
 - [x] Highlighters and highlighter sets, color labels: engine, line colouring, Tools and context menus, color labels `Ctrl+Shift+1`–`9` / `Ctrl+D` / `Ctrl+Shift+0`, the highlighters dialog (sets, highlighters, label styles), klogg `.conf` import/export
 - [x] Frozen columns (klogg `frozencolumns`): View menu and context menu toggles per view, draggable separator, remembered per file in the session
 - [x] Wide characters (CJK, emoji): two columns per wide character (Unicode East Asian Width), zero for combining marks, each wide glyph drawn at its column

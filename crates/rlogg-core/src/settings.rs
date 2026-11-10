@@ -147,6 +147,13 @@ pub struct FrozenFile {
 /// Files whose frozen columns are remembered (klogg: `MAX_FILES`).
 pub const MAX_FROZEN_FILES: usize = 500;
 
+/// A name given to a file's tab (klogg: `TabNameMapping::TabName`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TabName {
+    pub path: PathBuf,
+    pub name: String,
+}
+
 /// A file open when the session was saved (klogg: `SessionInfo::OpenFile`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenFile {
@@ -170,6 +177,8 @@ pub struct Session {
     /// Frozen columns per file, most recently changed first, kept after the
     /// file is closed (klogg: `FrozenColumns`).
     pub frozen_columns: Vec<FrozenFile>,
+    /// Tab names chosen by the user, by file (klogg: `TabNameMapping`).
+    pub tab_names: Vec<TabName>,
 }
 
 impl Default for Session {
@@ -180,6 +189,7 @@ impl Default for Session {
             open_files: Vec::new(),
             current_file: 0,
             frozen_columns: Vec::new(),
+            tab_names: Vec::new(),
         }
     }
 }
@@ -208,6 +218,29 @@ impl Session {
     /// Saves to `dir`, creating it if needed.
     pub fn save(&self, dir: &Path) -> Result<(), SettingsError> {
         save_toml(self, dir, SESSION_FILE)
+    }
+
+    /// The name given to `path`'s tab, if any (klogg: `tabName`).
+    pub fn tab_name(&self, path: &Path) -> Option<&str> {
+        self.tab_names
+            .iter()
+            .find(|t| t.path == path)
+            .map(|t| t.name.as_str())
+    }
+
+    /// Names `path`'s tab; an empty name goes back to the file name
+    /// (klogg: `setTabName`).
+    pub fn set_tab_name(&mut self, path: &Path, name: &str) {
+        let name = name.trim();
+        match self.tab_names.iter_mut().find(|t| t.path == path) {
+            Some(_) if name.is_empty() => self.tab_names.retain(|t| t.path != path),
+            Some(t) => t.name = name.to_owned(),
+            None if !name.is_empty() => self.tab_names.push(TabName {
+                path: path.to_path_buf(),
+                name: name.to_owned(),
+            }),
+            None => {}
+        }
     }
 
     /// The frozen columns of `path`'s main and filtered views (klogg:
@@ -451,5 +484,23 @@ mod tests {
         session.set_frozen_columns(&a, on(1), FrozenView::default());
         assert_eq!(session.frozen_columns.len(), 1);
         assert_eq!(session.frozen_columns[0].path, a);
+    }
+
+    #[test]
+    fn tab_names() {
+        let dir = TempDir::new("tab-names");
+        let mut session = Session::default();
+        let a = Path::new("/var/log/a.log");
+        assert_eq!(session.tab_name(a), None);
+        session.set_tab_name(a, "  API server ");
+        assert_eq!(session.tab_name(a), Some("API server"));
+        session.set_tab_name(a, "API");
+        assert_eq!(session.tab_names.len(), 1);
+        session.save(&dir.0).unwrap();
+        assert_eq!(Session::load(&dir.0).tab_name(a), Some("API"));
+        session.set_tab_name(a, "");
+        assert_eq!(session.tab_name(a), None);
+        session.set_tab_name(Path::new("/x"), " ");
+        assert!(session.tab_names.is_empty());
     }
 }
