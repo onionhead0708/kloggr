@@ -70,6 +70,14 @@ codesign --force --deep --sign - "$app"
 ln -s /Applications "$out/dmg/Applications"
 cp LICENSE "$out/dmg/LICENSE.txt"
 dmg="$out/kloggr-$version-macos-universal.dmg"
-hdiutil create -volname "kloggr $version" -srcfolder "$out/dmg" -ov -format UDZO "$dmg" >/dev/null
+# hdiutil sometimes fails with "Resource busy" on CI runners: retry.
+for attempt in 1 2 3 4 5; do
+    if hdiutil create -volname "kloggr $version" -srcfolder "$out/dmg" -ov -format UDZO "$dmg" >/dev/null; then
+        break
+    fi
+    [[ $attempt == 5 ]] && exit 1
+    echo "hdiutil failed, retrying ($attempt)"
+    sleep $((attempt * 5))
+done
 rm -rf "$out/dmg"
 echo "built $dmg"
