@@ -129,7 +129,7 @@ check new shortcuts in the real app too (see the color-label entry in `docs/deci
 - [x] Tabs and multiple files, sessions (open tabs restored at startup with search options, follow and marks; tab renaming not done)
 - [x] Highlighters and highlighter sets, color labels: engine, line colouring, Tools and context menus, color labels `Ctrl+Shift+1`–`9` / `Ctrl+D` / `Ctrl+Shift+0`, the highlighters dialog (sets, highlighters, label styles), klogg `.conf` import/export
 - [x] Frozen columns (klogg `frozencolumns`): View menu and context menu toggles per view, draggable separator, remembered per file in the session
-- [ ] Wide characters (CJK, emoji): map columns using real glyph widths instead of one column per `char`
+- [x] Wide characters (CJK, emoji): two columns per wide character (Unicode East Asian Width), zero for combining marks, each wide glyph drawn at its column
 - [ ] Settings and options dialog, keyboard shortcuts matching klogg's defaults (include the search-match highlight: on/off and its colour, as klogg's "main search highlight" checkbox and colour button)
 
 ### Phase 4: extras and release

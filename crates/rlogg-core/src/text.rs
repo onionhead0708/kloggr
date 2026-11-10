@@ -6,10 +6,12 @@
 //! space. Other C0 control characters (e.g. the ESC of ANSI color codes) are
 //! shown as Unicode control pictures (`␛`) so they never reach the shaper.
 //!
-//! A column is one `char` of the expanded text, as in klogg (which assumes a
-//! fixed-width font). [`window`] decodes a line incrementally and stops after
-//! the visible columns, so the cost of drawing a line depends on how far it is
-//! scrolled, not on its length.
+//! Text is laid out on a grid of fixed-width columns. Unlike klogg, which
+//! gives every UTF-16 code unit one column, a character takes its display
+//! width ([`width`]): two columns for CJK and most emoji, none for combining
+//! marks (see `docs/decisions.md`). [`window`] decodes a line incrementally
+//! and stops after the visible columns, so the cost of drawing a line
+//! depends on how far it is scrolled, not on its length.
 
 use std::ops::Range;
 
@@ -28,31 +30,82 @@ pub fn display_char(c: char) -> char {
     }
 }
 
-/// Calls `emit` for each display column of `chars`, expanding tabs.
-fn for_each_column(chars: impl Iterator<Item = char>, mut emit: impl FnMut(char) -> bool) {
+/// Columns taken by a displayed character (not a tab): 2 for East Asian
+/// wide and emoji, 0 for combining marks and other zero-width characters,
+/// otherwise 1.
+pub fn width(c: char) -> usize {
+    unicode_width::UnicodeWidthChar::width(c).unwrap_or(1)
+}
+
+/// Calls `emit` with each displayed character of `chars` and its width,
+/// expanding tabs to spaces.
+fn for_each_char(chars: impl Iterator<Item = char>, mut emit: impl FnMut(char, usize) -> bool) {
     let mut col = 0usize;
     for c in chars {
         if c == '\t' {
             let spaces = TAB_STOP - col % TAB_STOP;
             for _ in 0..spaces {
-                if !emit(' ') {
+                if !emit(' ', 1) {
                     return;
                 }
             }
             col += spaces;
         } else {
-            if !emit(display_char(c)) {
+            let shown = display_char(c);
+            let w = width(shown);
+            if !emit(shown, w) {
                 return;
             }
-            col += 1;
+            col += w;
         }
     }
+}
+
+/// The start column of each character of a displayed (expanded) text, and
+/// its width.
+pub fn cells(display: &str) -> impl Iterator<Item = (usize, usize, char)> + '_ {
+    let mut col = 0;
+    display.char_indices().map(move |(i, c)| {
+        let w = width(c);
+        let start = col;
+        col += w;
+        (start, i, c)
+    })
+}
+
+/// Byte offset in a displayed text of the first character starting at or
+/// after column `col` (the text's length if none).
+pub fn byte_at_column(display: &str, col: usize) -> usize {
+    cells(display)
+        .find(|&(start, _, c)| start >= col && width(c) > 0)
+        .map_or(display.len(), |(_, i, _)| i)
+}
+
+/// Splits a displayed text into pieces to draw at their grid column, as
+/// (column, byte range): runs of single-width characters, and each wide
+/// character alone (with the zero-width characters that follow), so that a
+/// glyph wider or narrower than its columns can't shift the rest.
+pub fn grid_segments(display: &str) -> Vec<(usize, Range<usize>)> {
+    let mut out: Vec<(usize, Range<usize>)> = Vec::new();
+    let mut wide_open = false;
+    for (col, i, c) in cells(display) {
+        let end = i + c.len_utf8();
+        match (width(c), out.last_mut()) {
+            (0, Some(last)) => last.1.end = end,
+            (1, Some(last)) if !wide_open => last.1.end = end,
+            (w, _) => {
+                out.push((col, i..end));
+                wide_open = w > 1;
+            }
+        }
+    }
+    out
 }
 
 /// The whole line as displayed (klogg: `getExpandedLineString`).
 pub fn expand(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
-    for_each_column(line.chars(), |c| {
+    for_each_char(line.chars(), |c, _| {
         out.push(c);
         true
     });
@@ -62,8 +115,8 @@ pub fn expand(line: &str) -> String {
 /// Number of display columns of `line`.
 pub fn columns(line: &str) -> usize {
     let mut n = 0;
-    for_each_column(line.chars(), |_| {
-        n += 1;
+    for_each_char(line.chars(), |_, w| {
+        n += w;
         true
     });
     n
@@ -98,7 +151,7 @@ pub fn column_ranges(line: &str, bytes: &[Range<usize>]) -> Vec<Range<usize>> {
         col += if c == '\t' {
             TAB_STOP - col % TAB_STOP
         } else {
-            1
+            width(display_char(c))
         };
     }
     out
@@ -107,7 +160,8 @@ pub fn column_ranges(line: &str, bytes: &[Range<usize>]) -> Vec<Range<usize>> {
 /// A horizontal slice of a line, ready to shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DisplayWindow {
-    /// Display text of columns `first_col..first_col + text.chars().count()`.
+    /// Display text starting at column `first_col`. A wide character cut by
+    /// the window's start shows as spaces; one cut by its end is included.
     pub text: String,
     /// Total columns of the line, if the whole line was decoded (it was
     /// shorter than the window end).
@@ -129,6 +183,8 @@ pub fn window(
     let mut decoder = encoding.new_decoder();
     let mut text = String::new();
     let mut col = 0usize;
+    // Whether the last character with a width went into `text`.
+    let mut shown_last = false;
     let mut buf = String::new();
     let mut chunks = bytes.chunks(DECODE_STEP).peekable();
     'decode: while let Some(chunk) = chunks.next() {
@@ -142,11 +198,22 @@ pub fn window(
         // Capacity is reserved, so the whole chunk is always consumed.
         let _ = decoder.decode_to_string(chunk, &mut buf, last);
         for c in buf.chars() {
-            let (shown, width) = match c {
-                '\t' => (' ', TAB_STOP - col % TAB_STOP),
-                c => (display_char(c), 1),
+            let (shown, w, cells) = match c {
+                // A tab is that many single-width spaces.
+                '\t' => (' ', 1, TAB_STOP - col % TAB_STOP),
+                c => {
+                    let shown = display_char(c);
+                    (shown, width(shown), 1)
+                }
             };
-            for _ in 0..width {
+            if w == 0 {
+                // Attached to the character before, if it is shown.
+                if shown_last {
+                    text.push(shown);
+                }
+                continue;
+            }
+            for _ in 0..cells {
                 if col >= end_col {
                     return DisplayWindow {
                         text,
@@ -155,8 +222,14 @@ pub fn window(
                 }
                 if col >= first_col {
                     text.push(shown);
+                    shown_last = true;
+                } else {
+                    // The part of a wide character inside the window.
+                    let inside = (col + w).saturating_sub(first_col);
+                    text.extend(std::iter::repeat_n(' ', inside));
+                    shown_last = false;
                 }
-                col += 1;
+                col += w;
             }
         }
         if col >= end_col && chunks.peek().is_some() {
@@ -168,31 +241,45 @@ pub fn window(
 }
 
 /// Word under display column `col` of an expanded line, as a column range
-/// (klogg: `selectWordAtPosition`): letters, digits and `_`.
+/// (klogg: `selectWordAtPosition`): letters, digits and `_`, with the
+/// zero-width characters (e.g. combining accents) that follow them.
 pub fn word_at(expanded: &str, col: usize) -> Option<Range<usize>> {
-    let chars: Vec<char> = expanded.chars().collect();
-    let is_word = |c: char| c.is_alphanumeric() || c == '_';
-    if !chars.get(col).is_some_and(|&c| is_word(c)) {
+    // (start, end, is part of a word) of each character with a width.
+    let mut cells: Vec<(usize, usize, bool)> = Vec::new();
+    for (start, _, c) in self::cells(expanded) {
+        let w = width(c);
+        if w == 0 {
+            continue;
+        }
+        cells.push((start, start + w, c.is_alphanumeric() || c == '_'));
+    }
+    let at = cells.iter().position(|&(s, e, _)| s <= col && col < e)?;
+    if !cells[at].2 {
         return None;
     }
-    let start = chars[..col]
+    let first = cells[..at].iter().rposition(|c| !c.2).map_or(0, |i| i + 1);
+    let last = cells[at..]
         .iter()
-        .rposition(|&c| !is_word(c))
-        .map_or(0, |i| i + 1);
-    let end = chars[col..]
-        .iter()
-        .position(|&c| !is_word(c))
-        .map_or(chars.len(), |i| col + i);
-    Some(start..end)
+        .position(|c| !c.2)
+        .map_or(cells.len(), |i| at + i)
+        - 1;
+    Some(cells[first].0..cells[last].1)
 }
 
-/// Columns `range` of an expanded line, as text.
+/// Columns `range` of an expanded line, as text: the characters starting
+/// in it, with the zero-width characters attached to them.
 pub fn slice_columns(expanded: &str, range: Range<usize>) -> String {
-    expanded
-        .chars()
-        .skip(range.start)
-        .take(range.len())
-        .collect()
+    let mut out = String::new();
+    let mut taken = false;
+    for (start, _, c) in cells(expanded) {
+        if width(c) > 0 {
+            taken = range.contains(&start);
+        }
+        if taken {
+            out.push(c);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -260,26 +347,84 @@ mod tests {
                 _ => char::from(b'a' + (i % 26) as u8),
             })
             .collect();
-        let expanded: Vec<char> = expand(&line).chars().collect();
-        for (first, n) in [
-            (0, 100),
-            (4090, 20),
-            (12_345, 500),
-            (expanded.len() - 3, 10),
-        ] {
+        // One entry per column: a character, or `None` for the second
+        // column of a wide one.
+        let grid: Vec<Option<char>> = expand(&line)
+            .chars()
+            .flat_map(|c| {
+                std::iter::once(Some(c))
+                    .chain(std::iter::repeat_n(None, width(c).saturating_sub(1)))
+            })
+            .collect();
+        for (first, n) in [(0, 100), (4090, 20), (12_345, 500), (grid.len() - 3, 10)] {
             let w = win(&line, first, n);
-            let expected: String = expanded.iter().skip(first).take(n).collect();
+            let expected: String = grid
+                .iter()
+                .enumerate()
+                .skip(first)
+                .take(n)
+                .filter_map(|(i, c)| match c {
+                    Some(c) => Some(*c),
+                    // A wide character cut by the window's start.
+                    None if i == first => Some(' '),
+                    None => None,
+                })
+                .collect();
             assert_eq!(w.text, expected, "first={first}");
         }
-        assert_eq!(win(&line, 0, usize::MAX).total_cols, Some(expanded.len()));
+        assert_eq!(win(&line, 0, usize::MAX).total_cols, Some(grid.len()));
     }
 
     #[test]
     fn window_decodes_utf16_across_steps() {
         let text = "\u{65e5}\u{672c}".repeat(3000);
         let bytes: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
-        let w = window(Encoding::UTF_16LE, &bytes, 2047, 4);
+        // Two columns per character: column 4094 starts character 2047.
+        let w = window(Encoding::UTF_16LE, &bytes, 4094, 8);
         assert_eq!(w.text, "\u{672c}\u{65e5}\u{672c}\u{65e5}");
+    }
+
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)]
+    fn wide_and_zero_width_characters() {
+        // 日 and 本 take two columns, the combining accent none.
+        assert_eq!(width('日'), 2);
+        assert_eq!(width('\u{301}'), 0);
+        assert_eq!(width('a'), 1);
+        assert_eq!(columns("a日本b"), 6);
+        assert_eq!(columns("e\u{301}x"), 2);
+        // Tabs stop at multiples of 8 display columns.
+        assert_eq!(expand("日\tx"), format!("日{}x", " ".repeat(6)));
+        assert_eq!(column_ranges("a日本b", &[1..4, 7..8]), [1..3, 5..6]);
+        assert_eq!(column_ranges("e\u{301}x", &[3..4]), [1..2]);
+
+        // A wide character cut by the window's start shows as a space.
+        assert_eq!(win("a日本b", 1, 10).text, "日本b");
+        assert_eq!(win("a日本b", 2, 10).text, " 本b");
+        assert_eq!(win("a日本b", 3, 2).text, "本");
+        assert_eq!(win("a日本b", 3, 1).text, "本", "overflows the end");
+        assert_eq!(win("a日本b", 0, 10).total_cols, Some(6));
+        // Zero-width characters stay with their base.
+        assert_eq!(win("e\u{301}x", 0, 1).text, "e\u{301}");
+        assert_eq!(win("e\u{301}x", 1, 5).text, "x");
+
+        assert_eq!(byte_at_column("a日本b", 1), 1);
+        assert_eq!(byte_at_column("a日本b", 2), 4, "inside 日: the next char");
+        assert_eq!(byte_at_column("a日本b", 6), 8);
+        assert_eq!(
+            grid_segments("ab日c\u{301}d本"),
+            [(0, 0..2), (2, 2..5), (4, 5..9), (6, 9..12)]
+        );
+        assert_eq!(grid_segments("x\u{301}"), [(0, 0..3)]);
+        assert!(grid_segments("").is_empty());
+
+        assert_eq!(word_at("ab 日本語 c", 5), Some(3..9));
+        assert_eq!(word_at("ab 日本語 c", 4), Some(3..9));
+        assert_eq!(word_at("ab 日本語 c", 9), None);
+        assert_eq!(word_at("cafe\u{301} x", 2), Some(0..4));
+        assert_eq!(slice_columns("a日本b", 1..5), "日本");
+        assert_eq!(slice_columns("a日本b", 2..6), "本b", "starts inside 日");
+        assert_eq!(slice_columns("cafe\u{301} x", 0..4), "cafe\u{301}");
     }
 
     #[test]

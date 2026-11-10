@@ -8,6 +8,16 @@ Newest first. Each entry gives the date, what klogg does, what rlogg does, and w
 
 ---
 
+## 2026-11-10: Wide characters take two columns
+
+**klogg:** a column is one UTF-16 code unit of the line (`QString`), drawn on a fixed-width grid. CJK characters and emoji are wider than a column in most fonts, so the text after them drifts from the grid. Selections, quick-find and highlights then cover the wrong characters, and characters outside the BMP count as two columns.
+
+**rlogg:** a character takes its display width, from Unicode's East Asian Width (`unicode-width`): 2 columns for CJK and most emoji, 0 for combining marks and other zero-width characters (they stay with the character before), 1 otherwise. Tab stops count these columns. Each wide character is drawn alone at its column, so its glyph can't shift the rest of the line. A wide character cut by the left edge (or the frozen-columns separator) shows as blank.
+
+**Why:** logs with CJK text or emoji stay aligned, and the mouse, selections and highlights land on the right characters. "Ambiguous" width characters (e.g. some Greek and box drawing in CJK locales) count as 1, as in most terminals.
+
+**Code:** `rlogg_core::text::{width, window, grid_segments}`, `LogView` row pieces.
+
 ## 2026-11-10: Color label keys on Linux are also bound to the shifted symbols
 
 **klogg:** `Ctrl+Shift+1`…`9` set color labels 1–9 and `Ctrl+Shift+0` clears them. Qt matches these by key, whatever the layout.

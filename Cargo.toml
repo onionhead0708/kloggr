@@ -36,6 +36,7 @@ async-channel = "2.5"
 anyhow = "1"
 tracing = "0.1"
 notify = "8.2"
+unicode-width = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # GPUI does layout and text shaping on the CPU every frame; an unoptimized

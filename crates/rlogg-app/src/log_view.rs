@@ -1146,7 +1146,9 @@ impl Metrics {
 struct Row {
     y: Pixels,
     number: ShapedLine,
-    text: ShapedLine,
+    /// The text, in pieces drawn at their grid column (see
+    /// [`text::grid_segments`]).
+    text: Vec<(usize, ShapedLine)>,
     /// Selected screen columns (up to two parts with frozen columns).
     highlight: Vec<(usize, usize)>,
     /// Quick-find occurrences, relative to the first visible column.
@@ -1330,7 +1332,14 @@ impl Element for LogElement {
                     out.push(Row {
                         y,
                         number: metrics.shape(window, (line + 1).to_string().into(), muted),
-                        text: metrics.shape_runs(window, shown_text.into(), &runs),
+                        text: text::grid_segments(&shown_text)
+                            .into_iter()
+                            .map(|(col, bytes)| {
+                                let runs = slice_runs(&runs, bytes.clone());
+                                let piece = shown_text[bytes].to_owned();
+                                (col, metrics.shape_runs(window, piece.into(), &runs))
+                            })
+                            .collect(),
                         highlight,
                         found,
                         searched,
@@ -1529,16 +1538,18 @@ impl Element for LogElement {
             }),
             |window| {
                 for row in &frame.rows {
-                    row.text
-                        .paint(
-                            point(layout.text.left(), row.y),
-                            lh,
-                            TextAlign::Left,
-                            None,
-                            window,
-                            cx,
-                        )
-                        .ok();
+                    for (col, piece) in &row.text {
+                        piece
+                            .paint(
+                                point(layout.text.left() + layout.char_width * *col, row.y),
+                                lh,
+                                TextAlign::Left,
+                                None,
+                                window,
+                                cx,
+                            )
+                            .ok();
+                    }
                 }
             },
         );
@@ -1648,12 +1659,16 @@ fn screen_text(log: &LogFile, bytes: &[u8], vp: &Viewport) -> (String, usize) {
     let scrolled = text::window(log.encoding(), bytes, start, vp.window_end() - start);
     let seen = scrolled
         .total_cols
-        .unwrap_or(start + scrolled.text.chars().count() + 1);
+        .unwrap_or(start + text::columns(&scrolled.text) + 1);
     if frozen == 0 {
         return (scrolled.text, seen);
     }
     let mut out = text::window(log.encoding(), bytes, 0, frozen).text;
-    let pad = frozen.saturating_sub(out.chars().count());
+    // A wide character cut by the separator would overlap the scrolled part.
+    while text::columns(&out) > frozen {
+        out.pop();
+    }
+    let pad = frozen.saturating_sub(text::columns(&out));
     out.extend(std::iter::repeat_n(' ', pad));
     out.push_str(&scrolled.text);
     (out, seen)
@@ -1662,13 +1677,7 @@ fn screen_text(log: &LogFile, bytes: &[u8], vp: &Viewport) -> (String, usize) {
 /// Text runs for `text` (one char per column): `fg`, except in `spans`
 /// (column ranges) with a foreground colour.
 fn text_runs(text: &str, fg: Hsla, spans: &[(usize, usize, Colors)]) -> Vec<(usize, Hsla)> {
-    // Byte offset of each column, and of the end.
-    let offsets: Vec<usize> = text
-        .char_indices()
-        .map(|(i, _)| i)
-        .chain(std::iter::once(text.len()))
-        .collect();
-    let byte = |col: usize| offsets[col.min(offsets.len() - 1)];
+    let byte = |col: usize| text::byte_at_column(text, col);
     let mut runs = Vec::new();
     let mut at = 0;
     for &(from, to, colors) in spans {
@@ -1687,6 +1696,20 @@ fn text_runs(text: &str, fg: Hsla, spans: &[(usize, usize, Colors)]) -> Vec<(usi
         runs.push((text.len() - at, fg));
     }
     runs
+}
+
+/// The part of `runs` (lengths covering a text) inside byte range `bytes`.
+fn slice_runs(runs: &[(usize, Hsla)], bytes: std::ops::Range<usize>) -> Vec<(usize, Hsla)> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    for &(len, color) in runs {
+        let (start, end) = (at.max(bytes.start), (at + len).min(bytes.end));
+        if start < end {
+            out.push((end - start, color));
+        }
+        at += len;
+    }
+    out
 }
 
 struct BulletColors {
@@ -2115,6 +2138,14 @@ mod tests {
         assert_eq!(&text[10..20], &long[10 + vp.left()..20 + vp.left()]);
         let (text, _) = screen_text(&log, log.line(1).unwrap(), &vp);
         assert_eq!(text, "short     ");
+        // A wide character cut by the separator is left out of the frozen
+        // part.
+        let path = temp_log("frozen-wide", "abcdefghi日本\n");
+        let wide = LogFile::open(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        let (text, seen) = screen_text(&wide, wide.line(0).unwrap(), &vp);
+        assert!(text.starts_with("abcdefghi "), "{text:?}");
+        assert_eq!(seen, 13);
 
         // Clicks map screen columns to file columns.
         let l = layout(&view, cx);
@@ -2178,6 +2209,18 @@ mod tests {
         // Spans past the end are clipped; empty text gets one run.
         assert_eq!(text_runs("ab", fg, &[(1, 9, red)]), [(1, fg), (1, r)]);
         assert_eq!(text_runs("", fg, &[]), [(0, fg)]);
+        // A wide character takes two columns; a span can't split it.
+        assert_eq!(
+            text_runs("a日b", fg, &[(1, 3, red)]),
+            [(1, fg), (3, r), (1, fg)]
+        );
+        assert_eq!(text_runs("a日b", fg, &[(2, 3, red)]), [(5, fg)]);
+        // Runs cut to a piece of the text.
+        assert_eq!(slice_runs(&[(1, fg), (3, r), (1, fg)], 1..4), [(3, r)]);
+        assert_eq!(
+            slice_runs(&[(1, fg), (3, r), (1, fg)], 0..2),
+            [(1, fg), (1, r)]
+        );
     }
 
     #[test]
