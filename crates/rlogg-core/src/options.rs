@@ -135,6 +135,11 @@ pub struct File {
     /// Recent files shown in the File menu (klogg: `RecentFiles`'
     /// "Show the number of recently opened files").
     pub recent_files: usize,
+    /// Open compressed files and archives by extracting them to a
+    /// temporary folder (klogg: `archives.extract`).
+    pub extract_archives: bool,
+    /// Without asking first (klogg: `archives.extractAlways`).
+    pub extract_without_confirmation: bool,
 }
 
 impl Default for File {
@@ -142,6 +147,8 @@ impl Default for File {
         Self {
             follow_on_scroll: true,
             recent_files: settings::DEFAULT_RECENT_SHOWN,
+            extract_archives: true,
+            extract_without_confirmation: false,
         }
     }
 }
@@ -230,6 +237,7 @@ mod tests {
         assert!(o.search.quickfind_incremental && !o.search.quickfind_regex);
         assert!(o.view.overview && o.view.line_numbers_filtered);
         assert!(o.file.follow_on_scroll);
+        assert!(o.file.extract_archives && !o.file.extract_without_confirmation);
         assert_eq!(o.new_file_context(), FileContext::default());
     }
 

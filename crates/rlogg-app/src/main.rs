@@ -1,5 +1,6 @@
 //! rlogg desktop app. See CLAUDE.md for the roadmap.
 
+mod archives;
 mod background;
 mod crawler;
 mod follow;

@@ -27,6 +27,12 @@ serde_json.workspace = true
 crc32fast.workspace = true
 percent-encoding.workspace = true
 quick-xml.workspace = true
+flate2.workspace = true
+tar.workspace = true
+bzip2.workspace = true
+lzma-rs.workspace = true
+sevenz-rust2.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true

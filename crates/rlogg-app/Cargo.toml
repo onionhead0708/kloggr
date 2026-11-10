@@ -23,4 +23,5 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+flate2.workspace = true
 gpui = { workspace = true, features = ["test-support"] }

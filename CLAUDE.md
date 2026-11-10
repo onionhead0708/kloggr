@@ -136,7 +136,7 @@ check new shortcuts in the real app too (see the color-label entry in `docs/deci
 
 ### Phase 4: extras and release
 - [x] Predefined filters, saved searches, scratchpad (search history and Filters drop-downs, Tools > Predefined Filters…, Add/Exclude/Replace search, scratchpad window with transforms)
-- [ ] Archive/compressed file opening (klogg `decompressor`)
+- [x] Archive/compressed file opening (klogg `decompressor`): gzip, bzip2, xz, lzma, zip, 7z, tar (also compressed), extracted to a temporary folder
 - [ ] Packaging: AppImage, .deb, tarball; then Windows (.msi) and macOS (.dmg) CI
 - [ ] Version check, crash/panic reporting
 - [ ] Copying large selections: stream to the clipboard in chunks, or warn above a size limit

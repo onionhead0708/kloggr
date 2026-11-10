@@ -42,6 +42,13 @@ serde_json = { version = "1", features = ["preserve_order"] }
 crc32fast = "1.5"
 percent-encoding = "2.3"
 quick-xml = "0.41"
+# Opening compressed logs and archives (klogg: KArchive).
+flate2 = "1.1"
+tar = "0.4.46"
+bzip2 = "0.6.1"
+lzma-rs = "0.3.0"
+sevenz-rust2 = "0.25.0"
+zip = { version = "9.5.0", default-features = false, features = ["deflate"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # GPUI does layout and text shaping on the CPU every frame; an unoptimized

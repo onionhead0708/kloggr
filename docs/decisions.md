@@ -8,6 +8,21 @@ Newest first. Each entry gives the date, what klogg does, what rlogg does, and w
 
 ---
 
+## 2026-11-10: Archives: type from content, a file list, nothing temporary remembered
+
+**klogg:** finds an archive's type from its MIME type (content and name) and asks "Extract archive to temp folder?". It decompresses gzip, bzip2 and xz/lzma to a temporary file, and extracts zip, 7z and tar, also compressed, to a temporary folder. Then it opens a file dialog on that folder to choose files. Extracted files go into recent files and the session like any other.
+
+**rlogg:**
+- The type comes from the magic bytes, then the name (`.tar.gz`, `.tgz`, `.lzma`). A `.gz` that holds a tar is extracted as an archive.
+- After extracting, a list of the extracted files with check boxes replaces the file dialog. An archive with one file opens it directly.
+- Progress shows in the status line. There's no cancel button; quitting stops the extraction.
+- Recent files keep the archive. Extracted files are not saved in the session, and the temporary folder is removed when rlogg quits.
+- Paths that would leave the folder (zip slip) are skipped.
+
+**Why:** GPUI's file dialog can't start in a given folder. Remembering temporary files would leave broken entries after a restart.
+
+**Code:** `rlogg_core::archive`, `Workspace::{open, extract}`, `crate::archives`.
+
 ## 2026-11-10: Scratchpad: UTC times, JSON key order
 
 **klogg:** the scratchpad shows a Unix time in a time zone picked from a list, and "Format json" sorts the object keys (`QJsonObject` keeps them sorted). A tab of instructions ("You can add tabs by pressing +") comes first.

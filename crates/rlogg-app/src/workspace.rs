@@ -22,10 +22,12 @@ use gpui_component::menu::{AppMenuBar, ContextMenuExt};
 use gpui_component::tab::{Tab as GuiTab, TabBar};
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme, GlobalState, Sizable, WindowExt};
+use rlogg_core::archive;
 use rlogg_core::file::OpenError;
 use rlogg_core::settings::{FileContext, OpenFile, Session};
 use rlogg_core::{IndexProgress, LogFile, OpenOptions};
 
+use crate::archives;
 use crate::background;
 use crate::crawler::{
     Crawler, CrawlerEvent, EditPredefinedFilters, ToggleFreezeFiltered, ToggleFreezeMain,
@@ -182,6 +184,11 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
 const IDLE_STATUS: &str = "Open a file with Ctrl+O, or drop it here";
 
 /// Messages from the indexing thread.
+enum ExtractEvent {
+    Progress(u8),
+    Done(Result<Vec<PathBuf>, String>),
+}
+
 enum IndexEvent {
     Progress(IndexProgress),
     Done(Result<Arc<LogFile>, OpenError>),
@@ -222,6 +229,12 @@ pub struct Workspace {
     error: Option<String>,
     /// Enter in the rename dialog's input.
     _rename: Option<gpui::Subscription>,
+    /// "Extracting app.log.gz… 40%", while an archive is opened.
+    extracting: Option<String>,
+    extract_cancel: Arc<AtomicBool>,
+    _extract: Option<Task<()>>,
+    /// The open archive file picker (see `archives::pick`).
+    _picker: Option<Entity<archives::ArchivePicker>>,
 }
 
 impl Workspace {
@@ -235,6 +248,8 @@ impl Workspace {
         // Marks and options change without a tab change: save them on exit.
         cx.on_app_quit(|this, cx| {
             this.save_open_files(cx);
+            this.extract_cancel.store(true, Ordering::Relaxed);
+            let _ = std::fs::remove_dir_all(Self::temp_root());
             async {}
         })
         .detach();
@@ -248,6 +263,10 @@ impl Workspace {
             focus,
             error: None,
             _rename: None,
+            extracting: None,
+            extract_cancel: Arc::default(),
+            _extract: None,
+            _picker: None,
         };
         this.update_menus(cx);
         // Set names and active sets show in the menus.
@@ -346,7 +365,153 @@ impl Workspace {
     /// thread (indexing itself runs on rayon), with progress in the status
     /// line.
     pub fn open(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_with(path, None, window, cx);
+        let options = Preferences::get(cx).file.clone();
+        let kind = if options.extract_archives {
+            archive::kind(&path).unwrap_or(archive::Kind::Plain)
+        } else {
+            archive::Kind::Plain
+        };
+        if kind.is_plain() {
+            self.open_with(path, None, window, cx);
+        } else if options.extract_without_confirmation {
+            self.extract(path, kind, window, cx);
+        } else {
+            // klogg: "Extract archive to temp folder?"; No opens nothing.
+            // Deferred: a file given on the command line is opened while
+            // the window (and its dialog layer) is still being built.
+            let this = cx.entity().downgrade();
+            window.defer(cx, move |window, cx| {
+                window.open_alert_dialog(cx, move |alert, _, _| {
+                    let (this, path) = (this.clone(), path.clone());
+                    alert
+                        .title("Open archive")
+                        .description(format!(
+                            "Extract {} to a temporary folder?",
+                            file_name(&path)
+                        ))
+                        .show_cancel(true)
+                        .ok_text("Extract")
+                        .on_ok(move |_, window, cx| {
+                            let path = path.clone();
+                            this.update(cx, |ws, cx| ws.extract(path, kind, window, cx))
+                                .ok();
+                            true
+                        })
+                });
+            });
+        }
+    }
+
+    /// Where files taken out of archives go; removed when rlogg quits
+    /// (klogg: `tempDir_`).
+    fn temp_root() -> PathBuf {
+        std::env::temp_dir().join(format!("rlogg-{}", std::process::id()))
+    }
+
+    /// Files taken out of an archive aren't remembered: they are gone
+    /// after quitting.
+    fn is_temporary(path: &Path) -> bool {
+        path.starts_with(Self::temp_root())
+    }
+
+    /// Decompresses or extracts `path` on a thread, with progress in the
+    /// status line, then opens the result (klogg: `extractAndLoadFile`).
+    pub fn extract(
+        &mut self,
+        path: PathBuf,
+        kind: archive::Kind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let path = std::fs::canonicalize(&path).unwrap_or(path);
+        let dir = archive::temp_dir_for(&Self::temp_root(), &path);
+        let (tx, rx) = async_channel::unbounded();
+        let cancel = self.extract_cancel.clone();
+        let (thread_path, thread_dir) = (path.clone(), dir.clone());
+        background::spawn_blocking(
+            "rlogg-extract",
+            move || {
+                let mut progress = |p: u8| {
+                    tx.send_blocking(ExtractEvent::Progress(p)).ok();
+                };
+                let result = match kind {
+                    archive::Kind::Compressed(c) => {
+                        archive::decompress(&thread_path, c, &thread_dir, &cancel, &mut progress)
+                            .map(|f| vec![f])
+                    }
+                    _ => archive::extract(&thread_path, kind, &thread_dir, &cancel, &mut progress),
+                };
+                tx.send_blocking(ExtractEvent::Done(result.map_err(|e| e.to_string())))
+                    .ok();
+            },
+            cx,
+        );
+        let name = file_name(&path);
+        self.extracting = Some(format!("Extracting {name}…"));
+        self.error = None;
+        cx.notify();
+        self._extract = Some(cx.spawn_in(window, async move |this, cx| {
+            while let Ok(event) = rx.recv().await {
+                let alive = this.update_in(cx, |this, window, cx| {
+                    match event {
+                        ExtractEvent::Progress(p) => {
+                            this.extracting = Some(format!("Extracting {name}… {p}%"));
+                        }
+                        ExtractEvent::Done(result) => {
+                            this.extracting = None;
+                            this.extracted(&path, kind, &dir, result, window, cx);
+                        }
+                    }
+                    cx.notify();
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        }));
+    }
+
+    fn extracted(
+        &mut self,
+        archive_path: &Path,
+        kind: archive::Kind,
+        dir: &Path,
+        result: Result<Vec<PathBuf>, String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let files = match result {
+            Ok(files) => files,
+            Err(e) => {
+                // klogg: "Failed to extract %1".
+                self.error = Some(format!("Failed to extract {}: {e}", archive_path.display()));
+                return;
+            }
+        };
+        self.add_recent(archive_path, cx);
+        match files.as_slice() {
+            [] => self.error = Some(format!("{} is empty", archive_path.display())),
+            [file] => self.open_with(file.clone(), None, window, cx),
+            _ if !kind.is_archive() => self.open_with(files[0].clone(), None, window, cx),
+            _ => {
+                let this = cx.entity().downgrade();
+                let picker = archives::pick(
+                    dir.to_path_buf(),
+                    files,
+                    window,
+                    cx,
+                    move |chosen, window, cx| {
+                        this.update(cx, |ws, cx| {
+                            for file in chosen {
+                                ws.open_with(file, None, window, cx);
+                            }
+                        })
+                        .ok();
+                    },
+                );
+                self._picker = Some(picker);
+            }
+        }
     }
 
     /// Like [`open`](Self::open), restoring the file's state from a session.
@@ -469,6 +634,9 @@ impl Workspace {
     }
 
     fn add_recent(&mut self, path: &Path, cx: &mut Context<Self>) {
+        if Self::is_temporary(path) {
+            return;
+        }
         self.session.recent_files.add(path.to_path_buf());
         self.save_session();
         self.update_menus(cx);
@@ -503,6 +671,7 @@ impl Workspace {
         self.session.open_files = self
             .tabs
             .iter()
+            .filter(|t| !Self::is_temporary(&t.path))
             .map(|t| OpenFile {
                 path: t.path.clone(),
                 context: t.crawler.read(cx).context(cx),
@@ -653,12 +822,14 @@ impl Workspace {
         if let Some(error) = &self.error {
             return error.clone();
         }
+        if let Some(extracting) = &self.extracting {
+            return extracting.clone();
+        }
         self.tabs
             .get(self.active)
             .map_or_else(|| IDLE_STATUS.to_owned(), |t| t.status.clone())
     }
 
-    /// The tab bar, shown with two tabs or more (klogg hides it for one).
     /// The tab's text: the name the user gave it, else the file name
     /// (klogg: `TabNameMapping`).
     fn tab_label(&self, tab: &Tab) -> String {
@@ -746,6 +917,7 @@ impl Workspace {
         });
     }
 
+    /// The tab bar, shown with two tabs or more (klogg hides it for one).
     fn render_tabs(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         if self.tabs.len() < 2 {
             return None;
@@ -1491,5 +1663,45 @@ mod tests {
         ws.update(cx, |ws, cx| ws.rename_tab(1, "", cx));
         assert_eq!(label(&ws, cx, 1), "a.log");
         assert_eq!(Session::load(&fx.config()).tab_name(&a), None);
+    }
+
+    #[gpui::test]
+    fn opens_compressed_files(cx: &mut TestAppContext) {
+        use std::io::Write as _;
+        let fx = Fixture::new("archive");
+        let gz = fx.dir.join("app.log.gz");
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        e.write_all(b"one\ntwo ERROR\nthree\n").unwrap();
+        std::fs::write(&gz, e.finish().unwrap()).unwrap();
+        let gz = gz.canonicalize().unwrap();
+        let (ws, cx) = workspace(cx, fx.config());
+        cx.update(|_, cx| {
+            let mut o = Preferences::get(cx).clone();
+            o.file.extract_without_confirmation = true;
+            Preferences::set(o, None, cx);
+        });
+        ws.update_in(cx, |ws, window, cx| ws.open(gz.clone(), window, cx));
+        // Decompressing runs on a thread, then indexing.
+        let mut lines = None;
+        for _ in 0..500 {
+            cx.run_until_parked();
+            lines = ws.read_with(cx, |ws, cx| {
+                ws.crawler()
+                    .and_then(|c| c.read(cx).log().map(LogFile::line_count))
+            });
+            if lines.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(lines, Some(3));
+        let tab_path = ws.read_with(cx, |ws, _| ws.tabs[0].path.clone());
+        assert!(Workspace::is_temporary(&tab_path), "{tab_path:?}");
+        assert_eq!(tab_path.file_name().unwrap(), "app.log");
+        // The archive is remembered, not the temporary file.
+        assert_eq!(recent(&ws, cx), [gz]);
+        ws.update(cx, |ws, cx| ws.save_open_files(cx));
+        assert!(Session::load(&fx.config()).open_files.is_empty());
+        let _ = std::fs::remove_dir_all(Workspace::temp_root());
     }
 }

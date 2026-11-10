@@ -535,6 +535,20 @@ impl OptionsEditor {
                 |o, v| o.file.follow_on_scroll = v,
                 cx,
             ))
+            .child(self.check(
+                "extract-archives",
+                "Extract archives",
+                o.file.extract_archives,
+                |o, v| o.file.extract_archives = v,
+                cx,
+            ))
+            .child(self.check(
+                "extract-always",
+                "Extract archives without confirmation",
+                o.file.extract_without_confirmation,
+                |o, v| o.file.extract_without_confirmation = v,
+                cx,
+            ))
             .child(
                 h_flex()
                     .gap_2()

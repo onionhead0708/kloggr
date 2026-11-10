@@ -1,6 +1,7 @@
 //! rlogg-core: the UI-independent engine of rlogg.
 //!
 //! Mirrors klogg's `src/logdata` + `src/regex` responsibilities:
+//! - [`archive`]: compressed files and archives (klogg: `Decompressor`)
 //! - [`file`]: memory-mapped access to a log file (klogg: `FileHolder`)
 //! - [`encoding`]: encoding detection and decoding (klogg: `EncodingDetector`)
 //! - [`line_index`]: parallel, incremental, compressed index of line starts
@@ -21,6 +22,7 @@
 //! - [`highlight`]: highlighters, highlighter sets and color labels (klogg:
 //!   `HighlighterSet`, `ColorLabelsManager`)
 
+pub mod archive;
 pub mod digits;
 pub mod encoding;
 pub mod file;
