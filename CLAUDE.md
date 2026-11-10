@@ -146,6 +146,31 @@ check new shortcuts in the real app too (see the color-label entry in `docs/deci
 - [x] Version check against GitHub releases (`kloggr-core::version_check`, app `update_check`), crash/panic reporting (`kloggr-core::crash`, report shown at the next start with a GitHub issue link)
 - [x] Copying large selections: size from the line index, ask above 64 MiB and copy on a worker thread, refuse above 1 GiB (`docs/decisions.md`)
 
+### Phase 5: viewing and search parity with klogg
+Features of the log views and the search that klogg has and kloggr lacks (found by comparing menus, context menus and `shortcuts.h` on 2026-11-10).
+- [ ] Reload and Stop: `mainwindow.reload` (F5) reloads the file, `mainwindow.stop` cancels indexing or a search; progress shown when a replaced file is reindexed
+- [ ] Encoding choice: View > Encoding menu overriding the detected encoding, remembered per file in the session
+- [ ] Search limits: log view context menu Set search start, Set search end, Clear search limits; the search only scans that line range
+- [ ] Search bar: Keep results toggle (`crawler.enable_keep_results`), shortcut for auto-refresh (`crawler.enable_auto_refresh`), "Save as Filter" in the search box context menu
+- [ ] Text wrap (`mainwindow.text_wrap`), still windowing very long lines before shaping
+- [ ] Save to file and Save selected to file (log view context menu), streamed from the mapping on a worker thread
+- [ ] Split between the views: `crawler.increase_top_view_size` / `decrease_top_view_size`, "Save splitter position" as the default
+- [ ] Log view context menu completeness: Mark, Find next, Find previous, Set selection start, Set selection end; `logview.exit_view`
+- [ ] Overview bar flashes the line when hovering a filtered row (klogg overview)
+- [ ] Option to hide ANSI colour escape sequences
+
+### Phase 6: application, window and platform
+Menus, window management and platform integration still missing, plus open items from earlier phases.
+- [ ] Edit menu: Copy, Select All, Find, Go to Line, Copy Path (`mainwindow.copy_path_to_clipboard`), Open Containing Folder, Open in Editor, Clear File (`mainwindow.clear_file`)
+- [ ] Help menu: About, Documentation, Report Issue
+- [ ] File menu: Open from Clipboard, Open from URL, New Window, Opened Files switcher (`mainwindow.select_open_file`)
+- [ ] Favorites: add, remove and open favorite files (klogg favorites menu and toolbar button)
+- [ ] Single instance: a second launch passes its files to the running window
+- [ ] Window size and position remembered in the session; Fullscreen, Minimize, Maximize shortcuts
+- [ ] Windows: truncated mapped files (read by blocks instead of mapping, re-enable the skipped tests)
+- [ ] macOS: open files from Finder (*Open With*): GPUI open-URL events and document types in `Info.plist`
+- [ ] Benchmarks: the 10 GB runs, and the short-line search speed-up noted in `docs/benchmarks.md`
+
 ## Conventions
 
 - Edition 2024. `cargo fmt` and clippy must be clean with `-D warnings`.
