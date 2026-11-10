@@ -8,6 +8,16 @@ Newest first. Each entry gives the date, what klogg does, what rlogg does, and w
 
 ---
 
+## 2026-11-10: Scratchpad: UTC times, JSON key order
+
+**klogg:** the scratchpad shows a Unix time in a time zone picked from a list, and "Format json" sorts the object keys (`QJsonObject` keeps them sorted). A tab of instructions ("You can add tabs by pressing +") comes first.
+
+**rlogg:** times (Unix seconds and Windows FILETIME) are shown in UTC only, "Format json" keeps the keys in their order, and there is no instructions tab (the `+` button has a tooltip, and Ctrl+N works as in klogg). The scratchpad is its own window, as in klogg, and closes with the app.
+
+**Why:** time zone data would need another dependency, and UTC is how logs are usually compared. Keeping the key order shows the JSON as it was logged.
+
+**Code:** `rlogg_core::scratch`, `crate::scratchpad`.
+
 ## 2026-11-10: Search history and predefined filters
 
 **klogg:** the search box is an editable combo box that lists the history. Predefined filters are a check-list combo box, and checking one replaces the search with the checked filters joined by `|` (or `or`). In boolean mode, pieces are quoted without escaping their quotes, and "Exclude from search" on an empty search gives `"" and not(...)`. The predefined filters dialog can import and export `.conf` files.

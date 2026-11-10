@@ -12,6 +12,7 @@ mod options_dialog;
 mod preferences;
 mod quick_find;
 mod saved_searches;
+mod scratchpad;
 mod shortcuts;
 mod workspace;
 
@@ -36,6 +37,7 @@ fn main() {
             let config_dir = rlogg_core::settings::config_dir();
             // Options first: they bind the shortcuts.
             preferences::Preferences::init(config_dir.clone(), cx);
+            cx.bind_keys(scratchpad::key_bindings());
             preferences::Preferences::apply_style(None, cx);
             highlighters::Highlighters::init(config_dir.clone(), cx);
             saved_searches::SavedSearches::init(config_dir.clone(), cx);
@@ -54,8 +56,14 @@ fn main() {
                 cx.new(|cx| Root::new(workspace, window, cx))
             })
             .expect("failed to open window");
+            // The scratchpad window doesn't keep the app open (klogg's is
+            // a child of the main window).
             cx.on_window_closed(|cx, _| {
-                if cx.windows().is_empty() {
+                let windows = cx.windows();
+                if windows
+                    .iter()
+                    .all(|w| scratchpad::is_scratchpad_window(*w, cx))
+                {
                     cx.quit();
                 }
             })

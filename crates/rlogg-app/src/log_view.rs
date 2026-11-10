@@ -79,6 +79,8 @@ actions!(
         AddToSearch,
         ExcludeFromSearch,
         ReplaceSearch,
+        SendToScratchpad,
+        ReplaceScratchpad,
     ]
 );
 
@@ -229,6 +231,20 @@ pub fn shortcuts() -> Vec<Shortcut> {
             c,
             &["shift-r"],
             ReplaceSearch,
+        ),
+        Shortcut::new(
+            "logview.send_selection_to_scratchpad",
+            "Send selection to scratchpad",
+            c,
+            &["ctrl-z"],
+            SendToScratchpad,
+        ),
+        Shortcut::new(
+            "logview.replace_scratchpad_with_selection",
+            "Replace scratchpad with selection",
+            c,
+            &["ctrl-shift-z"],
+            ReplaceScratchpad,
         ),
         Shortcut::new(
             "logview.jump_to_line_number",
@@ -623,6 +639,20 @@ impl LogView {
             },
         };
         cx.emit(LogViewEvent::ColorLabel(op, text));
+    }
+
+    /// klogg: `sendSelectionToScratchpad`, `replaceScratchpadWithSelection`.
+    fn send_to_scratchpad(&mut self, replace: bool, cx: &mut Context<Self>) {
+        let Some(text) = self.selected_text(false, cx).filter(|t| !t.is_empty()) else {
+            return;
+        };
+        crate::scratchpad::show(cx, move |pad, window, cx| {
+            if replace {
+                pad.replace_data(&text, window, cx)
+            } else {
+                pad.add_data(&text, window, cx)
+            }
+        });
     }
 
     fn search_op(&mut self, op: SearchOp, cx: &mut Context<Self>) {
@@ -1097,6 +1127,12 @@ impl Render for LogView {
             .on_action(cx.listener(|v, _: &ToggleFreezeColumns, _, cx| v.toggle_freeze(cx)))
             .on_action(cx.listener(|v, _: &AddToSearch, _, cx| v.search_op(SearchOp::Add, cx)))
             .on_action(
+                cx.listener(|v, _: &SendToScratchpad, _, cx| v.send_to_scratchpad(false, cx)),
+            )
+            .on_action(
+                cx.listener(|v, _: &ReplaceScratchpad, _, cx| v.send_to_scratchpad(true, cx)),
+            )
+            .on_action(
                 cx.listener(|v, _: &ExcludeFromSearch, _, cx| v.search_op(SearchOp::Exclude, cx)),
             )
             .on_action(
@@ -1195,6 +1231,17 @@ impl LogView {
             .menu_with_disabled("Add to search", Box::new(AddToSearch), no_text)
             .menu_with_disabled("Exclude from search", Box::new(ExcludeFromSearch), no_text)
             .menu_with_disabled("Replace search", Box::new(ReplaceSearch), no_text)
+            .separator()
+            .menu_with_disabled(
+                "Send to scratchpad",
+                Box::new(SendToScratchpad),
+                nothing_selected,
+            )
+            .menu_with_disabled(
+                "Replace scratchpad",
+                Box::new(ReplaceScratchpad),
+                nothing_selected,
+            )
             .separator()
             .menu_with_check("Freeze columns", frozen, Box::new(ToggleFreezeColumns))
             .separator()

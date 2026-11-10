@@ -10,6 +10,7 @@
 //! - [`selection`]: line / range / portion selection (klogg: `Selection`)
 //! - [`viewport`]: scroll position in lines and columns
 //! - [`settings`]: persistent session state, recent files (klogg: `RecentFiles`)
+//! - [`scratch`]: the scratchpad's transformations (klogg: `ScratchPad`)
 //! - [`searches`]: search history and predefined filters (klogg: `SavedSearches`,
 //!   `PredefinedFiltersCollection`)
 //! - [`options`]: user options and shortcut overrides (klogg: `Configuration`)
@@ -26,6 +27,7 @@ pub mod file;
 pub mod highlight;
 pub mod line_index;
 pub mod options;
+pub mod scratch;
 pub mod search;
 pub mod searches;
 pub mod selection;

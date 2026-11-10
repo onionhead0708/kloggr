@@ -35,7 +35,8 @@ stays GPLv3. Keep klogg's copyright notices where code is translated closely.
 | `ui/quickfind*` (QuickFind engine) | `rlogg-core::search::find`, `rlogg-app` quick_find | rayon |
 | `ui/highlighterset`, `colorlabelsmanager`, `highlightedmatch` | `rlogg-core::highlight` (done), app `highlighters` | regex |
 | `ui/highlightersdialog`, `highlighterset(edit)`, `highlighteredit` | `rlogg-app` highlighters_dialog (done), `rlogg-core::highlight::klogg_conf` | gpui-component |
-| `ui/predefinedfilters*`, `savedsearches`, `scratchpad` | `rlogg-app` features | gpui-component |
+| `ui/predefinedfilters*`, `savedsearches` | `rlogg-core::searches`, app `saved_searches` (done) | |
+| `ui/scratchpad`, `tabbedscratchpad` | `rlogg-core::scratch`, app `scratchpad` (done) | base64, serde_json, quick-xml, crc32fast |
 | `versioncheck/`, `logging/`, `crash_handler/` | later | ureq (rustls), tracing, panic hook |
 
 ## Architecture
@@ -134,7 +135,7 @@ check new shortcuts in the real app too (see the color-label entry in `docs/deci
 - [x] Settings and options dialog (Tools > Options…: session, search defaults, match and quick-find highlight colours, font, style, overview, line numbers, follow on scroll, recent files) and editable shortcuts with klogg's defaults (`settings.toml`)
 
 ### Phase 4: extras and release
-- [ ] Predefined filters, saved searches, scratchpad
+- [x] Predefined filters, saved searches, scratchpad (search history and Filters drop-downs, Tools > Predefined Filters…, Add/Exclude/Replace search, scratchpad window with transforms)
 - [ ] Archive/compressed file opening (klogg `decompressor`)
 - [ ] Packaging: AppImage, .deb, tarball; then Windows (.msi) and macOS (.dmg) CI
 - [ ] Version check, crash/panic reporting

@@ -5588,17 +5588,22 @@ dependencies = [
 name = "rlogg-core"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
  "chardetng",
+ "crc32fast",
  "criterion",
  "directories",
  "encoding_rs",
  "memchr",
  "memmap2",
  "notify",
+ "percent-encoding",
+ "quick-xml",
  "rayon",
  "regex",
  "roaring",
  "serde",
+ "serde_json",
  "thiserror 2.0.21",
  "toml 0.9.12+spec-1.1.0",
  "tracing",

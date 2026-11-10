@@ -48,6 +48,7 @@ actions!(
         LastTab,
         CloseAllTabs,
         ShowOptions,
+        OpenScratchpad,
         ToggleOverview,
         ToggleLineNumbersMain,
         ToggleLineNumbersFiltered
@@ -121,6 +122,13 @@ pub fn shortcuts() -> Vec<Shortcut> {
             None,
             &[],
             ShowOptions,
+        ),
+        Shortcut::new(
+            "mainwindow.scratchpad",
+            "Open scratchpad",
+            None,
+            &[],
+            OpenScratchpad,
         ),
         Shortcut::new(
             "mainwindow.next_tab",
@@ -307,6 +315,7 @@ impl Workspace {
             Menu::new("Tools").items([
                 MenuItem::action("Options…", ShowOptions),
                 MenuItem::action("Predefined Filters…", EditPredefinedFilters),
+                MenuItem::action("Scratchpad", OpenScratchpad),
                 MenuItem::separator(),
                 MenuItem::action("Highlighters…", EditHighlighters),
                 MenuItem::submenu(Highlighters::menu(cx)),
@@ -851,6 +860,11 @@ impl Render for Workspace {
             }))
             .on_action(
                 cx.listener(|_, _: &ShowOptions, window, cx| options_dialog::open(window, cx)),
+            )
+            .on_action(
+                cx.listener(|_, _: &OpenScratchpad, _, cx| {
+                    crate::scratchpad::show(cx, |_, _, _| {})
+                }),
             )
             .on_action(cx.listener(|_, _: &EditPredefinedFilters, window, cx| {
                 crate::saved_searches::edit_filters(window, cx)

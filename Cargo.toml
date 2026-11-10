@@ -37,6 +37,11 @@ anyhow = "1"
 tracing = "0.1"
 notify = "8.2"
 unicode-width = "0.2"
+base64 = "0.23"
+serde_json = { version = "1", features = ["preserve_order"] }
+crc32fast = "1.5"
+percent-encoding = "2.3"
+quick-xml = "0.41"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # GPUI does layout and text shaping on the CPU every frame; an unoptimized
