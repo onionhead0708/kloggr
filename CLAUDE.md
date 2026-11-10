@@ -104,6 +104,7 @@ check new shortcuts in the real app too (see the color-label entry in `docs/deci
   libxkbcommon-x11-dev libwayland-dev libdbus-1-dev libvulkan-dev mesa-vulkan-drivers`
 - Cargo tools: `bacon cargo-nextest cargo-deny`
 - For headless visual checks: `xvfb xdotool imagemagick`
+- For packaging: `dpkg-dev fakeroot`, and `appimagetool` (github.com/AppImage/appimagetool releases) on PATH
 - Platforms: develop and test on Linux (X11 and Wayland). Keep code portable; Windows
   and macOS CI come later.
 
@@ -138,7 +139,7 @@ check new shortcuts in the real app too (see the color-label entry in `docs/deci
 ### Phase 4: extras and release
 - [x] Predefined filters, saved searches, scratchpad (search history and Filters drop-downs, Tools > Predefined Filters…, Add/Exclude/Replace search, scratchpad window with transforms)
 - [x] Archive/compressed file opening (klogg `decompressor`): gzip, bzip2, xz, lzma, zip, 7z, tar (also compressed), extracted to a temporary folder
-- [ ] Packaging: tarball and .deb done (`scripts/package-linux.sh`, `packaging/linux/`); AppImage needs `appimagetool`; then Windows (.msi) and macOS (.dmg) CI
+- [ ] Packaging: tarball, .deb and AppImage done (`scripts/package-linux.sh`, `packaging/linux/`; `appimagetool` in `~/.local/bin`); then Windows (.msi) and macOS (.dmg) CI
 - [ ] Version check (needs a release URL), crash/panic reporting (done: local report shown at the next start, `rlogg-core::crash`)
 - [x] Copying large selections: size from the line index, ask above 64 MiB and copy on a worker thread, refuse above 1 GiB (`docs/decisions.md`)
 
