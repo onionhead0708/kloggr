@@ -19,7 +19,7 @@ use gpui_component::menu::{DropdownMenu, PopupMenu};
 use gpui_component::resizable::{resizable_panel, v_resizable};
 use gpui_component::{ActiveTheme, Sizable};
 use rlogg_core::search::{self, FilteredLines, Matcher, Pattern, SearchProgress, Visibility};
-use rlogg_core::settings::FileContext;
+use rlogg_core::settings::{FileContext, FrozenView};
 use rlogg_core::{Cancelled, LogFile};
 
 use crate::background;
@@ -44,6 +44,8 @@ actions!(
         ToggleRegex,
         ToggleInverse,
         ToggleBoolean,
+        ToggleFreezeMain,
+        ToggleFreezeFiltered,
     ]
 );
 
@@ -123,6 +125,8 @@ enum SearchEvent {
 pub enum CrawlerEvent {
     /// The file changed on disk and was reloaded: its tab shows it.
     NewData,
+    /// The frozen columns of a view changed: remember them for the file.
+    FrozenChanged,
 }
 
 impl gpui::EventEmitter<CrawlerEvent> for Crawler {}
@@ -195,6 +199,7 @@ impl Crawler {
                 &LogViewEvent::LineSelected(line) => this.current_line = line,
                 &LogViewEvent::FollowChanged(on) => this.set_follow(on, cx),
                 LogViewEvent::ColorLabel(op, text) => this.color_label(*op, text, cx),
+                LogViewEvent::FreezeChanged(_) => cx.emit(CrawlerEvent::FrozenChanged),
             }),
             cx.subscribe(&filtered, |this, _, event: &LogViewEvent, cx| match event {
                 &LogViewEvent::LineSelected(line) => {
@@ -206,6 +211,7 @@ impl Crawler {
                 }
                 &LogViewEvent::FollowChanged(on) => this.set_follow(on, cx),
                 LogViewEvent::ColorLabel(op, text) => this.color_label(*op, text, cx),
+                LogViewEvent::FreezeChanged(_) => cx.emit(CrawlerEvent::FrozenChanged),
             }),
             cx.observe(&filter, |_, _, cx| cx.notify()),
             // Color label styles may change in the highlighters dialog.
@@ -416,6 +422,39 @@ impl Crawler {
     /// Highlights the search pattern's matches in both views (klogg:
     /// `setSearchPattern`). Excluding and boolean patterns highlight nothing,
     /// as in klogg.
+    /// Frozen columns of the main and filtered views (klogg:
+    /// `FrozenColumns::FileState`).
+    pub fn frozen_columns(&self, cx: &gpui::App) -> (FrozenView, FrozenView) {
+        (self.main.read(cx).freeze(), self.filtered.read(cx).freeze())
+    }
+
+    pub fn set_frozen_columns(
+        &mut self,
+        main: FrozenView,
+        filtered: FrozenView,
+        cx: &mut Context<Self>,
+    ) {
+        self.main.update(cx, |v, cx| v.set_freeze(main, cx));
+        self.filtered.update(cx, |v, cx| v.set_freeze(filtered, cx));
+    }
+
+    /// View > Freeze columns in main / filtered view (klogg:
+    /// `setMainFrozenColumns`, `setFilteredFrozenColumns`).
+    fn toggle_freeze(&mut self, filtered: bool, cx: &mut Context<Self>) {
+        let view = if filtered { &self.filtered } else { &self.main };
+        view.update(cx, |v, cx| {
+            let freeze = v.freeze();
+            v.set_freeze(
+                FrozenView {
+                    enabled: !freeze.enabled,
+                    ..freeze
+                },
+                cx,
+            )
+        });
+        cx.emit(CrawlerEvent::FrozenChanged);
+    }
+
     /// Applies a color label change from either view (klogg:
     /// `addColorLabelToSelection`, `clearColorLabels`), then shows the
     /// labels in both views (klogg: `updateColorLabels`).
@@ -815,6 +854,12 @@ impl Render for Crawler {
             .on_action(cx.listener(|this, _: &follow::ToggleFollow, _, cx| {
                 this.set_follow(!this.following, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &ToggleFreezeMain, _, cx| this.toggle_freeze(false, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &ToggleFreezeFiltered, _, cx| this.toggle_freeze(true, cx)),
+            )
             .on_action(cx.listener(|this, _: &go_to_line::Open, window, cx| {
                 this.open_go_to_line(window, cx)
             }))

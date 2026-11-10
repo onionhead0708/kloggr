@@ -42,6 +42,7 @@ use rlogg_core::highlight::{ColorLabels, Colors, CompiledSet};
 use rlogg_core::search::find::{self, Direction, Found};
 use rlogg_core::search::overview::{self, Overview};
 use rlogg_core::search::{FilteredLines, LineKind, Matcher};
+use rlogg_core::settings::FrozenView;
 use rlogg_core::text;
 use rlogg_core::{DigitsBuffer, Drag, LogFile, Position, Selection, Viewport};
 
@@ -72,6 +73,7 @@ actions!(
         NextMark,
         PrevMark,
         JumpToLineNumber,
+        ToggleFreezeColumns,
     ]
 );
 
@@ -117,6 +119,9 @@ pub fn key_bindings() -> Vec<KeyBinding> {
 pub enum LogViewEvent {
     /// The file line under the keyboard cursor, after a click or a key.
     LineSelected(usize),
+    /// The user changed the frozen columns: toggled them, or dragged the
+    /// separator (klogg: `frozenColumnsChanged`).
+    FreezeChanged(FrozenView),
     /// A color label change for the selected text (klogg: `addColorLabel`,
     /// `clearColorLabels`). The text is empty for [`LabelOp::ClearAll`].
     ColorLabel(LabelOp, String),
@@ -145,6 +150,8 @@ const MAX_HIGHLIGHT_LINE: usize = 256 << 10;
 /// klogg: `OverviewWidth`, `OverviewWidget::LINE_MARGIN`.
 const OVERVIEW_WIDTH: Pixels = px(27.);
 const OVERVIEW_MARGIN: Pixels = px(4.);
+/// klogg: `FrozenSeparatorGrabDistance`.
+const SEPARATOR_GRAB: Pixels = px(3.);
 
 /// Geometry of the last frame, used to map mouse positions.
 #[derive(Debug, Clone, Copy)]
@@ -160,6 +167,18 @@ struct Layout {
     hthumb: Bounds<Pixels>,
     /// The overview bar (main view only).
     overview: Option<Bounds<Pixels>>,
+    /// x of the frozen columns separator, when columns are frozen.
+    separator: Option<Pixels>,
+}
+
+impl Layout {
+    fn over_separator(&self, at: Point<Pixels>) -> bool {
+        self.separator.is_some_and(|x| {
+            (at.x - x).abs() <= SEPARATOR_GRAB
+                && at.y >= self.text.top()
+                && at.y < self.text.bottom()
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -170,6 +189,8 @@ enum MouseGrab {
     HThumb(Pixels),
     /// Pressed on the overview bar: scrolls while dragging.
     Overview,
+    /// Dragging the frozen columns separator.
+    Separator,
 }
 
 pub struct LogView {
@@ -203,6 +224,8 @@ pub struct LogView {
     following: bool,
     /// Digits typed before a command (klogg: `digitsBuffer_`).
     digits: DigitsBuffer,
+    /// Frozen columns (klogg: `frozenColumnsEnabled_`, `frozenColumn_`).
+    freeze: FrozenView,
     /// Overview ticks, with the (filter generation, line count, height) they
     /// were computed for.
     overview: Option<((u64, usize, usize), Arc<Overview>)>,
@@ -229,6 +252,7 @@ impl LogView {
             labels_compiled: Arc::default(),
             following: false,
             digits: DigitsBuffer::new(),
+            freeze: FrozenView::default(),
             overview: None,
         }
     }
@@ -287,6 +311,11 @@ impl LogView {
     /// are replaced by a new search.
     pub fn reset(&mut self, cx: &mut Context<Self>) {
         self.viewport = Viewport::default();
+        self.viewport.set_freeze(if self.freeze.enabled {
+            self.freeze.column
+        } else {
+            0
+        });
         if let Some(log) = &self.log {
             self.viewport
                 .grow_max_cols(log.index().max_line_len() as usize);
@@ -395,6 +424,29 @@ impl LogView {
     pub fn set_search_highlight(&mut self, matcher: Option<Arc<Matcher>>, cx: &mut Context<Self>) {
         self.search_highlight = matcher;
         cx.notify();
+    }
+
+    pub fn freeze(&self) -> FrozenView {
+        self.freeze
+    }
+
+    /// Freezes the first `freeze.column` columns, if enabled (klogg:
+    /// `setFrozenColumns`).
+    pub fn set_freeze(&mut self, freeze: FrozenView, cx: &mut Context<Self>) {
+        self.freeze = freeze;
+        self.viewport
+            .set_freeze(if freeze.enabled { freeze.column } else { 0 });
+        cx.notify();
+    }
+
+    /// Context menu "Freeze columns".
+    fn toggle_freeze(&mut self, cx: &mut Context<Self>) {
+        let freeze = FrozenView {
+            enabled: !self.freeze.enabled,
+            ..self.freeze
+        };
+        self.set_freeze(freeze, cx);
+        cx.emit(LogViewEvent::FreezeChanged(freeze));
     }
 
     pub fn set_color_labels(
@@ -640,7 +692,7 @@ impl LogView {
         let cols = ((at.x - layout.text.left()) / layout.char_width).max(0.0);
         Some(Position {
             line: line.min(last),
-            col: self.viewport.left() + cols as usize,
+            col: self.viewport.file_col(cols as usize),
         })
     }
 
@@ -668,10 +720,12 @@ impl LogView {
             if layout.hthumb.contains(&at) {
                 self.grab = Some(MouseGrab::HThumb(at.x - layout.hthumb.left()));
             } else {
-                let page = self.viewport.cols().max(1) as isize;
+                let page = self.viewport.scroll_page_cols() as isize;
                 let left = at.x < layout.hthumb.left();
                 self.viewport.scroll_cols(if left { -page } else { page });
             }
+        } else if layout.over_separator(at) {
+            self.grab = Some(MouseGrab::Separator);
         } else if layout.bullets.contains(&at) {
             // klogg marks a line clicked in the left margin.
             if let Some(line) = self
@@ -730,6 +784,27 @@ impl LogView {
                 }
             }
             MouseGrab::Overview => self.scroll_to_overview(at, &layout),
+            MouseGrab::Separator => {
+                // klogg: the nearest column boundary, leaving some columns
+                // to scroll.
+                let col = ((at.x - layout.text.left()) / layout.char_width)
+                    .round()
+                    .max(0.) as usize;
+                let max = self
+                    .viewport
+                    .cols()
+                    .saturating_sub(rlogg_core::viewport::MIN_SCROLLABLE_COLUMNS);
+                let column = col.min(max);
+                if column != self.freeze.column {
+                    self.set_freeze(
+                        FrozenView {
+                            column,
+                            ..self.freeze
+                        },
+                        cx,
+                    );
+                }
+            }
             MouseGrab::Text(drag) => {
                 let mut drag = *drag;
                 // Auto-scroll while dragging outside the text (klogg uses a
@@ -795,8 +870,10 @@ impl LogView {
     }
 
     fn on_mouse_up(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(MouseGrab::Text(_)) = self.grab.take() {
-            self.update_primary(cx);
+        match self.grab.take() {
+            Some(MouseGrab::Text(_)) => self.update_primary(cx),
+            Some(MouseGrab::Separator) => cx.emit(LogViewEvent::FreezeChanged(self.freeze)),
+            _ => {}
         }
         cx.notify();
     }
@@ -856,13 +933,16 @@ impl Render for LogView {
                 cx.notify();
             }))
             .on_action(cx.listener(|v, _: &ScrollLeft, _, cx| {
-                v.viewport.scroll_cols(-(v.viewport.cols().max(1) as isize));
+                v.viewport
+                    .scroll_cols(-(v.viewport.scroll_page_cols() as isize));
                 cx.notify();
             }))
             .on_action(cx.listener(|v, _: &ScrollRight, _, cx| {
-                v.viewport.scroll_cols(v.viewport.cols().max(1) as isize);
+                v.viewport
+                    .scroll_cols(v.viewport.scroll_page_cols() as isize);
                 cx.notify();
             }))
+            .on_action(cx.listener(|v, _: &ToggleFreezeColumns, _, cx| v.toggle_freeze(cx)))
             .on_action(cx.listener(|v, _: &StartOfLine, _, cx| {
                 v.viewport.set_left(0);
                 cx.notify();
@@ -938,6 +1018,7 @@ impl LogView {
         let current = text.as_deref().and_then(|t| this.color_labels.label_of(t));
         let no_text = text.is_none();
         let (focus, nothing_selected) = (this.focus.clone(), this.selection == Selection::None);
+        let frozen = this.freeze.enabled;
         let styles = Highlighters::color_label_styles(cx);
         let sets: Vec<(String, String, bool)> = cx
             .try_global::<Highlighters>()
@@ -951,6 +1032,8 @@ impl LogView {
             .unwrap_or_default();
         menu.action_context(focus)
             .menu_with_disabled("Copy", Box::new(Copy), nothing_selected)
+            .separator()
+            .menu_with_check("Freeze columns", frozen, Box::new(ToggleFreezeColumns))
             .separator()
             .submenu("Color labels", window, cx, move |menu, _, _| {
                 let mut menu = menu
@@ -1064,8 +1147,8 @@ struct Row {
     y: Pixels,
     number: ShapedLine,
     text: ShapedLine,
-    /// Selected columns, relative to the first visible column.
-    highlight: Option<(usize, usize)>,
+    /// Selected screen columns (up to two parts with frozen columns).
+    highlight: Vec<(usize, usize)>,
     /// Quick-find occurrences, relative to the first visible column.
     found: Vec<(usize, usize)>,
     /// Search pattern matches, relative to the first visible column.
@@ -1205,30 +1288,21 @@ impl Element for LogElement {
                 let colouring = !highlighters.is_empty() || !labels.is_empty();
                 for (row, line, bytes) in shown {
                     let kind = filter.map_or_else(LineKind::default, |f| f.kind(line));
-                    let win = text::window(log.encoding(), bytes, vp.left(), vp.cols() + 1);
-                    let seen = win
-                        .total_cols
-                        .unwrap_or(vp.left() + win.text.chars().count() + 1);
+                    let (shown_text, seen) = screen_text(&log, bytes, &vp);
                     view.viewport.grow_max_cols(seen);
                     let highlight = if view.selection.is_line_selected(row) {
-                        Some((0, vp.cols() + 1))
+                        vec![(0, vp.cols() + 1)]
                     } else {
-                        view.selection.portion_of(row).and_then(|cols| {
-                            let start = (*cols.start()).max(vp.left());
-                            let end = (*cols.end() + 1).min(vp.left() + vp.cols() + 1);
-                            (start < end).then(|| (start - vp.left(), end - vp.left()))
-                        })
+                        view.selection
+                            .portion_of(row)
+                            .map(|cols| vp.screen_ranges(*cols.start()..*cols.end() + 1))
+                            .unwrap_or_default()
                     };
-                    let window_end = vp.left() + vp.cols() + 1;
                     // Visible columns of a matcher's matches in the line.
                     let visible_matches = |m: &Matcher| -> Vec<(usize, usize)> {
                         find::match_columns(&log, m, line)
                             .into_iter()
-                            .filter_map(|c| {
-                                let start = c.start.max(vp.left());
-                                let end = c.end.min(window_end);
-                                (start < end).then(|| (start - vp.left(), end - vp.left()))
-                            })
+                            .flat_map(|c| vp.screen_ranges(c))
                             .collect()
                     };
                     let short = bytes.len() <= MAX_HIGHLIGHT_LINE;
@@ -1243,22 +1317,20 @@ impl Element for LogElement {
                     };
                     // Highlighters and color labels (klogg: not on lines
                     // selected whole, which are drawn reversed).
-                    let (line_colors, spans) = if colouring
-                        && short
-                        && !view.selection.is_line_selected(row)
-                    {
-                        colored_columns(&log, line, &highlighters, &labels, vp.left(), window_end)
-                    } else {
-                        (None, Vec::new())
-                    };
+                    let (line_colors, spans) =
+                        if colouring && short && !view.selection.is_line_selected(row) {
+                            colored_columns(&log, line, &highlighters, &labels, &vp)
+                        } else {
+                            (None, Vec::new())
+                        };
                     let line_fg = line_colors.and_then(|c| c.fore).map_or(fg, hsla);
-                    let runs = text_runs(&win.text, line_fg, &spans);
+                    let runs = text_runs(&shown_text, line_fg, &spans);
                     let y =
                         text_bounds.top() + metrics.line_height * (row as f64 - vp.top()) as f32;
                     out.push(Row {
                         y,
                         number: metrics.shape(window, (line + 1).to_string().into(), muted),
-                        text: metrics.shape_runs(window, win.text.into(), &runs),
+                        text: metrics.shape_runs(window, shown_text.into(), &runs),
                         highlight,
                         found,
                         searched,
@@ -1327,6 +1399,10 @@ impl Element for LogElement {
                 htrack,
                 hthumb,
                 overview: overview_bounds,
+                separator: view
+                    .freeze
+                    .enabled
+                    .then(|| text_bounds.left() + metrics.char_width * vp.frozen()),
             };
             view.layout = Some(layout);
             let overview = overview_bounds.and_then(|bar| {
@@ -1433,7 +1509,7 @@ impl Element for LogElement {
                         window
                             .paint_quad(fill(Bounds::new(point(x, row.y), size(w, lh)), found_bg));
                     }
-                    if let Some((from, to)) = row.highlight {
+                    for &(from, to) in &row.highlight {
                         let x = layout.text.left() + layout.char_width * from;
                         let w = layout.char_width * (to - from);
                         window
@@ -1467,6 +1543,18 @@ impl Element for LogElement {
             },
         );
 
+        // klogg draws the frozen part and the scrolled part side by side;
+        // a line marks where scrolling starts.
+        if let Some(x) = layout.separator {
+            window.paint_quad(fill(
+                Bounds::new(
+                    point(x, layout.text.top()),
+                    size(px(1.), layout.text.size.height),
+                ),
+                fg.opacity(0.4),
+            ));
+        }
+
         if let (Some(bar), Some(o)) = (layout.overview, &frame.overview) {
             paint_overview(window, bar, o, &bullet_colors, gutter_bg, border, fg);
         }
@@ -1478,7 +1566,11 @@ impl Element for LogElement {
 
         if frame.hitbox.is_hovered(window) {
             let over_text = window.mouse_position();
-            let style = if layout.text.contains(&over_text) {
+            let style = if layout.over_separator(over_text)
+                || matches!(self.view.read(cx).grab, Some(MouseGrab::Separator))
+            {
+                CursorStyle::ResizeLeftRight
+            } else if layout.text.contains(&over_text) {
                 CursorStyle::IBeam
             } else {
                 CursorStyle::Arrow
@@ -1518,15 +1610,14 @@ impl Element for LogElement {
 }
 
 /// Highlighter and color-label colours of `line`: the whole line's colours,
-/// and the coloured parts as columns relative to `left`, clipped to
-/// `left..right` (klogg: the `highlighterMatches` of `drawTextArea`).
+/// and the visible coloured parts as screen columns (klogg: the
+/// `highlighterMatches` of `drawTextArea`).
 fn colored_columns(
     log: &LogFile,
     line: usize,
     highlighters: &CompiledSet,
     labels: &CompiledSet,
-    left: usize,
-    right: usize,
+    vp: &Viewport,
 ) -> (Option<Colors>, Vec<(usize, usize, Colors)>) {
     let Some(text) = log.line_text(line) else {
         return (None, Vec::new());
@@ -1539,13 +1630,33 @@ fn colored_columns(
         .with_ranges(columns)
         .into_vec()
         .into_iter()
-        .filter_map(|s| {
-            let start = s.range.start.max(left);
-            let end = s.range.end.min(right);
-            (start < end).then(|| (start - left, end - left, s.colors))
+        .flat_map(|s| {
+            vp.screen_ranges(s.range)
+                .into_iter()
+                .map(move |(from, to)| (from, to, s.colors))
         })
         .collect();
     (found.line, spans)
+}
+
+/// The text drawn for a line, one char per screen column: the frozen
+/// columns (padded to their width), then the scrolled ones. Also returns
+/// the line's width in columns as far as known, to bound scrolling.
+fn screen_text(log: &LogFile, bytes: &[u8], vp: &Viewport) -> (String, usize) {
+    let frozen = vp.frozen();
+    let start = frozen + vp.left();
+    let scrolled = text::window(log.encoding(), bytes, start, vp.window_end() - start);
+    let seen = scrolled
+        .total_cols
+        .unwrap_or(start + scrolled.text.chars().count() + 1);
+    if frozen == 0 {
+        return (scrolled.text, seen);
+    }
+    let mut out = text::window(log.encoding(), bytes, 0, frozen).text;
+    let pad = frozen.saturating_sub(out.chars().count());
+    out.extend(std::iter::repeat_n(' ', pad));
+    out.push_str(&scrolled.text);
+    (out, seen)
 }
 
 /// Text runs for `text` (one char per column): `fg`, except in `spans`
@@ -1674,7 +1785,9 @@ fn paint_bullet(window: &mut Window, layout: &Layout, row: &Row, colors: &Bullet
 mod tests {
     use super::*;
     use gpui::{AppContext as _, Modifiers, ScrollDelta, TestAppContext, VisualTestContext};
+    use std::cell::RefCell;
     use std::io::Write;
+    use std::rc::Rc;
 
     fn temp_log(name: &str, content: &str) -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!("rlogg-view-{}-{name}", std::process::id()));
@@ -1963,6 +2076,86 @@ mod tests {
         assert_eq!(viewport(&view, cx).left(), 200_000 - vp.cols());
     }
 
+    #[gpui::test]
+    fn frozen_columns(cx: &mut TestAppContext) {
+        let long: String = (0..2000)
+            .map(|i| char::from(b'a' + (i % 26) as u8))
+            .collect();
+        let (view, cx) = open(cx, "frozen.log", &format!("{long}\nshort\n"));
+        let events = Rc::new(RefCell::new(Vec::new()));
+        cx.update(|_, cx| {
+            let events = events.clone();
+            cx.subscribe(&view, move |_, e: &LogViewEvent, _| {
+                events.borrow_mut().push(e.clone())
+            })
+            .detach()
+        });
+        let on = |column| FrozenView {
+            enabled: true,
+            column,
+        };
+        view.update(cx, |v, cx| {
+            v.set_freeze(on(10), cx);
+            // A new search or file resets the view, not the frozen columns.
+            v.reset(cx)
+        });
+        cx.run_until_parked();
+        let vp = viewport(&view, cx);
+        assert_eq!(vp.frozen(), 10);
+        // A page scrolls the columns that aren't frozen.
+        cx.simulate_keystrokes("right");
+        let vp = viewport(&view, cx);
+        assert_eq!(vp.left(), vp.cols() - 10);
+
+        // Rows show the frozen columns, then the scrolled ones; short lines
+        // are padded.
+        let log = view.read_with(cx, |v, _| v.log.clone().unwrap());
+        let (text, _) = screen_text(&log, log.line(0).unwrap(), &vp);
+        assert!(text.starts_with(&long[..10]));
+        assert_eq!(&text[10..20], &long[10 + vp.left()..20 + vp.left()]);
+        let (text, _) = screen_text(&log, log.line(1).unwrap(), &vp);
+        assert_eq!(text, "short     ");
+
+        // Clicks map screen columns to file columns.
+        let l = layout(&view, cx);
+        cx.simulate_click(cell(&l, 0., 3.), Modifiers::none());
+        cx.simulate_keystrokes("ctrl-c");
+        let at = |cx: &mut VisualTestContext, col: f32| {
+            view.read_with(cx, |v, cx| {
+                v.position_at(cell(&l, 0., col), &l, cx).unwrap().col
+            })
+        };
+        assert_eq!(at(cx, 3.), 3);
+        assert_eq!(at(cx, 12.), 12 + vp.left());
+
+        // Dragging the separator moves it to the nearest column boundary.
+        let x = l.separator.unwrap();
+        assert_eq!(x, l.text.left() + l.char_width * 10.);
+        let y = cell(&l, 1., 0.).y;
+        cx.simulate_mouse_down(point(x + px(1.), y), MouseButton::Left, Modifiers::none());
+        let to = point(l.text.left() + l.char_width * 4.2, y);
+        cx.simulate_mouse_move(to, MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::none());
+        assert_eq!(view.read_with(cx, |v, _| v.freeze()), on(4));
+        assert_eq!(
+            events.borrow().last(),
+            Some(&LogViewEvent::FreezeChanged(on(4)))
+        );
+        // The separator press selected nothing.
+        assert_eq!(selection(&view, cx), Selection::Line(0));
+
+        // The context menu's toggle keeps the column.
+        view.update(cx, |v, cx| v.toggle_freeze(cx));
+        assert_eq!(viewport(&view, cx).frozen(), 0);
+        assert_eq!(
+            events.borrow().last(),
+            Some(&LogViewEvent::FreezeChanged(FrozenView {
+                enabled: false,
+                column: 4
+            }))
+        );
+    }
+
     #[test]
     fn text_runs_colour_spans() {
         use rlogg_core::highlight::Color;
@@ -2010,17 +2203,29 @@ mod tests {
         let labels = labels.compile(&styles);
 
         // The tab expands to 8 columns: ERROR is 8..13, "x" (after "é ") 16..17.
-        let (line, spans) = colored_columns(&log, 0, &compiled, &labels, 0, 100);
+        let viewport = |left: usize, cols: usize, freeze: usize| {
+            let mut v = Viewport::default();
+            v.grow_max_cols(1000);
+            v.set_size(10, 5.0, cols);
+            v.set_left(left);
+            v.set_freeze(freeze);
+            v
+        };
+        let (line, spans) = colored_columns(&log, 0, &compiled, &labels, &viewport(0, 99, 0));
         assert_eq!(line, None);
         let cols: Vec<_> = spans.iter().map(|s| (s.0, s.1)).collect();
         assert_eq!(cols, [(8, 13), (16, 17)]);
         assert_eq!(spans[1].2, styles[0].colors());
         // Scrolled to column 10, 4 columns wide.
-        let (_, spans) = colored_columns(&log, 0, &compiled, &labels, 10, 14);
+        let (_, spans) = colored_columns(&log, 0, &compiled, &labels, &viewport(10, 3, 0));
         let cols: Vec<_> = spans.iter().map(|s| (s.0, s.1)).collect();
         assert_eq!(cols, [(0, 3)]);
+        // 6 frozen columns, scrolled by 2: file column 8 is screen column 6.
+        let (_, spans) = colored_columns(&log, 0, &compiled, &labels, &viewport(2, 20, 6));
+        let cols: Vec<_> = spans.iter().map(|s| (s.0, s.1)).collect();
+        assert_eq!(cols, [(6, 11), (14, 15)]);
         // A whole-line highlighter.
-        let (line, spans) = colored_columns(&log, 1, &compiled, &labels, 0, 100);
+        let (line, spans) = colored_columns(&log, 1, &compiled, &labels, &viewport(0, 99, 0));
         assert_eq!(line, Some(Highlighter::default().colors()));
         assert!(spans.is_empty());
     }

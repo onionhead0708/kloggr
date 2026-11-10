@@ -124,6 +124,29 @@ impl Default for FileContext {
     }
 }
 
+/// Frozen columns of one view (klogg: `FrozenColumns::ViewState`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FrozenView {
+    pub enabled: bool,
+    /// Columns frozen when enabled; kept while disabled.
+    pub column: usize,
+}
+
+/// Frozen columns of a file's main and filtered views (klogg:
+/// `FrozenColumns::FileState`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FrozenFile {
+    pub path: PathBuf,
+    #[serde(default)]
+    pub main: FrozenView,
+    #[serde(default)]
+    pub filtered: FrozenView,
+}
+
+/// Files whose frozen columns are remembered (klogg: `MAX_FILES`).
+pub const MAX_FROZEN_FILES: usize = 500;
+
 /// A file open when the session was saved (klogg: `SessionInfo::OpenFile`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenFile {
@@ -144,6 +167,9 @@ pub struct Session {
     /// Files open in the window, in tab order, reopened at startup (klogg:
     /// `loadLastSession`, on by default).
     pub open_files: Vec<OpenFile>,
+    /// Frozen columns per file, most recently changed first, kept after the
+    /// file is closed (klogg: `FrozenColumns`).
+    pub frozen_columns: Vec<FrozenFile>,
 }
 
 impl Default for Session {
@@ -153,6 +179,7 @@ impl Default for Session {
             recent_files: RecentFiles::default(),
             open_files: Vec::new(),
             current_file: 0,
+            frozen_columns: Vec::new(),
         }
     }
 }
@@ -181,6 +208,34 @@ impl Session {
     /// Saves to `dir`, creating it if needed.
     pub fn save(&self, dir: &Path) -> Result<(), SettingsError> {
         save_toml(self, dir, SESSION_FILE)
+    }
+
+    /// The frozen columns of `path`'s main and filtered views (klogg:
+    /// `fileState`); all off for a file never frozen.
+    pub fn frozen_columns(&self, path: &Path) -> (FrozenView, FrozenView) {
+        self.frozen_columns
+            .iter()
+            .find(|f| f.path == path)
+            .map_or_default(|f| (f.main, f.filtered))
+    }
+
+    /// Remembers `path`'s frozen columns (klogg: `setFileState`): first in
+    /// the list, dropping files that no longer exist; a file with both
+    /// views unfrozen is forgotten.
+    pub fn set_frozen_columns(&mut self, path: &Path, main: FrozenView, filtered: FrozenView) {
+        self.frozen_columns
+            .retain(|f| f.path != path && f.path.exists());
+        if main.enabled || filtered.enabled {
+            self.frozen_columns.insert(
+                0,
+                FrozenFile {
+                    path: path.to_path_buf(),
+                    main,
+                    filtered,
+                },
+            );
+            self.frozen_columns.truncate(MAX_FROZEN_FILES);
+        }
     }
 }
 
@@ -361,5 +416,40 @@ mod tests {
         let recent = Session::load(&dir.0).recent_files;
         assert_eq!(recent.files(), [PathBuf::from("/a"), PathBuf::from("/b")]);
         assert_eq!(recent.shown().len(), 1);
+    }
+
+    #[test]
+    fn frozen_columns_per_file() {
+        let dir = TempDir::new("frozen");
+        let (a, b) = (dir.file("a.log"), dir.file("b.log"));
+        let mut session = Session::default();
+        let on = |column| FrozenView {
+            enabled: true,
+            column,
+        };
+        assert_eq!(session.frozen_columns(&a), Default::default());
+        session.set_frozen_columns(&a, on(10), FrozenView::default());
+        session.set_frozen_columns(&b, FrozenView::default(), on(3));
+        assert_eq!(session.frozen_columns(&a).0, on(10));
+        assert_eq!(session.frozen_columns(&b).1, on(3));
+        assert_eq!(session.frozen_columns[0].path, b, "most recent first");
+        // Saved and loaded with the session.
+        session.save(&dir.0).unwrap();
+        assert_eq!(Session::load(&dir.0), session);
+        // Unfreezing both views forgets the file; the column is not kept.
+        session.set_frozen_columns(
+            &a,
+            FrozenView {
+                enabled: false,
+                column: 10,
+            },
+            FrozenView::default(),
+        );
+        assert_eq!(session.frozen_columns.len(), 1);
+        // Missing files are dropped on the next change.
+        std::fs::remove_file(&b).unwrap();
+        session.set_frozen_columns(&a, on(1), FrozenView::default());
+        assert_eq!(session.frozen_columns.len(), 1);
+        assert_eq!(session.frozen_columns[0].path, a);
     }
 }

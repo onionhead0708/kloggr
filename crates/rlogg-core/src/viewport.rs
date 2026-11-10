@@ -4,6 +4,16 @@
 //! with tens of millions of lines a pixel offset would exceed what `f32`
 //! layout can represent exactly. Horizontal position is a whole display
 //! column, since text is drawn in a fixed-width grid (as in klogg).
+//!
+//! With frozen columns (klogg: `frozenColumn_`), the first columns of every
+//! line stay on screen and only the rest scrolls: screen column `c` shows
+//! file column `c` below [`Viewport::frozen`], and `c + left` from there on.
+
+use std::ops::Range;
+
+/// Columns that always stay scrollable when columns are frozen (klogg:
+/// `MinScrollableColumns`).
+pub const MIN_SCROLLABLE_COLUMNS: usize = 5;
 
 /// Visible area and scroll position, in lines and columns.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -19,6 +29,8 @@ pub struct Viewport {
     line_count: usize,
     /// Widest line seen, in columns: bounds horizontal scrolling.
     max_cols: usize,
+    /// Frozen columns asked for; [`frozen`](Self::frozen) is what fits.
+    freeze: usize,
 }
 
 impl Viewport {
@@ -55,6 +67,57 @@ impl Viewport {
 
     pub fn max_cols(&self) -> usize {
         self.max_cols
+    }
+
+    /// Freezes the first `cols` columns (0: none).
+    pub fn set_freeze(&mut self, cols: usize) {
+        self.freeze = cols;
+    }
+
+    /// Frozen columns on screen: as asked, but leaving
+    /// [`MIN_SCROLLABLE_COLUMNS`] to scroll (klogg: `getNbFrozenCols`).
+    pub fn frozen(&self) -> usize {
+        self.freeze
+            .min(self.cols.saturating_sub(MIN_SCROLLABLE_COLUMNS))
+    }
+
+    /// Columns scrolled by a page left or right.
+    pub fn scroll_page_cols(&self) -> usize {
+        (self.cols - self.frozen()).max(1)
+    }
+
+    /// The file column shown at screen column `screen`.
+    pub fn file_col(&self, screen: usize) -> usize {
+        if screen < self.frozen() {
+            screen
+        } else {
+            screen + self.left
+        }
+    }
+
+    /// End (exclusive) of the file columns drawn: one more than fit, for a
+    /// partly visible last column.
+    pub fn window_end(&self) -> usize {
+        self.left + self.cols + 1
+    }
+
+    /// The visible parts of file columns `cols`, as screen column ranges:
+    /// up to two, the frozen part and the scrolled part.
+    pub fn screen_ranges(&self, cols: Range<usize>) -> Vec<(usize, usize)> {
+        let frozen = self.frozen();
+        let mut out = Vec::with_capacity(2);
+        let (start, end) = (cols.start, cols.end.min(frozen));
+        if start < end {
+            out.push((start, end));
+        }
+        let (start, end) = (
+            cols.start.max(frozen + self.left),
+            cols.end.min(self.window_end()),
+        );
+        if start < end {
+            out.push((start - self.left, end - self.left));
+        }
+        out
     }
 
     /// Updates the size of the content and of the visible area.
@@ -115,8 +178,11 @@ impl Viewport {
     /// Scrolls horizontally so that column `col` is visible (klogg shows the
     /// end of a selected portion this way).
     pub fn reveal_col(&mut self, col: usize) {
-        if col < self.left {
-            self.set_left(col);
+        let frozen = self.frozen();
+        if col < frozen {
+            // Always visible.
+        } else if col < frozen + self.left {
+            self.set_left(col - frozen);
         } else if col >= self.left + self.cols {
             self.grow_max_cols(col + 1);
             self.set_left(col + 1 - self.cols);
@@ -190,5 +256,37 @@ mod tests {
         assert_eq!(v.top(), 10.0);
         v.reveal_line(999);
         assert_eq!(v.top(), 980.0);
+    }
+
+    #[test]
+    fn frozen_columns() {
+        let mut v = vp(10, 5.0);
+        v.grow_max_cols(1000);
+        assert_eq!(v.frozen(), 0);
+        assert_eq!(v.screen_ranges(3..8), [(3, 8)]);
+        v.set_freeze(20);
+        v.set_left(100);
+        assert_eq!(v.frozen(), 20);
+        assert_eq!(v.scroll_page_cols(), 60);
+        // Screen columns 0..20 show file columns 0..20, then 120.. on.
+        assert_eq!(v.file_col(19), 19);
+        assert_eq!(v.file_col(20), 120);
+        assert_eq!(v.screen_ranges(10..30), [(10, 20)]);
+        assert_eq!(v.screen_ranges(110..125), [(20, 25)]);
+        assert_eq!(v.screen_ranges(15..125), [(15, 20), (20, 25)]);
+        assert_eq!(v.screen_ranges(500..510), []);
+        assert_eq!(v.screen_ranges(178..200), [(78, 81)]);
+        // Revealing a column hidden behind the frozen part scrolls left.
+        v.reveal_col(110);
+        assert_eq!(v.left(), 90);
+        v.reveal_col(5);
+        assert_eq!(v.left(), 90);
+        v.reveal_col(300);
+        assert_eq!(v.left(), 300 + 1 - 80);
+        // At least 5 columns stay scrollable.
+        v.set_freeze(500);
+        assert_eq!(v.frozen(), 75);
+        v.set_size(10, 5.0, 3);
+        assert_eq!(v.frozen(), 0);
     }
 }

@@ -28,7 +28,8 @@ stays GPLv3. Keep klogg's copyright notices where code is translated closely.
 | `regex/` (Hyperscan / QRegularExpression, boolean combos; exprtk) | `rlogg-core::search` (done; own boolean parser instead of exprtk) | regex |
 | `filewatch/` (efsw) | `rlogg-core::watch` (done), reload in `rlogg-core::file`, app `follow` | notify |
 | `settings/`, `ui/session*`, `ui/recentfiles*` | `rlogg-core::settings` (recent files, open files and per-file state done) | serde, toml, directories |
-| `ui/abstractlogview`, `logmainview`, `filteredview`, `frozencolumns`, `overview*` | `rlogg-app` log view widget | gpui |
+| `ui/abstractlogview`, `logmainview`, `filteredview`, `overview*` | `rlogg-app` log view widget | gpui |
+| `ui/frozencolumns` | `rlogg-core::viewport` (column mapping), `settings::FrozenFile` (done) | |
 | `ui/crawlerwidget`, `tabbedcrawlerwidget`, `mainwindow`, `menu` | `rlogg-app` workspace, tabs, menus | gpui-component |
 | `ui/quickfind*` (QuickFind engine) | `rlogg-core::search::find`, `rlogg-app` quick_find | rayon |
 | `ui/highlighterset`, `colorlabelsmanager`, `highlightedmatch` | `rlogg-core::highlight` (done), app `highlighters` | regex |
@@ -127,7 +128,7 @@ check new shortcuts in the real app too (see the color-label entry in `docs/deci
 - [x] Follow mode / tail: incremental reindex on growth, detect truncation and rotation (`filewatch/`); `f` / F10, search auto-refresh
 - [x] Tabs and multiple files, sessions (open tabs restored at startup with search options, follow and marks; tab renaming not done)
 - [x] Highlighters and highlighter sets, color labels: engine, line colouring, Tools and context menus, color labels `Ctrl+Shift+1`–`9` / `Ctrl+D` / `Ctrl+Shift+0`, the highlighters dialog (sets, highlighters, label styles), klogg `.conf` import/export
-- [ ] Frozen columns (klogg `frozencolumns`)
+- [x] Frozen columns (klogg `frozencolumns`): View menu and context menu toggles per view, draggable separator, remembered per file in the session
 - [ ] Wide characters (CJK, emoji): map columns using real glyph widths instead of one column per `char`
 - [ ] Settings and options dialog, keyboard shortcuts matching klogg's defaults (include the search-match highlight: on/off and its colour, as klogg's "main search highlight" checkbox and colour button)
 

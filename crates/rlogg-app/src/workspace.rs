@@ -26,7 +26,7 @@ use rlogg_core::settings::{FileContext, OpenFile, Session};
 use rlogg_core::{IndexProgress, LogFile, OpenOptions};
 
 use crate::background;
-use crate::crawler::{Crawler, CrawlerEvent};
+use crate::crawler::{Crawler, CrawlerEvent, ToggleFreezeFiltered, ToggleFreezeMain};
 use crate::highlighters::{EditHighlighters, Highlighters, NoHighlighters, ToggleHighlighterSet};
 use crate::highlighters_dialog;
 
@@ -167,6 +167,11 @@ impl Workspace {
     }
 
     fn menus(&self, cx: &App) -> Vec<Menu> {
+        let no_tab = self.crawler().is_none();
+        let frozen = self
+            .crawler()
+            .map(|c| c.read(cx).frozen_columns(cx))
+            .unwrap_or_default();
         let recent = self.session.recent_files.shown();
         let mut recent_items: Vec<MenuItem> = recent
             .iter()
@@ -189,6 +194,15 @@ impl Workspace {
                 MenuItem::action("Close", Close),
                 MenuItem::action("Close All", CloseAllTabs),
                 MenuItem::action("Quit", Quit),
+            ]),
+            // klogg: View > Freeze columns in main / filtered view.
+            Menu::new("View").items([
+                MenuItem::action("Freeze Columns in Main View", ToggleFreezeMain)
+                    .checked(frozen.0.enabled)
+                    .disabled(no_tab),
+                MenuItem::action("Freeze Columns in Filtered View", ToggleFreezeFiltered)
+                    .checked(frozen.1.enabled)
+                    .disabled(no_tab),
             ]),
             Menu::new("Tools").items([
                 MenuItem::action("Highlighters…", EditHighlighters),
@@ -236,15 +250,26 @@ impl Workspace {
             self.activate(index, window, cx);
             return;
         }
+        let (main_frozen, filtered_frozen) = self.session.frozen_columns(&path);
         let crawler = cx.new(|cx| {
             let mut crawler = Crawler::new(window, cx);
             if let Some(context) = context {
                 crawler.set_context(context, cx);
             }
+            crawler.set_frozen_columns(main_frozen, filtered_frozen, cx);
             crawler
         });
         let events = cx.subscribe(&crawler, |this, crawler, event: &CrawlerEvent, cx| {
-            let CrawlerEvent::NewData = event;
+            if let CrawlerEvent::FrozenChanged = event {
+                // klogg: `saveFrozenColumns`.
+                if let Some(tab) = this.tabs.iter().find(|t| t.crawler == crawler) {
+                    let (main, filtered) = crawler.read(cx).frozen_columns(cx);
+                    this.session.set_frozen_columns(&tab.path, main, filtered);
+                    this.save_session();
+                }
+                this.update_menus(cx);
+                return;
+            }
             if let Some(tab) = this.tabs.iter_mut().find(|t| t.crawler == crawler) {
                 tab.status = status_of(&tab.path, crawler.read(cx).log.as_deref());
             }
@@ -387,6 +412,7 @@ impl Workspace {
         self.tab_scroll.scroll_to_item(index);
         self.update_title(window);
         self.save_open_files(cx);
+        self.update_menus(cx);
         cx.notify();
     }
 
@@ -1138,5 +1164,35 @@ mod tests {
         cx.dispatch_action(NoHighlighters);
         assert!(!active(cx));
         assert!(HighlighterSets::load(&fx.config()).active.is_empty());
+    }
+
+    #[gpui::test]
+    fn frozen_columns_are_remembered_per_file(cx: &mut TestAppContext) {
+        let fx = Fixture::new("frozen");
+        let a = fx.log("a.log", 5);
+        let (ws, cx) = workspace(cx, fx.config());
+        ws.update_in(cx, |ws, window, cx| ws.open(a.clone(), window, cx));
+        wait_indexed(&ws, cx);
+        let frozen = |ws: &Entity<Workspace>, cx: &mut VisualTestContext| {
+            ws.read_with(cx, |ws, cx| {
+                ws.crawler().unwrap().read(cx).frozen_columns(cx)
+            })
+        };
+        assert!(!frozen(&ws, cx).0.enabled);
+
+        cx.dispatch_action(ToggleFreezeMain);
+        assert!(frozen(&ws, cx).0.enabled);
+        assert!(!frozen(&ws, cx).1.enabled);
+        assert!(Session::load(&fx.config()).frozen_columns(&a).0.enabled);
+
+        // Reopened, the file gets its frozen columns back.
+        cx.dispatch_action(Close);
+        ws.update_in(cx, |ws, window, cx| ws.open(a.clone(), window, cx));
+        wait_indexed(&ws, cx);
+        assert!(frozen(&ws, cx).0.enabled);
+        cx.dispatch_action(ToggleFreezeFiltered);
+        cx.dispatch_action(ToggleFreezeMain);
+        let (main, filtered) = Session::load(&fx.config()).frozen_columns(&a);
+        assert!(!main.enabled && filtered.enabled);
     }
 }
