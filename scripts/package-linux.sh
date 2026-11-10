@@ -29,6 +29,7 @@ install_tree() {
     install -Dm755 "$bin" "$prefix/bin/kloggr"
     install -Dm644 packaging/linux/kloggr.desktop "$prefix/share/applications/kloggr.desktop"
     install -Dm644 packaging/linux/kloggr.svg "$prefix/share/icons/hicolor/scalable/apps/kloggr.svg"
+    install -Dm644 packaging/linux/kloggr.png "$prefix/share/icons/hicolor/256x256/apps/kloggr.png"
     install -Dm644 LICENSE "$prefix/share/doc/kloggr/LICENSE"
 }
 
@@ -99,7 +100,9 @@ tool=${APPIMAGETOOL:-$(command -v appimagetool || true)}
 if [[ -n $tool ]]; then
     app="$out/kloggr.AppDir"
     install_tree "$app/usr"
-    cp packaging/linux/kloggr.desktop packaging/linux/kloggr.svg "$app/"
+    cp packaging/linux/kloggr.desktop packaging/linux/kloggr.png "$app/"
+    # The icon file managers show for the AppImage: a PNG.
+    ln -s kloggr.png "$app/.DirIcon"
     ln -s usr/bin/kloggr "$app/AppRun"
     ARCH=$arch "$tool" --no-appstream "$app" "$out/kloggr-$version-$arch.AppImage" >/dev/null
     rm -rf "$app"

@@ -21,7 +21,7 @@ jobs:
     # systems with this glibc or newer.
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: System packages
         run: |
           sudo apt-get update
@@ -42,7 +42,7 @@ jobs:
           # Runners have no FUSE: let the AppImage tool unpack itself.
           APPIMAGE_EXTRACT_AND_RUN: 1
         run: scripts/package-linux.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux
           path: target/package/*
@@ -50,7 +50,7 @@ jobs:
   windows:
     runs-on: windows-2025
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Rust (version from rust-toolchain.toml)
         shell: bash
         run: rustup show active-toolchain || rustup toolchain install
@@ -60,7 +60,7 @@ jobs:
       - name: Packages
         shell: bash
         run: scripts/package-windows.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows
           path: target/package/*
@@ -68,13 +68,13 @@ jobs:
   macos:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Rust (version from rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - name: Packages
         run: scripts/package-macos.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos
           path: target/package/*
@@ -84,12 +84,12 @@ jobs:
     needs: [linux, windows, macos]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Version matches the tag
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           test "v$version" = "$GITHUB_REF_NAME" || { echo "Cargo.toml has $version, tag is $GITHUB_REF_NAME"; exit 1; }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: packages
           merge-multiple: true
