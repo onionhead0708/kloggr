@@ -8,6 +8,33 @@ behaviour and keyboard commands closely.
 > Status: early. Linux is the main platform. Windows and macOS builds are
 > made by CI but tested less, and they are not code-signed (see below).
 
+## Why kloggr?
+
+I've been a big fan of [glogg](https://github.com/nickbnf/glogg) and later
+[klogg](https://github.com/variar/klogg) for years. They were my main tools
+for troubleshooting through huge log files. klogg hasn't had a release since
+v22.06 in June 2022, though, and there were features I wanted that it doesn't
+have. One example is **frozen columns**: keeping the start of each line (a
+timestamp, say) in place while you scroll sideways. In kloggr that's
+*View → Freeze Columns in Main View* and *Freeze Columns in Filtered View*.
+
+So I rebuilt klogg in Rust. That's where the name comes from: **kloggr**,
+*klogg in Rust*.
+
+- **Speed.** Rust compiles to fast native code and makes it safe to use every
+  CPU core. On a 1 GiB log, kloggr indexes the file about 3× faster than klogg
+  ([benchmarks](docs/benchmarks.md)).
+- **Built with AI.** I'm not familiar with the glogg or klogg code, or with
+  Rust. So I used [Claude Code](https://claude.com/claude-code) to rebuild the
+  whole project: Claude read klogg's source as the reference and rewrote it in
+  Rust, feature by feature. Where kloggr deliberately behaves differently from
+  klogg, the reason is recorded in [`docs/decisions.md`](docs/decisions.md).
+- **Open to everyone.** The code is public under the GPL, like klogg. You're
+  welcome to fork it, open issues and send pull requests.
+- **Please be patient.** I work on kloggr with a personal Claude Pro
+  subscription, which has usage limits. Fixes and new features may take a
+  while, so pull requests are especially appreciated.
+
 ## Features
 
 - Opens multi-GB files quickly: memory-mapped, indexed in parallel, with
