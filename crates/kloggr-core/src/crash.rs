@@ -71,6 +71,7 @@ fn os_name() -> String {
 }
 
 /// `PRETTY_NAME` from an os-release file.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn pretty_name(os_release: &str) -> Option<String> {
     os_release
         .lines()
