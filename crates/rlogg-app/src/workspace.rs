@@ -12,9 +12,9 @@ use std::time::Instant;
 
 use gpui::{
     Action, App, AppContext, ClipboardItem, Context, Entity, ExternalPaths, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, KeyBinding, Menu, MenuItem, MouseButton, ParentElement,
-    PathPromptOptions, PromptLevel, Render, ScrollHandle, SharedString, StatefulInteractiveElement,
-    Styled, Subscription, Task, Window, actions, div, px,
+    InteractiveElement, IntoElement, Menu, MenuItem, MouseButton, ParentElement, PathPromptOptions,
+    PromptLevel, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
+    Subscription, Task, Window, actions, div, px,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::menu::{AppMenuBar, ContextMenuExt};
@@ -29,6 +29,9 @@ use crate::background;
 use crate::crawler::{Crawler, CrawlerEvent, ToggleFreezeFiltered, ToggleFreezeMain};
 use crate::highlighters::{EditHighlighters, Highlighters, NoHighlighters, ToggleHighlighterSet};
 use crate::highlighters_dialog;
+use crate::options_dialog;
+use crate::preferences::Preferences;
+use crate::shortcuts::Shortcut;
 
 actions!(
     workspace,
@@ -40,7 +43,11 @@ actions!(
         NextTab,
         PrevTab,
         LastTab,
-        CloseAllTabs
+        CloseAllTabs,
+        ShowOptions,
+        ToggleOverview,
+        ToggleLineNumbersMain,
+        ToggleLineNumbersFiltered
     ]
 );
 
@@ -72,22 +79,90 @@ tab_action!(
 
 /// klogg's defaults: `QKeySequence::Open`, `Close`, `Quit`, and the tab keys
 /// of `TabbedCrawlerWidget::keyPressEvent`.
-pub fn key_bindings() -> Vec<KeyBinding> {
-    let mut keys = vec![
-        KeyBinding::new("secondary-o", Open, None),
-        KeyBinding::new("secondary-w", Close, None),
-        KeyBinding::new("secondary-q", Quit, None),
-        KeyBinding::new("ctrl-tab", NextTab, None),
-        KeyBinding::new("ctrl-pagedown", NextTab, None),
-        KeyBinding::new("ctrl-shift-tab", PrevTab, None),
-        KeyBinding::new("ctrl-pageup", PrevTab, None),
-        KeyBinding::new("secondary-9", LastTab, None),
+pub fn shortcuts() -> Vec<Shortcut> {
+    let mut out = vec![
+        Shortcut::new(
+            "mainwindow.open_file",
+            "Open file",
+            None,
+            &["secondary-o"],
+            Open,
+        ),
+        Shortcut::new(
+            "mainwindow.close_file",
+            "Close file",
+            None,
+            &["secondary-w"],
+            Close,
+        ),
+        Shortcut::new(
+            "mainwindow.close_all",
+            "Close all files",
+            None,
+            &[],
+            CloseAllTabs,
+        ),
+        Shortcut::new(
+            "mainwindow.quit",
+            "Exit application",
+            None,
+            &["secondary-q"],
+            Quit,
+        ),
+        Shortcut::new(
+            "mainwindow.preference",
+            "Preferences",
+            None,
+            &[],
+            ShowOptions,
+        ),
+        Shortcut::new(
+            "mainwindow.next_tab",
+            "Next tab",
+            None,
+            &["ctrl-tab", "ctrl-pagedown"],
+            NextTab,
+        ),
+        Shortcut::new(
+            "mainwindow.prev_tab",
+            "Previous tab",
+            None,
+            &["ctrl-shift-tab", "ctrl-pageup"],
+            PrevTab,
+        ),
+        Shortcut::new(
+            "mainwindow.last_tab",
+            "Last tab",
+            None,
+            &["secondary-9"],
+            LastTab,
+        ),
     ];
-    for index in 0..8 {
-        let key = format!("secondary-{}", index + 1);
-        keys.push(KeyBinding::new(&key, ActivateTab { index }, None));
+    const TABS: [(&str, &str); 8] = [
+        ("mainwindow.tab_1", "Tab 1"),
+        ("mainwindow.tab_2", "Tab 2"),
+        ("mainwindow.tab_3", "Tab 3"),
+        ("mainwindow.tab_4", "Tab 4"),
+        ("mainwindow.tab_5", "Tab 5"),
+        ("mainwindow.tab_6", "Tab 6"),
+        ("mainwindow.tab_7", "Tab 7"),
+        ("mainwindow.tab_8", "Tab 8"),
+    ];
+    for (index, (id, label)) in TABS.into_iter().enumerate() {
+        out.push(Shortcut {
+            id,
+            label,
+            context: None,
+            keys: vec![format!("secondary-{}", index + 1)],
+            action: Box::new(ActivateTab { index }),
+        });
     }
-    keys
+    out
+}
+
+#[cfg(test)]
+pub fn key_bindings() -> Vec<gpui::KeyBinding> {
+    crate::shortcuts::default_bindings(shortcuts())
 }
 
 const IDLE_STATUS: &str = "Open a file with Ctrl+O, or drop it here";
@@ -135,7 +210,10 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn new(config_dir: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let session = config_dir.as_deref().map(Session::load).unwrap_or_default();
+        let mut session = config_dir.as_deref().map(Session::load).unwrap_or_default();
+        session
+            .recent_files
+            .set_shown(Preferences::get(cx).file.recent_files);
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         // Marks and options change without a tab change: save them on exit.
@@ -158,6 +236,12 @@ impl Workspace {
         // Set names and active sets show in the menus.
         cx.observe_global::<Highlighters>(|this, cx| this.update_menus(cx))
             .detach();
+        cx.observe_global::<Preferences>(|this, cx| {
+            let shown = Preferences::get(cx).file.recent_files;
+            this.session.recent_files.set_shown(shown);
+            this.update_menus(cx);
+        })
+        .detach();
         this
     }
 
@@ -167,6 +251,7 @@ impl Workspace {
     }
 
     fn menus(&self, cx: &App) -> Vec<Menu> {
+        let view = &Preferences::get(cx).view;
         let no_tab = self.crawler().is_none();
         let frozen = self
             .crawler()
@@ -197,6 +282,12 @@ impl Workspace {
             ]),
             // klogg: View > Freeze columns in main / filtered view.
             Menu::new("View").items([
+                MenuItem::action("Overview", ToggleOverview).checked(view.overview),
+                MenuItem::action("Line Numbers in Main View", ToggleLineNumbersMain)
+                    .checked(view.line_numbers_main),
+                MenuItem::action("Line Numbers in Filtered View", ToggleLineNumbersFiltered)
+                    .checked(view.line_numbers_filtered),
+                MenuItem::separator(),
                 MenuItem::action("Freeze Columns in Main View", ToggleFreezeMain)
                     .checked(frozen.0.enabled)
                     .disabled(no_tab),
@@ -205,6 +296,8 @@ impl Workspace {
                     .disabled(no_tab),
             ]),
             Menu::new("Tools").items([
+                MenuItem::action("Options…", ShowOptions),
+                MenuItem::separator(),
                 MenuItem::action("Highlighters…", EditHighlighters),
                 MenuItem::submenu(Highlighters::menu(cx)),
             ]),
@@ -253,9 +346,10 @@ impl Workspace {
         let (main_frozen, filtered_frozen) = self.session.frozen_columns(&path);
         let crawler = cx.new(|cx| {
             let mut crawler = Crawler::new(window, cx);
-            if let Some(context) = context {
-                crawler.set_context(context, cx);
-            }
+            // klogg: a new file gets the default search options
+            // (`defaultView.*`), a session's file its own.
+            let context = context.unwrap_or_else(|| Preferences::get(cx).new_file_context());
+            crawler.set_context(context, cx);
             crawler.set_frozen_columns(main_frozen, filtered_frozen, cx);
             crawler
         });
@@ -654,6 +748,18 @@ impl Render for Workspace {
                 });
                 this.update_menus(cx);
             }))
+            .on_action(
+                cx.listener(|_, _: &ShowOptions, window, cx| options_dialog::open(window, cx)),
+            )
+            .on_action(cx.listener(|_, _: &ToggleOverview, window, cx| {
+                toggle_view_option(|v| &mut v.overview, window, cx)
+            }))
+            .on_action(cx.listener(|_, _: &ToggleLineNumbersMain, window, cx| {
+                toggle_view_option(|v| &mut v.line_numbers_main, window, cx)
+            }))
+            .on_action(cx.listener(|_, _: &ToggleLineNumbersFiltered, window, cx| {
+                toggle_view_option(|v| &mut v.line_numbers_filtered, window, cx)
+            }))
             .on_action(cx.listener(|_, _: &EditHighlighters, window, cx| {
                 highlighters_dialog::open(window, cx)
             }))
@@ -716,6 +822,18 @@ impl Render for Workspace {
             .child(div().flex_1().min_h_0().child(content))
             .child(div().px_2().py_1().text_sm().child(self.status()))
     }
+}
+
+/// Flips a View menu option (klogg: View > Overview, Line numbers…).
+fn toggle_view_option(
+    field: fn(&mut rlogg_core::options::View) -> &mut bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let mut options = Preferences::get(cx).clone();
+    let value = field(&mut options.view);
+    *value = !*value;
+    Preferences::set(options, Some(window), cx);
 }
 
 /// "path — N lines — encoding".

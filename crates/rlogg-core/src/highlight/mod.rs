@@ -18,7 +18,7 @@
 //! Matching works on decoded text and returns byte ranges; the caller maps
 //! them to display columns.
 
-mod color;
+pub(crate) mod color;
 pub mod klogg_conf;
 mod ranges;
 

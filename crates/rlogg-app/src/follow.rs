@@ -16,22 +16,30 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use gpui::{Context, KeyBinding, Task, actions};
+use gpui::{Context, Task, actions};
 use rlogg_core::search::FilteredLines;
 use rlogg_core::{FileChange, LogFile, Watcher};
 
 use crate::background;
 use crate::crawler::{self, Crawler, CrawlerEvent, SearchInfo};
-use crate::log_view;
+use crate::shortcuts::Shortcut;
 
 actions!(follow, [ToggleFollow]);
 
-/// klogg's defaults: `f` and F10 (`MainWindowFollowFile`).
-pub fn key_bindings() -> Vec<KeyBinding> {
-    vec![
-        KeyBinding::new("f", ToggleFollow, Some(log_view::CONTEXT)),
-        KeyBinding::new("f10", ToggleFollow, Some(crawler::CONTEXT)),
-    ]
+/// klogg: `MainWindowFollowFile`, F and F10.
+pub fn shortcuts() -> Vec<Shortcut> {
+    vec![Shortcut::new(
+        "mainwindow.follow_file",
+        "Follow file",
+        Some(crawler::CONTEXT),
+        &["f", "f10"],
+        ToggleFollow,
+    )]
+}
+
+#[cfg(test)]
+pub fn key_bindings() -> Vec<gpui::KeyBinding> {
+    crate::shortcuts::default_bindings(shortcuts())
 }
 
 /// The watcher of the open file and the task that applies its changes.

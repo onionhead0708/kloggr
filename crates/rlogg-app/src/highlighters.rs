@@ -9,10 +9,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use gpui::{Action, App, Global, Hsla, KeyBinding, Menu, MenuItem, Rgba, actions};
+use gpui::{Action, App, Global, Hsla, Menu, MenuItem, Rgba, actions};
 use rlogg_core::highlight::{COLOR_LABELS, Color, CompiledSet, HighlighterSets};
 
 use crate::log_view;
+use crate::shortcuts::Shortcut;
 
 actions!(
     highlighters,
@@ -41,37 +42,79 @@ pub struct SetColorLabel {
 }
 
 /// klogg's defaults: Ctrl+Shift+1…9, Ctrl+D, Ctrl+Shift+0.
-pub fn key_bindings() -> Vec<KeyBinding> {
+///
+/// GPUI's Linux backends have no layout mapping for bindings: they report
+/// Ctrl+Shift+1 as the shifted character, `ctrl-!`, and drop the shift. The
+/// US layout's shifted digits are bound too (docs/decisions.md), first:
+/// menus show the binding added last.
+pub fn shortcuts() -> Vec<Shortcut> {
     let view = Some(log_view::CONTEXT);
-    let mut keys = Vec::new();
-    // GPUI's Linux backends have no layout mapping for bindings: they
-    // report Ctrl+Shift+1 as the shifted character, `ctrl-!`, and drop the
-    // shift. Bind the US layout's shifted digits too (docs/decisions.md).
-    // They come first: menus show the binding added last.
-    if cfg!(target_os = "linux") {
-        for (label, symbol) in US_SHIFTED_DIGITS[1..].iter().enumerate() {
-            keys.push(KeyBinding::new(
-                &format!("ctrl-{symbol}"),
-                SetColorLabel { label },
-                view,
-            ));
+    let keys = |digit: usize| -> Vec<String> {
+        let mut keys = Vec::new();
+        if cfg!(target_os = "linux") {
+            keys.push(format!("ctrl-{}", US_SHIFTED_DIGITS[digit]));
         }
-        keys.push(KeyBinding::new(
-            &format!("ctrl-{}", US_SHIFTED_DIGITS[0]),
-            ClearColorLabels,
-            view,
-        ));
-    }
-    for label in 0..COLOR_LABELS {
-        keys.push(KeyBinding::new(
-            &format!("ctrl-shift-{}", label + 1),
-            SetColorLabel { label },
-            view,
-        ));
-    }
-    keys.push(KeyBinding::new("ctrl-d", NextColorLabel, view));
-    keys.push(KeyBinding::new("ctrl-shift-0", ClearColorLabels, view));
-    keys
+        keys.push(format!("ctrl-shift-{digit}"));
+        keys
+    };
+    const IDS: [&str; COLOR_LABELS] = [
+        "logview.add_color_label_1",
+        "logview.add_color_label_2",
+        "logview.add_color_label_3",
+        "logview.add_color_label_4",
+        "logview.add_color_label_5",
+        "logview.add_color_label_6",
+        "logview.add_color_label_7",
+        "logview.add_color_label_8",
+        "logview.add_color_label_9",
+    ];
+    const LABELS: [&str; COLOR_LABELS] = [
+        "Highlight text with color 1",
+        "Highlight text with color 2",
+        "Highlight text with color 3",
+        "Highlight text with color 4",
+        "Highlight text with color 5",
+        "Highlight text with color 6",
+        "Highlight text with color 7",
+        "Highlight text with color 8",
+        "Highlight text with color 9",
+    ];
+    let mut out: Vec<Shortcut> = (0..COLOR_LABELS)
+        .map(|label| Shortcut {
+            id: IDS[label],
+            label: LABELS[label],
+            context: view,
+            keys: keys(label + 1),
+            action: Box::new(SetColorLabel { label }),
+        })
+        .collect();
+    out.push(Shortcut::new(
+        "logview.add_next_color_label",
+        "Highlight text with next color",
+        view,
+        &["ctrl-d"],
+        NextColorLabel,
+    ));
+    out.push(Shortcut {
+        id: "logview.clear_color_labels",
+        label: "Clear all color labels",
+        context: view,
+        keys: keys(0),
+        action: Box::new(ClearColorLabels),
+    });
+    out.push(Shortcut::new(
+        "mainwindow.highlighters",
+        "Highlighters…",
+        None,
+        &[],
+        EditHighlighters,
+    ));
+    out
+}
+
+#[cfg(test)]
+pub fn key_bindings() -> Vec<gpui::KeyBinding> {
+    crate::shortcuts::default_bindings(shortcuts())
 }
 
 /// Shift+0 … Shift+9 on a US layout.

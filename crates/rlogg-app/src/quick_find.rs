@@ -11,8 +11,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui::{
-    AppContext, Context, Entity, Focusable, IntoElement, KeyBinding, ParentElement, Styled, Task,
-    Window, actions, div,
+    AppContext, Context, Entity, Focusable, IntoElement, ParentElement, Styled, Task, Window,
+    actions, div,
 };
 use gpui_component::ActiveTheme;
 use gpui_component::Sizable;
@@ -25,6 +25,8 @@ use rlogg_core::{Cancelled, Position};
 use crate::background;
 use crate::crawler::{self, Crawler};
 use crate::log_view::{self, LogView};
+use crate::preferences::Preferences;
+use crate::shortcuts::Shortcut;
 
 actions!(
     quick_find,
@@ -41,24 +43,65 @@ actions!(
 );
 
 /// klogg's defaults (`settings/src/shortcuts.cpp`).
-pub fn key_bindings() -> Vec<KeyBinding> {
+pub fn shortcuts() -> Vec<Shortcut> {
     let view = Some(log_view::CONTEXT);
     let crawler = Some(crawler::CONTEXT);
     vec![
-        KeyBinding::new("secondary-f", Open, crawler),
-        KeyBinding::new("'", OpenForward, view),
-        KeyBinding::new("\"", OpenBackward, view),
-        KeyBinding::new("n", FindNext, view),
-        KeyBinding::new("shift-n", FindPrevious, view),
-        KeyBinding::new("f3", FindNext, crawler),
-        KeyBinding::new("shift-f3", FindPrevious, crawler),
-        KeyBinding::new("secondary-g", FindNext, crawler),
-        KeyBinding::new("secondary-shift-g", FindPrevious, crawler),
-        KeyBinding::new("*", FindSelectionNext, view),
-        KeyBinding::new(".", FindSelectionNext, view),
-        KeyBinding::new("/", FindSelectionPrevious, view),
-        KeyBinding::new(",", FindSelectionPrevious, view),
+        Shortcut::new(
+            "mainwindow.open_qf",
+            "Open quick find",
+            crawler,
+            &["secondary-f"],
+            Open,
+        ),
+        Shortcut::new(
+            "logview.open_qf_forward",
+            "Quick find forward",
+            view,
+            &["'"],
+            OpenForward,
+        ),
+        Shortcut::new(
+            "logview.open_qf_backward",
+            "Quick find backward",
+            view,
+            &["\""],
+            OpenBackward,
+        ),
+        Shortcut::new(
+            "qf.find_next",
+            "Find next",
+            crawler,
+            &["n", "f3", "secondary-g"],
+            FindNext,
+        ),
+        Shortcut::new(
+            "qf.find_prev",
+            "Find previous",
+            crawler,
+            &["shift-n", "shift-f3", "secondary-shift-g"],
+            FindPrevious,
+        ),
+        Shortcut::new(
+            "logview.qf_selected_forward",
+            "Find selection forward",
+            view,
+            &["*", "."],
+            FindSelectionNext,
+        ),
+        Shortcut::new(
+            "logview.qf_selected_backward",
+            "Find selection backward",
+            view,
+            &["/", ","],
+            FindSelectionPrevious,
+        ),
     ]
+}
+
+#[cfg(test)]
+pub fn key_bindings() -> Vec<gpui::KeyBinding> {
+    crate::shortcuts::default_bindings(shortcuts())
 }
 
 /// Which view quick find works on (klogg: `QuickFindMux` selector).
@@ -108,8 +151,8 @@ impl QuickFind {
         Self {
             open: false,
             input: cx.new(|cx| InputState::new(window, cx).placeholder("Quick find")),
-            match_case: true,
-            regex: false,
+            match_case: Preferences::get(cx).search.quickfind_match_case,
+            regex: Preferences::get(cx).search.quickfind_regex,
             info: String::new(),
             error: false,
             text: String::new(),
@@ -222,6 +265,12 @@ impl Crawler {
     pub(crate) fn quick_find_edited(&mut self, cx: &mut Context<Self>) {
         // The input also reports a change on Enter, with the same text.
         if *self.qf.input.read(cx).value() == *self.qf.text {
+            return;
+        }
+        // klogg: `quickfind.incremental`; otherwise Enter searches.
+        if !Preferences::get(cx).search.quickfind_incremental {
+            self.update_quick_find_matcher(cx);
+            cx.notify();
             return;
         }
         self.quick_find_options_changed(cx);

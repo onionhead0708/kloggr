@@ -8,6 +8,21 @@ Newest first. Each entry gives the date, what klogg does, what rlogg does, and w
 
 ---
 
+## 2026-11-10: Options dialog: line numbers on by default, typed shortcuts, fewer options
+
+**klogg:** the main view hides line numbers by default (`lineNumbersVisibleInMain_ = false`). Shortcuts are edited by pressing the keys (`QKeySequenceEdit`). The options dialog also has text wrap, language, High DPI, ANSI colour hiding, archives, https verification, the regex engine, read buffers, the search cache, logging and version checking.
+
+**rlogg:**
+- Line numbers show in both views by default, as rlogg always did. View > Line Numbers in Main View turns them off.
+- Shortcuts are typed as GPUI keystrokes separated by spaces (`ctrl-shift-f f3`, `secondary-o` for Ctrl or Cmd). An invalid key is reported and nothing is applied.
+- Changed shortcuts apply at once. GPUI's keymap can only grow, so a key that no longer applies is bound to `NoAction` in its context.
+- Options for features rlogg doesn't have yet are left out, and come with those features. The font is any installed font, typed by name.
+- Options are saved in `settings.toml` next to `session.toml`.
+
+**Why:** the line numbers are what `[number] g` and Ctrl+L refer to. A key-recording widget would need its own GPUI component, while typed keystrokes reuse GPUI's parser and show exactly what gets bound. Options that do nothing would be misleading.
+
+**Code:** `rlogg_core::options`, `crate::preferences`, `crate::shortcuts`, `crate::options_dialog`.
+
 ## 2026-11-10: Wide characters take two columns
 
 **klogg:** a column is one UTF-16 code unit of the line (`QString`), drawn on a fixed-width grid. CJK characters and emoji are wider than a column in most fonts, so the text after them drifts from the grid. Selections, quick-find and highlights then cover the wrong characters, and characters outside the BMP count as two columns.

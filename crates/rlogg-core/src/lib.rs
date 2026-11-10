@@ -10,6 +10,7 @@
 //! - [`selection`]: line / range / portion selection (klogg: `Selection`)
 //! - [`viewport`]: scroll position in lines and columns
 //! - [`settings`]: persistent session state, recent files (klogg: `RecentFiles`)
+//! - [`options`]: user options and shortcut overrides (klogg: `Configuration`)
 //! - [`search`]: patterns, matchers and parallel search (klogg: `src/regex`,
 //!   `LogFilteredDataWorker`)
 //!
@@ -22,6 +23,7 @@ pub mod encoding;
 pub mod file;
 pub mod highlight;
 pub mod line_index;
+pub mod options;
 pub mod search;
 pub mod selection;
 pub mod settings;

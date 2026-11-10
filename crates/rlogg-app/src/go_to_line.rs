@@ -7,8 +7,8 @@
 //! the end select the last line, as in klogg.
 
 use gpui::{
-    AppContext, Context, Entity, Focusable, IntoElement, KeyBinding, ParentElement, Styled, Window,
-    actions, div,
+    AppContext, Context, Entity, Focusable, IntoElement, ParentElement, Styled, Window, actions,
+    div,
 };
 use gpui_component::ActiveTheme;
 use gpui_component::Sizable;
@@ -16,12 +16,24 @@ use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputState};
 
 use crate::crawler::{self, Crawler};
+use crate::shortcuts::Shortcut;
 
 actions!(go_to_line, [Open]);
 
-/// klogg's default (`LogViewJumpToLine`).
-pub fn key_bindings() -> Vec<KeyBinding> {
-    vec![KeyBinding::new("secondary-l", Open, Some(crawler::CONTEXT))]
+/// klogg: `LogViewJumpToLine`, Ctrl+L.
+pub fn shortcuts() -> Vec<Shortcut> {
+    vec![Shortcut::new(
+        "logview.jump_to_line",
+        "Jump to line",
+        Some(crawler::CONTEXT),
+        &["secondary-l"],
+        Open,
+    )]
+}
+
+#[cfg(test)]
+pub fn key_bindings() -> Vec<gpui::KeyBinding> {
+    crate::shortcuts::default_bindings(shortcuts())
 }
 
 pub struct GoToLine {

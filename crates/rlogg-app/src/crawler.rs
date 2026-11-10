@@ -10,8 +10,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui::{
-    Action, AppContext, Context, Entity, Focusable, InteractiveElement, IntoElement, KeyBinding,
-    ParentElement, Render, Styled, Subscription, Task, Window, actions, div, px,
+    Action, AppContext, Context, Entity, Focusable, InteractiveElement, IntoElement, ParentElement,
+    Render, Styled, Subscription, Task, Window, actions, div, px,
 };
 use gpui_component::button::{Button, ButtonVariants, Toggle};
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -28,6 +28,7 @@ use crate::go_to_line::{self, GoToLine};
 use crate::highlighters::Highlighters;
 use crate::log_view::{self, LabelOp, LogView, LogViewEvent};
 use crate::quick_find::{self, QuickFind, Target};
+use crate::shortcuts::Shortcut;
 use rlogg_core::highlight::ColorLabels;
 use rlogg_core::search::find::Direction;
 
@@ -51,25 +52,103 @@ actions!(
 
 pub(crate) const CONTEXT: &str = "Crawler";
 
-/// klogg's defaults (`settings/src/shortcuts.cpp`). Single keys only work
-/// in the log views, so they can still be typed in the search box. klogg's
-/// bare `1`–`7` are Alt+1…Alt+7 here, so that digits in a view always
-/// type a line number (`docs/decisions.md`).
-pub fn key_bindings() -> Vec<KeyBinding> {
+/// klogg's defaults (`settings/src/shortcuts.cpp`). klogg's bare `1`–`7`
+/// are Alt+1…Alt+7 here, so that digits in a view always type a line
+/// number (`docs/decisions.md`).
+pub fn shortcuts() -> Vec<Shortcut> {
     let view = Some(log_view::CONTEXT);
+    let crawler = Some(CONTEXT);
     vec![
-        KeyBinding::new("secondary-s", FocusSearch, Some(CONTEXT)),
-        KeyBinding::new("secondary-shift-f", FocusSearch, Some(CONTEXT)),
-        KeyBinding::new("v", VisibilityForward, view),
-        KeyBinding::new("shift-v", VisibilityBackward, view),
-        KeyBinding::new("alt-1", ShowMarksAndMatches, view),
-        KeyBinding::new("alt-2", ShowMarks, view),
-        KeyBinding::new("alt-3", ShowMatches, view),
-        KeyBinding::new("alt-4", ToggleMatchCase, view),
-        KeyBinding::new("alt-5", ToggleRegex, view),
-        KeyBinding::new("alt-6", ToggleInverse, view),
-        KeyBinding::new("alt-7", ToggleBoolean, view),
+        Shortcut::new(
+            "qf.focus_search",
+            "Set focus to search input",
+            crawler,
+            &["secondary-s", "secondary-shift-f"],
+            FocusSearch,
+        ),
+        Shortcut::new(
+            "crawler.change_visibility_type",
+            "Next filtered view visibility",
+            view,
+            &["v"],
+            VisibilityForward,
+        ),
+        Shortcut::new(
+            "crawler.change_visibility_type_backward",
+            "Previous filtered view visibility",
+            view,
+            &["shift-v"],
+            VisibilityBackward,
+        ),
+        Shortcut::new(
+            "crawler.change_visibility_to_marks_and_matches",
+            "Show marks and matches",
+            view,
+            &["alt-1"],
+            ShowMarksAndMatches,
+        ),
+        Shortcut::new(
+            "crawler.change_visibility_to_marks",
+            "Show marks",
+            view,
+            &["alt-2"],
+            ShowMarks,
+        ),
+        Shortcut::new(
+            "crawler.change_visibility_to_matches",
+            "Show matches",
+            view,
+            &["alt-3"],
+            ShowMatches,
+        ),
+        Shortcut::new(
+            "crawler.enable_case_matching",
+            "Toggle case matching",
+            view,
+            &["alt-4"],
+            ToggleMatchCase,
+        ),
+        Shortcut::new(
+            "crawler.enable_regex",
+            "Toggle regular expressions",
+            view,
+            &["alt-5"],
+            ToggleRegex,
+        ),
+        Shortcut::new(
+            "crawler.enable_inverse_matching",
+            "Toggle inverse matching",
+            view,
+            &["alt-6"],
+            ToggleInverse,
+        ),
+        Shortcut::new(
+            "crawler.enable_regex_combining",
+            "Toggle boolean combining",
+            view,
+            &["alt-7"],
+            ToggleBoolean,
+        ),
+        Shortcut::new(
+            "mainwindow.freeze_main",
+            "Freeze columns in main view",
+            crawler,
+            &[],
+            ToggleFreezeMain,
+        ),
+        Shortcut::new(
+            "mainwindow.freeze_filtered",
+            "Freeze columns in filtered view",
+            crawler,
+            &[],
+            ToggleFreezeFiltered,
+        ),
     ]
+}
+
+#[cfg(test)]
+pub fn key_bindings() -> Vec<gpui::KeyBinding> {
+    crate::shortcuts::default_bindings(shortcuts())
 }
 
 /// Search bar toggles; defaults as in klogg's configuration.

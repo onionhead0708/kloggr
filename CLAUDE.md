@@ -27,7 +27,8 @@ stays GPLv3. Keep klogg's copyright notices where code is translated closely.
 | `logdata/` LogFilteredData(Worker) | `rlogg-core::search` (search driver, `LineSet`, `FilteredLines` done) | regex, rayon, roaring |
 | `regex/` (Hyperscan / QRegularExpression, boolean combos; exprtk) | `rlogg-core::search` (done; own boolean parser instead of exprtk) | regex |
 | `filewatch/` (efsw) | `rlogg-core::watch` (done), reload in `rlogg-core::file`, app `follow` | notify |
-| `settings/`, `ui/session*`, `ui/recentfiles*` | `rlogg-core::settings` (recent files, open files and per-file state done) | serde, toml, directories |
+| `settings/`, `ui/session*`, `ui/recentfiles*` | `rlogg-core::settings` (recent files, open files and per-file state done), `rlogg-core::options` (done) | serde, toml, directories |
+| `ui/optionsdialog`, `settings/shortcuts` | `rlogg-app` options_dialog, shortcuts, preferences (done) | gpui-component |
 | `ui/abstractlogview`, `logmainview`, `filteredview`, `overview*` | `rlogg-app` log view widget | gpui |
 | `ui/frozencolumns` | `rlogg-core::viewport` (column mapping), `settings::FrozenFile` (done) | |
 | `ui/crawlerwidget`, `tabbedcrawlerwidget`, `mainwindow`, `menu` | `rlogg-app` workspace, tabs, menus | gpui-component |
@@ -130,7 +131,7 @@ check new shortcuts in the real app too (see the color-label entry in `docs/deci
 - [x] Highlighters and highlighter sets, color labels: engine, line colouring, Tools and context menus, color labels `Ctrl+Shift+1`–`9` / `Ctrl+D` / `Ctrl+Shift+0`, the highlighters dialog (sets, highlighters, label styles), klogg `.conf` import/export
 - [x] Frozen columns (klogg `frozencolumns`): View menu and context menu toggles per view, draggable separator, remembered per file in the session
 - [x] Wide characters (CJK, emoji): two columns per wide character (Unicode East Asian Width), zero for combining marks, each wide glyph drawn at its column
-- [ ] Settings and options dialog, keyboard shortcuts matching klogg's defaults (include the search-match highlight: on/off and its colour, as klogg's "main search highlight" checkbox and colour button)
+- [x] Settings and options dialog (Tools > Options…: session, search defaults, match and quick-find highlight colours, font, style, overview, line numbers, follow on scroll, recent files) and editable shortcuts with klogg's defaults (`settings.toml`)
 
 ### Phase 4: extras and release
 - [ ] Predefined filters, saved searches, scratchpad

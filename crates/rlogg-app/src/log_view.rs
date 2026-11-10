@@ -31,10 +31,10 @@ use std::sync::Arc;
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, Entity, EventEmitter,
     FocusHandle, Focusable, Font, GlobalElementId, Hitbox, HitboxBehavior, Hsla,
-    InspectorElementId, InteractiveElement, IntoElement, KeyBinding, LayoutId, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render,
-    ScrollWheelEvent, ShapedLine, SharedString, Style, Styled, Subscription, TextAlign, TextRun,
-    Window, actions, div, fill, point, px, relative, size,
+    InspectorElementId, InteractiveElement, IntoElement, LayoutId, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render, ScrollWheelEvent,
+    ShapedLine, SharedString, Style, Styled, Subscription, TextAlign, TextRun, Window, actions,
+    div, fill, point, px, relative, size,
 };
 use gpui_component::ActiveTheme;
 use gpui_component::menu::{ContextMenuExt, PopupMenu};
@@ -49,6 +49,8 @@ use rlogg_core::{DigitsBuffer, Drag, LogFile, Position, Selection, Viewport};
 use crate::highlighters::{
     self, ClearColorLabels, Highlighters, NextColorLabel, RemoveColorLabel, SetColorLabel, hsla,
 };
+use crate::preferences::Preferences;
+use crate::shortcuts::Shortcut;
 
 actions!(
     log_view,
@@ -80,38 +82,143 @@ actions!(
 pub const CONTEXT: &str = "LogView";
 
 /// klogg's default log view shortcuts (`settings/src/shortcuts.cpp`).
-pub fn key_bindings() -> Vec<KeyBinding> {
+pub fn shortcuts() -> Vec<Shortcut> {
     let c = Some(CONTEXT);
     vec![
-        KeyBinding::new("up", SelectUp, c),
-        KeyBinding::new("k", SelectUp, c),
-        KeyBinding::new("down", SelectDown, c),
-        KeyBinding::new("j", SelectDown, c),
-        KeyBinding::new("shift-up", ExtendUp, c),
-        KeyBinding::new("shift-down", ExtendDown, c),
-        KeyBinding::new("pageup", PageUp, c),
-        KeyBinding::new("ctrl-up", PageUp, c),
-        KeyBinding::new("pagedown", PageDown, c),
-        KeyBinding::new("ctrl-down", PageDown, c),
-        KeyBinding::new("left", ScrollLeft, c),
-        KeyBinding::new("h", ScrollLeft, c),
-        KeyBinding::new("right", ScrollRight, c),
-        KeyBinding::new("l", ScrollRight, c),
-        KeyBinding::new("home", StartOfLine, c),
-        KeyBinding::new("^", StartOfLine, c),
-        KeyBinding::new("$", EndOfLine, c),
-        KeyBinding::new("end", RightOfScreen, c),
-        KeyBinding::new("ctrl-home", Top, c),
-        KeyBinding::new("ctrl-end", Bottom, c),
-        KeyBinding::new("shift-g", Bottom, c),
-        KeyBinding::new("secondary-a", SelectAll, c),
-        KeyBinding::new("secondary-c", Copy, c),
-        KeyBinding::new("secondary-shift-c", CopyWithLineNumbers, c),
-        KeyBinding::new("m", Mark, c),
-        KeyBinding::new("]", NextMark, c),
-        KeyBinding::new("[", PrevMark, c),
-        KeyBinding::new("g", JumpToLineNumber, c),
+        Shortcut::new(
+            "logview.selection_up",
+            "Move selection up",
+            c,
+            &["up", "k"],
+            SelectUp,
+        ),
+        Shortcut::new(
+            "logview.selection_down",
+            "Move selection down",
+            c,
+            &["down", "j"],
+            SelectDown,
+        ),
+        Shortcut::new(
+            "logview.select_lines_up",
+            "Extend selection up",
+            c,
+            &["shift-up"],
+            ExtendUp,
+        ),
+        Shortcut::new(
+            "logview.select_lines_down",
+            "Extend selection down",
+            c,
+            &["shift-down"],
+            ExtendDown,
+        ),
+        Shortcut::new(
+            "logview.scroll_up",
+            "Page up",
+            c,
+            &["pageup", "ctrl-up"],
+            PageUp,
+        ),
+        Shortcut::new(
+            "logview.scroll_down",
+            "Page down",
+            c,
+            &["pagedown", "ctrl-down"],
+            PageDown,
+        ),
+        Shortcut::new(
+            "logview.scroll_left",
+            "Scroll left",
+            c,
+            &["left", "h"],
+            ScrollLeft,
+        ),
+        Shortcut::new(
+            "logview.scroll_right",
+            "Scroll right",
+            c,
+            &["right", "l"],
+            ScrollRight,
+        ),
+        Shortcut::new(
+            "logview.jump_to_start_of_line",
+            "Jump to start of line",
+            c,
+            &["home", "^"],
+            StartOfLine,
+        ),
+        Shortcut::new(
+            "logview.jump_to_end_of_line",
+            "Jump to end of line",
+            c,
+            &["$"],
+            EndOfLine,
+        ),
+        Shortcut::new(
+            "logview.jump_to_right",
+            "Jump to right of screen",
+            c,
+            &["end"],
+            RightOfScreen,
+        ),
+        Shortcut::new("logview.jump_to_top", "Jump to top", c, &["ctrl-home"], Top),
+        Shortcut::new(
+            "logview.jump_to_bottom",
+            "Jump to bottom",
+            c,
+            &["ctrl-end", "shift-g"],
+            Bottom,
+        ),
+        Shortcut::new(
+            "mainwindow.select_all",
+            "Select all",
+            c,
+            &["secondary-a"],
+            SelectAll,
+        ),
+        Shortcut::new(
+            "mainwindow.copy_selection",
+            "Copy selection",
+            c,
+            &["secondary-c"],
+            Copy,
+        ),
+        Shortcut::new(
+            "logview.copy_with_line_numbers",
+            "Copy with line numbers",
+            c,
+            &["secondary-shift-c"],
+            CopyWithLineNumbers,
+        ),
+        Shortcut::new("logview.mark", "Mark selected lines", c, &["m"], Mark),
+        Shortcut::new(
+            "logview.next_mark",
+            "Jump to next mark",
+            c,
+            &["]"],
+            NextMark,
+        ),
+        Shortcut::new(
+            "logview.prev_mark",
+            "Jump to previous mark",
+            c,
+            &["["],
+            PrevMark,
+        ),
+        Shortcut::new(
+            "logview.jump_to_line_number",
+            "Jump to line number typed before",
+            c,
+            &["g"],
+            JumpToLineNumber,
+        ),
     ]
+}
+
+#[cfg(test)]
+pub fn key_bindings() -> Vec<gpui::KeyBinding> {
+    crate::shortcuts::default_bindings(shortcuts())
 }
 
 /// Emitted when the user selects a line (klogg: `newSelection`).
@@ -889,7 +996,11 @@ impl LogView {
         let lines = -f64::from(dy / layout.line_height);
         // klogg (`allowFollowOnScroll`): scrolling down at the bottom
         // starts following.
-        if lines > 0. && self.at_bottom() && !self.following {
+        if lines > 0.
+            && self.at_bottom()
+            && !self.following
+            && Preferences::get(cx).file.follow_on_scroll
+        {
             cx.emit(LogViewEvent::FollowChanged(true));
         }
         self.viewport.scroll_lines(lines);
@@ -1145,7 +1256,8 @@ impl Metrics {
 
 struct Row {
     y: Pixels,
-    number: ShapedLine,
+    /// The line number, unless hidden.
+    number: Option<ShapedLine>,
     /// The text, in pieces drawn at their grid column (see
     /// [`text::grid_segments`]).
     text: Vec<(usize, ShapedLine)>,
@@ -1236,7 +1348,20 @@ impl Element for LogElement {
             let file_lines = view.log.as_ref().map_or(0, |l| l.line_count());
             let line_count = view.row_count(cx);
             let digits = file_lines.max(1).to_string().len().max(3);
-            let gutter_width = BULLET_WIDTH + metrics.char_width * digits + GUTTER_PAD * 2.;
+            let options = Preferences::get(cx);
+            // klogg: `lineNumbersVisibleInMain`, `...InFiltered`.
+            let numbers = if view.filtered {
+                options.view.line_numbers_filtered
+            } else {
+                options.view.line_numbers_main
+            };
+            let gutter_width = if numbers {
+                BULLET_WIDTH + metrics.char_width * digits + GUTTER_PAD * 2.
+            } else {
+                BULLET_WIDTH + GUTTER_PAD
+            };
+            let highlight_matches = options.search.highlight_matches;
+            let show_overview = options.view.overview;
             let gutter = Bounds::new(
                 bounds.origin,
                 size(gutter_width, bounds.size.height - SCROLLBAR),
@@ -1245,7 +1370,7 @@ impl Element for LogElement {
                 bounds.origin,
                 size(BULLET_WIDTH, bounds.size.height - SCROLLBAR),
             );
-            let with_overview = !view.filtered && view.filter.is_some();
+            let with_overview = show_overview && !view.filtered && view.filter.is_some();
             let overview_bounds = with_overview.then(|| {
                 Bounds::from_corners(
                     point(bounds.right() - SCROLLBAR - OVERVIEW_WIDTH, bounds.top()),
@@ -1314,7 +1439,7 @@ impl Element for LogElement {
                     };
                     // Only matched lines can hold search matches.
                     let searched = match &view.search_highlight {
-                        Some(m) if short && kind.matched => visible_matches(m),
+                        Some(m) if highlight_matches && short && kind.matched => visible_matches(m),
                         _ => Vec::new(),
                     };
                     // Highlighters and color labels (klogg: not on lines
@@ -1331,7 +1456,8 @@ impl Element for LogElement {
                         text_bounds.top() + metrics.line_height * (row as f64 - vp.top()) as f32;
                     out.push(Row {
                         y,
-                        number: metrics.shape(window, (line + 1).to_string().into(), muted),
+                        number: numbers
+                            .then(|| metrics.shape(window, (line + 1).to_string().into(), muted)),
                         text: text::grid_segments(&shown_text)
                             .into_iter()
                             .map(|(col, bytes)| {
@@ -1458,11 +1584,11 @@ impl Element for LogElement {
             theme.scrollbar,
             theme.scrollbar_thumb,
         );
-        let found_bg = theme.yellow.opacity(0.45);
+        let found_bg = Preferences::quickfind_highlight(theme.yellow, cx);
         let fg = theme.foreground;
-        // klogg's default `mainSearchBackColor` is light gray; a translucent
-        // foreground gives a gray in light and dark themes alike.
-        let search_bg = theme.foreground.opacity(0.18);
+        // klogg's default `mainSearchBackColor` is light gray; by default a
+        // translucent foreground gives a gray in light and dark themes alike.
+        let search_bg = Preferences::search_highlight(fg, cx);
         let bullet_colors = BulletColors {
             matched: theme.red,
             marked: theme.blue,
@@ -1525,10 +1651,12 @@ impl Element for LogElement {
                             .paint_quad(fill(Bounds::new(point(x, row.y), size(w, lh)), highlight));
                     }
                     paint_bullet(window, &layout, row, &bullet_colors);
-                    let x = frame.gutter.right() - GUTTER_PAD - row.number.width;
-                    row.number
-                        .paint(point(x, row.y), lh, TextAlign::Left, None, window, cx)
-                        .ok();
+                    if let Some(number) = &row.number {
+                        let x = frame.gutter.right() - GUTTER_PAD - number.width;
+                        number
+                            .paint(point(x, row.y), lh, TextAlign::Left, None, window, cx)
+                            .ok();
+                    }
                 }
             },
         );
