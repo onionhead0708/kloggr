@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/rlogg-core", "crates/rlogg-app"]
+members = ["crates/kloggr-core", "crates/kloggr-app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,7 +10,7 @@ rust-version = "1.99"
 publish = false
 
 [workspace.dependencies]
-rlogg-core = { path = "crates/rlogg-core" }
+kloggr-core = { path = "crates/kloggr-core" }
 
 # GPUI is pre-1.0 and breaks on minor bumps: pin EXACTLY and bump gpui-pre,
 # gpui-pre-platform, gpui-component and gpui-kit-assets together (gpui-component pins gpui-pre).
@@ -58,7 +58,7 @@ opt-level = 3
 
 # The engine's hot loops (line scan, index compression) are ~8x slower at
 # opt-level 0, which makes debug builds unusable on multi-GB files.
-[profile.dev.package.rlogg-core]
+[profile.dev.package.kloggr-core]
 opt-level = 3
 
 [profile.release]

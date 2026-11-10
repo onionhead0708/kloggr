@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- kloggr icon: log lines, one highlighted, under a lens. GPL-3.0-or-later. -->
+  <rect x="16" y="16" width="224" height="224" rx="44" fill="#1f2a37"/>
+  <g fill="#9fb3c8">
+    <rect x="48" y="54" width="120" height="14" rx="7"/>
+    <rect x="48" y="84" width="150" height="14" rx="7"/>
+    <rect x="48" y="144" width="96" height="14" rx="7"/>
+    <rect x="48" y="174" width="70" height="14" rx="7"/>
+  </g>
+  <rect x="40" y="108" width="176" height="30" rx="8" fill="#f2b33d"/>
+  <rect x="48" y="116" width="134" height="14" rx="7" fill="#1f2a37"/>
+  <polygon points="186,198 198,186 226,214 214,226" fill="#ffffff"/>
+  <circle cx="168" cy="168" r="40" fill="#ffffff"/>
+  <circle cx="168" cy="168" r="28" fill="#1f2a37"/>
+</svg>

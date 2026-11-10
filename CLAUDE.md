@@ -1,7 +1,8 @@
-# rlogg
+# kloggr
 
 A Rust rewrite of [klogg](https://github.com/variar/klogg), a fast, cross-platform
 GUI log viewer for very large files (multi-GB), with a GPUI interface.
+It was called rlogg until 2026-11-10 (renamed to avoid github.com/jmichaelsturm/rlogg).
 
 License: **GPL-3.0-or-later**, the same as klogg (`LICENSE`). Code ported from klogg
 stays GPLv3. Keep klogg's copyright notices where code is translated closely.
@@ -12,43 +13,43 @@ stays GPLv3. Keep klogg's copyright notices where code is translated closely.
 |---|---|---|
 | klogg source (C++/Qt) | `~/dev/klogg` (local checkout), upstream github.com/variar/klogg | Behavior and algorithms to reproduce. **The spec of record.** |
 | klogg user docs | `~/dev/klogg/DOCUMENTATION.md` | Feature list, search syntax, shortcuts |
-| rlogg decisions | `docs/decisions.md` | Deliberate differences from klogg and why. Read before changing a behavior to match klogg, and add an entry for each new difference |
+| kloggr decisions | `docs/decisions.md` | Deliberate differences from klogg and why. Read before changing a behavior to match klogg, and add an entry for each new difference |
 | klogg test data | `~/dev/klogg/test_data`, `~/dev/klogg/tests` | Port the test cases, reuse the sample files |
 | dbdelve | https://github.com/ShayanAbbas1/dbdelve (GPL-3.0, GPUI) | Working GPUI app: bootstrap, keymaps, theming, virtualized grids, Linux packaging, its `AGENTS.md` GPUI rules |
 | gpui-component | https://github.com/longbridge/gpui-component | Widgets: dock, tabs, table, inputs, menus. Read its examples |
 | GPUI | Zed repo `crates/gpui` (republished on crates.io as `gpui-pre`) | Framework source. Docs are thin, so read the code |
 
-### klogg → rlogg module map
+### klogg → kloggr module map
 
-| klogg (`~/dev/klogg/src/…`) | rlogg | Rust crates |
+| klogg (`~/dev/klogg/src/…`) | kloggr | Rust crates |
 |---|---|---|
-| `logdata/` FileHolder, LogData, LinePositionArray, CompressedLineStorage, LogDataWorker | `rlogg-core::{file, line_index}` | memmap2, rayon |
-| `logdata/` EncodingDetector | `rlogg-core::encoding` | encoding_rs, chardetng |
-| `logdata/` LogFilteredData(Worker) | `rlogg-core::search` (search driver, `LineSet`, `FilteredLines` done) | regex, rayon, roaring |
-| `regex/` (Hyperscan / QRegularExpression, boolean combos; exprtk) | `rlogg-core::search` (done; own boolean parser instead of exprtk) | regex |
-| `filewatch/` (efsw) | `rlogg-core::watch` (done), reload in `rlogg-core::file`, app `follow` | notify |
-| `settings/`, `ui/session*`, `ui/recentfiles*` | `rlogg-core::settings` (recent files, open files and per-file state done), `rlogg-core::options` (done) | serde, toml, directories |
-| `ui/optionsdialog`, `settings/shortcuts` | `rlogg-app` options_dialog, shortcuts, preferences (done) | gpui-component |
-| `ui/abstractlogview`, `logmainview`, `filteredview`, `overview*` | `rlogg-app` log view widget | gpui |
-| `ui/frozencolumns` | `rlogg-core::viewport` (column mapping), `settings::FrozenFile` (done) | |
-| `ui/crawlerwidget`, `tabbedcrawlerwidget`, `mainwindow`, `menu` | `rlogg-app` workspace, tabs, menus | gpui-component |
-| `ui/quickfind*` (QuickFind engine) | `rlogg-core::search::find`, `rlogg-app` quick_find | rayon |
-| `ui/highlighterset`, `colorlabelsmanager`, `highlightedmatch` | `rlogg-core::highlight` (done), app `highlighters` | regex |
-| `ui/highlightersdialog`, `highlighterset(edit)`, `highlighteredit` | `rlogg-app` highlighters_dialog (done), `rlogg-core::highlight::klogg_conf` | gpui-component |
-| `ui/predefinedfilters*`, `savedsearches` | `rlogg-core::searches`, app `saved_searches` (done) | |
-| `ui/scratchpad`, `tabbedscratchpad` | `rlogg-core::scratch`, app `scratchpad` (done) | base64, serde_json, quick-xml, crc32fast |
-| `versioncheck/`, `logging/`, `crash_handler/` | `rlogg-core::crash` (done), app `crash_report`; version check later | ureq (rustls), tracing, panic hook |
+| `logdata/` FileHolder, LogData, LinePositionArray, CompressedLineStorage, LogDataWorker | `kloggr-core::{file, line_index}` | memmap2, rayon |
+| `logdata/` EncodingDetector | `kloggr-core::encoding` | encoding_rs, chardetng |
+| `logdata/` LogFilteredData(Worker) | `kloggr-core::search` (search driver, `LineSet`, `FilteredLines` done) | regex, rayon, roaring |
+| `regex/` (Hyperscan / QRegularExpression, boolean combos; exprtk) | `kloggr-core::search` (done; own boolean parser instead of exprtk) | regex |
+| `filewatch/` (efsw) | `kloggr-core::watch` (done), reload in `kloggr-core::file`, app `follow` | notify |
+| `settings/`, `ui/session*`, `ui/recentfiles*` | `kloggr-core::settings` (recent files, open files and per-file state done), `kloggr-core::options` (done) | serde, toml, directories |
+| `ui/optionsdialog`, `settings/shortcuts` | `kloggr-app` options_dialog, shortcuts, preferences (done) | gpui-component |
+| `ui/abstractlogview`, `logmainview`, `filteredview`, `overview*` | `kloggr-app` log view widget | gpui |
+| `ui/frozencolumns` | `kloggr-core::viewport` (column mapping), `settings::FrozenFile` (done) | |
+| `ui/crawlerwidget`, `tabbedcrawlerwidget`, `mainwindow`, `menu` | `kloggr-app` workspace, tabs, menus | gpui-component |
+| `ui/quickfind*` (QuickFind engine) | `kloggr-core::search::find`, `kloggr-app` quick_find | rayon |
+| `ui/highlighterset`, `colorlabelsmanager`, `highlightedmatch` | `kloggr-core::highlight` (done), app `highlighters` | regex |
+| `ui/highlightersdialog`, `highlighterset(edit)`, `highlighteredit` | `kloggr-app` highlighters_dialog (done), `kloggr-core::highlight::klogg_conf` | gpui-component |
+| `ui/predefinedfilters*`, `savedsearches` | `kloggr-core::searches`, app `saved_searches` (done) | |
+| `ui/scratchpad`, `tabbedscratchpad` | `kloggr-core::scratch`, app `scratchpad` (done) | base64, serde_json, quick-xml, crc32fast |
+| `versioncheck/`, `logging/`, `crash_handler/` | `kloggr-core::crash` (done), app `crash_report`; version check later | ureq (rustls), tracing, panic hook |
 
 ## Architecture
 
 ```
 crates/
-  rlogg-core/   engine: mmap, line index, encodings, search, filtering, watching
-  rlogg-app/    GPUI desktop app (binary `rlogg`)
+  kloggr-core/   engine: mmap, line index, encodings, search, filtering, watching
+  kloggr-app/    GPUI desktop app (binary `kloggr`)
 ```
 
 Rules:
-- **`rlogg-core` must never depend on GPUI** or any UI crate. All logic that can be
+- **`kloggr-core` must never depend on GPUI** or any UI crate. All logic that can be
   tested headless goes there. This keeps GPUI churn out of the engine.
 - Long-running work (indexing, search) runs off the UI thread and reports progress.
   Don't block GPUI's executor, and don't put tokio on it.
@@ -70,13 +71,13 @@ Rules:
 
 ```bash
 cargo build                      # debug build
-cargo run -p rlogg-app -- <file> # run the app on a log file
+cargo run -p kloggr-app -- <file> # run the app on a log file
 cargo nextest run                # tests (or: cargo test)
 cargo clippy --all-targets -- -D warnings
 cargo fmt
 bacon                            # watch mode
 cargo deny check                 # license / advisory check (GPL-compatible deps only)
-cargo bench -p rlogg-core        # criterion benches (RLOGG_BENCH_SIZE_MB=10240 for 10 GB)
+cargo bench -p kloggr-core        # criterion benches (KLOGGR_BENCH_SIZE_MB=10240 for 10 GB)
 scripts/bench-vs-klogg.sh 1024   # indexing time vs klogg on the same generated files
 scripts/package-linux.sh         # tarball, .deb (and AppImage with appimagetool) in target/package/
 ```
@@ -88,10 +89,10 @@ To see the real app without touching the desktop, run it in a virtual X display
 
 ```bash
 Xvfb :99 -screen 0 1400x900x24 &
-env -u WAYLAND_DISPLAY DISPLAY=:99 RLOGG_CONFIG_DIR=<scratch dir> target/debug/rlogg <file> &
+env -u WAYLAND_DISPLAY DISPLAY=:99 KLOGGR_CONFIG_DIR=<scratch dir> target/debug/kloggr <file> &
 DISPLAY=:99 xdotool mousemove 300 60 click --repeat 2 1   # input: clicks, keys (xdotool key ctrl+d)
 DISPLAY=:99 import -window root shot.png                  # screenshot
-pkill -x rlogg                                            # not `pkill -f`: it matches the shell
+pkill -x kloggr                                            # not `pkill -f`: it matches the shell
 ```
 
 Simulated keystrokes in `gpui::test` don't go through the platform's key translation:
@@ -121,7 +122,7 @@ check new shortcuts in the real app too (see the color-label entry in `docs/deci
 - [x] Benchmarks (criterion) for indexing and search on 1–10 GB files, compared with klogg (indexing and search done, 1 GiB results in `docs/benchmarks.md`; 10 GB runs still to do)
 
 ### Phase 2: search and filtering ✅
-- [x] Regex, plain-text and case-insensitive search, plus klogg's boolean combinations (`regex/`): engine in `rlogg-core::search`; the search bar UI comes with the filtered view
+- [x] Regex, plain-text and case-insensitive search, plus klogg's boolean combinations (`regex/`): engine in `kloggr-core::search`; the search bar UI comes with the filtered view
 - [x] Filtered view (bottom pane) synced with the main view; marks (search bar, bullets, `m` `[` `]`, visibility `v` `1`–`3`; match highlighting in the text still todo)
 - [x] Quick find (incremental, next/previous): Ctrl+F, `'` `"`, `n` `N` F3 Ctrl+G, `*` `.` `/` `,`; occurrences highlighted in both views
 - [x] Jump to line: `[number] g`, `[number] j/k`, and Ctrl+L with a small input box (klogg `digitsBuffer_`, `LogViewJumpToLine`). klogg's `1`–`7` shortcuts are Alt+1…7 (`docs/decisions.md`)
@@ -140,13 +141,13 @@ check new shortcuts in the real app too (see the color-label entry in `docs/deci
 - [x] Predefined filters, saved searches, scratchpad (search history and Filters drop-downs, Tools > Predefined Filters…, Add/Exclude/Replace search, scratchpad window with transforms)
 - [x] Archive/compressed file opening (klogg `decompressor`): gzip, bzip2, xz, lzma, zip, 7z, tar (also compressed), extracted to a temporary folder
 - [ ] Packaging: tarball, .deb and AppImage done (`scripts/package-linux.sh`, `packaging/linux/`; `appimagetool` in `~/.local/bin`); then Windows (.msi) and macOS (.dmg) CI
-- [ ] Version check (needs a release URL), crash/panic reporting (done: local report shown at the next start, `rlogg-core::crash`)
+- [ ] Version check (needs a release URL), crash/panic reporting (done: local report shown at the next start, `kloggr-core::crash`)
 - [x] Copying large selections: size from the line index, ask above 64 MiB and copy on a worker thread, refuse above 1 GiB (`docs/decisions.md`)
 
 ## Conventions
 
 - Edition 2024. `cargo fmt` and clippy must be clean with `-D warnings`.
-- Errors: `thiserror` in `rlogg-core`, `anyhow` at the app boundary.
+- Errors: `thiserror` in `kloggr-core`, `anyhow` at the app boundary.
 - Every core feature ports the relevant klogg tests or behaviors and adds unit tests.
 - When behavior is unclear, check what klogg does in `~/dev/klogg` before inventing.
-- Record every deliberate difference from klogg in `docs/decisions.md` (date, klogg, rlogg, why).
+- Record every deliberate difference from klogg in `docs/decisions.md` (date, klogg, kloggr, why).

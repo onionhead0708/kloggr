@@ -1,5 +1,5 @@
 # cargo-deny config: `cargo deny check`
-# rlogg is GPL-3.0-or-later, so every dependency must be GPLv3-compatible.
+# kloggr is GPL-3.0-or-later, so every dependency must be GPLv3-compatible.
 
 [graph]
 all-features = false

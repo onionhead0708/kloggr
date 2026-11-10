@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Compares full-file indexing time of rlogg and klogg on the same generated
+# Compares full-file indexing time of kloggr and klogg on the same generated
 # files (the roadmap's "1–10 GB, compared with klogg").
 #
 #   scripts/bench-vs-klogg.sh [size_mb ...]      default: 1024
@@ -8,19 +8,19 @@
 #   KLOGG     klogg binary (default: /usr/bin/klogg)
 #   PROFILES  generated file shapes (default: "typical short long utf16")
 #   RUNS      runs per tool and file, best is reported (default: 3)
-#   RLOGG_BENCH_DIR  where test files are kept (default: target/bench-data;
+#   KLOGGR_BENCH_DIR  where test files are kept (default: target/bench-data;
 #             must be on disk, not tmpfs, for multi-GB files)
 #
 # klogg runs headless (QT_QPA_PLATFORM=offscreen) with a throw-away HOME and
 # XDG dirs, so the user's klogg settings and recent files are not touched. Its
 # time is the "Indexing done, took …" line from its own log, which excludes
-# startup. rlogg's time is LogFile::open (map + encoding detection + index).
+# startup. kloggr's time is LogFile::open (map + encoding detection + index).
 # Both run with a warm page cache: every file is read once before timing.
 
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-data=${RLOGG_BENCH_DIR:-$root/target/bench-data}
+data=${KLOGGR_BENCH_DIR:-$root/target/bench-data}
 klogg=${KLOGG:-/usr/bin/klogg}
 profiles=${PROFILES:-typical short long utf16}
 runs=${RUNS:-3}
@@ -32,7 +32,7 @@ if [ ! -x "$klogg" ]; then
     exit 1
 fi
 
-cargo build --release -q -p rlogg-core --example genlog --example index
+cargo build --release -q -p kloggr-core --example genlog --example index
 bin=$root/target/release/examples
 
 tmp=$(mktemp -d)
@@ -61,7 +61,7 @@ klogg_once() {
 }
 
 echo
-echo "| file | size | rlogg | klogg | speedup | rlogg index | klogg index |"
+echo "| file | size | kloggr | klogg | speedup | kloggr index | klogg index |"
 echo "|---|---|---|---|---|---|---|"
 for size in "${sizes[@]}"; do
     for profile in $profiles; do

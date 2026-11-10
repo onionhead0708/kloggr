@@ -3628,6 +3628,54 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
+name = "kloggr-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-channel",
+ "flate2",
+ "gpui-component",
+ "gpui-kit-assets",
+ "gpui-pre",
+ "gpui-pre-platform",
+ "kloggr-core",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "kloggr-core"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "bzip2",
+ "chardetng",
+ "crc32fast",
+ "criterion",
+ "directories",
+ "encoding_rs",
+ "flate2",
+ "lzma-rs",
+ "memchr",
+ "memmap2",
+ "notify",
+ "percent-encoding",
+ "quick-xml",
+ "rayon",
+ "regex",
+ "roaring",
+ "serde",
+ "serde_json",
+ "sevenz-rust2",
+ "tar",
+ "thiserror 2.0.21",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "unicode-width",
+ "zip",
+]
+
+[[package]]
 name = "kqueue"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5705,54 +5753,6 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "rlogg-app"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-channel",
- "flate2",
- "gpui-component",
- "gpui-kit-assets",
- "gpui-pre",
- "gpui-pre-platform",
- "rlogg-core",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "rlogg-core"
-version = "0.1.0"
-dependencies = [
- "base64 0.23.1",
- "bzip2",
- "chardetng",
- "crc32fast",
- "criterion",
- "directories",
- "encoding_rs",
- "flate2",
- "lzma-rs",
- "memchr",
- "memmap2",
- "notify",
- "percent-encoding",
- "quick-xml",
- "rayon",
- "regex",
- "roaring",
- "serde",
- "serde_json",
- "sevenz-rust2",
- "tar",
- "thiserror 2.0.21",
- "toml 0.9.12+spec-1.1.0",
- "tracing",
- "unicode-width",
- "zip",
 ]
 
 [[package]]

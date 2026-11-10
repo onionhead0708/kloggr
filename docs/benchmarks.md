@@ -3,12 +3,12 @@
 How to reproduce:
 
 ```bash
-scripts/bench-vs-klogg.sh 1024           # rlogg vs klogg, 1 GiB files, best of 3
-cargo bench -p rlogg-core                # criterion suite (1 GiB files)
-RLOGG_BENCH_SIZE_MB=10240 cargo bench -p rlogg-core -- index   # 10 GB
+scripts/bench-vs-klogg.sh 1024           # kloggr vs klogg, 1 GiB files, best of 3
+cargo bench -p kloggr-core                # criterion suite (1 GiB files)
+KLOGGR_BENCH_SIZE_MB=10240 cargo bench -p kloggr-core -- index   # 10 GB
 ```
 
-Test files are generated deterministically (`crates/rlogg-core/benches/support/generate.rs`)
+Test files are generated deterministically (`crates/kloggr-core/benches/support/generate.rs`)
 and cached in `target/bench-data`:
 
 | profile | lines |
@@ -20,18 +20,18 @@ and cached in `target/bench-data`:
 
 Both tools run with a warm page cache, so the numbers measure CPU work, not disk.
 
-## 2026-11-08: 1 GiB, rlogg 4862bee + index shrink, klogg 24.11.0.0
+## 2026-11-08: 1 GiB, kloggr 4862bee + index shrink, klogg 24.11.0.0
 
 Machine: Intel Core i7-7500U (2 cores / 4 threads, 2017 laptop), 14 GB RAM, NVMe,
 Ubuntu 26.04, Rust 1.99.1 release build.
 
 ### Full indexing vs klogg
 
-rlogg: `LogFile::open` (mmap, encoding detection, parallel index). klogg: the
+kloggr: `LogFile::open` (mmap, encoding detection, parallel index). klogg: the
 "Indexing done, took …" time from its own log, headless (`QT_QPA_PLATFORM=offscreen`),
 which excludes startup. Best of 3 runs.
 
-| file | rlogg | klogg | speedup | rlogg index | klogg index |
+| file | kloggr | klogg | speedup | kloggr index | klogg index |
 |---|---|---|---|---|---|
 | typical, 1 GiB | 274 ms (3.65 GiB/s) | 856 ms (1.17 GiB/s) | 3.1× | 12.3 MiB | 9.6 MiB |
 | short, 1 GiB | 911 ms (1.10 GiB/s) | 2743 ms (0.36 GiB/s) | 3.0× | 60.3 MiB | 74.2 MiB |
@@ -40,14 +40,14 @@ which excludes startup. Best of 3 runs.
 
 Notes:
 - **long**: klogg expands tabs while indexing (`expandTabsInLine`) to get each line's
-  display width, and on tab-heavy long lines this dominates. rlogg doesn't expand tabs
+  display width, and on tab-heavy long lines this dominates. kloggr doesn't expand tabs
   during indexing yet (the view widens its scroll range as it meets wider lines), so this
-  row isn't a like-for-like comparison. Recheck once rlogg computes expanded widths.
-- **Index size**: rlogg stores 128-line blocks as a u64 base plus varint deltas (1–2
-  bytes per line); klogg uses stream-vbyte relative to the block start. rlogg's index is
+  row isn't a like-for-like comparison. Recheck once kloggr computes expanded widths.
+- **Index size**: kloggr stores 128-line blocks as a u64 base plus varint deltas (1–2
+  bytes per line); klogg uses stream-vbyte relative to the block start. kloggr's index is
   about 25% larger on typical lines, smaller on short ones.
 
-### Criterion (rlogg only)
+### Criterion (kloggr only)
 
 | benchmark | time |
 |---|---|
@@ -70,7 +70,7 @@ Observations for later work:
 - Short lines are the slowest case (1.1 GiB/s): the sequential append into the
   compressed index is the bottleneck, not the parallel scan.
 
-## 2026-11-09: search, 1 GiB, rlogg feat/search
+## 2026-11-09: search, 1 GiB, kloggr feat/search
 
 Same machine and files. `search::search_all` over the whole file: parallel per-line
 matching with the `regex` crate, results in a Roaring bitmap. Criterion, warm cache.

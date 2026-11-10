@@ -1,0 +1,27 @@
+[package]
+name = "kloggr-app"
+description = "kloggr desktop application (GPUI)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "kloggr"
+path = "src/main.rs"
+
+[dependencies]
+kloggr-core.workspace = true
+gpui.workspace = true
+gpui_platform.workspace = true
+gpui-component.workspace = true
+gpui-kit-assets.workspace = true
+anyhow.workspace = true
+async-channel.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+flate2.workspace = true
+gpui = { workspace = true, features = ["test-support"] }
