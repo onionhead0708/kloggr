@@ -11,7 +11,7 @@ use gpui::{
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{InputEvent, Textarea, TextareaState};
 use gpui_component::tab::{Tab, TabBar};
-use gpui_component::{ActiveTheme, Root, Sizable, h_flex, v_flex};
+use gpui_component::{ActiveTheme, Root, Sizable, TitleBar, h_flex, v_flex};
 use kloggr_core::scratch::{self, Readouts};
 
 actions!(scratchpad, [NewTab]);
@@ -225,13 +225,11 @@ impl Render for Scratchpad {
                 this.active = *index;
                 cx.notify();
             }));
-        v_flex()
-            .key_context(CONTEXT)
-            .size_full()
-            .bg(bg)
+        let body = v_flex()
+            .flex_1()
+            .min_h_0()
             .p_2()
             .gap_2()
-            .on_action(cx.listener(|this, _: &NewTab, window, cx| this.add_tab(window, cx)))
             .child(tabs)
             .child(toolbar)
             .child(
@@ -264,7 +262,15 @@ impl Render for Scratchpad {
                     .text_xs()
                     .text_color(muted)
                     .children(self.status.map(SharedString::from)),
-            )
+            );
+        // GNOME (Wayland) draws no decorations: the title bar is ours.
+        v_flex()
+            .key_context(CONTEXT)
+            .size_full()
+            .bg(bg)
+            .on_action(cx.listener(|this, _: &NewTab, window, cx| this.add_tab(window, cx)))
+            .child(TitleBar::new().child(div().flex_1().text_sm().child("kloggr - scratchpad")))
+            .child(body)
     }
 }
 
@@ -298,19 +304,21 @@ pub fn show(
         let (handle, pad) = match existing {
             Some((handle, pad)) if handle.update(cx, |_, _, _| ()).is_ok() => (handle, pad),
             _ => {
-                let options = WindowOptions {
-                    titlebar: Some(TitlebarOptions {
-                        title: Some("kloggr - scratchpad".into()),
-                        ..Default::default()
-                    }),
+                let mut options = WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                         None,
                         size(px(980.), px(640.)),
                         cx,
                     ))),
                     app_id: Some(crate::APP_ID.into()),
-                    ..Default::default()
+                    ..crate::window_base_options()
                 };
+                if !cfg!(target_os = "linux") {
+                    options.titlebar = Some(TitlebarOptions {
+                        title: Some("kloggr - scratchpad".into()),
+                        ..Default::default()
+                    });
+                }
                 let mut pad = None;
                 let Ok(handle) = cx.open_window(options, |window, cx| {
                     let p = cx.new(|cx| Scratchpad::new(window, cx));

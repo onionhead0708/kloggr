@@ -21,7 +21,7 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{AppMenuBar, ContextMenuExt};
 use gpui_component::tab::{Tab as GuiTab, TabBar};
 use gpui_component::tooltip::Tooltip;
-use gpui_component::{ActiveTheme, GlobalState, Sizable, WindowExt};
+use gpui_component::{ActiveTheme, GlobalState, Sizable, TitleBar, WindowExt};
 use kloggr_core::archive;
 use kloggr_core::file::OpenError;
 use kloggr_core::settings::{FileContext, OpenFile, Session};
@@ -1119,14 +1119,27 @@ impl Render for Workspace {
             )
             .on_drop(cx.listener(Self::drop_paths))
             .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(drop_bg))
-            .children(self.menu_bar.clone().map(|bar| {
+            .child(if cfg!(target_os = "linux") {
+                // GNOME (Wayland) draws no decorations for GPUI windows: the
+                // title bar with the window controls is ours.
+                TitleBar::new()
+                    .child(
+                        div()
+                            .flex_1()
+                            .flex()
+                            .items_center()
+                            .children(self.menu_bar.clone()),
+                    )
+                    .into_any_element()
+            } else {
                 div()
                     .h(px(32.))
                     .px_1()
                     .border_b_1()
                     .border_color(border)
-                    .child(bar)
-            }))
+                    .children(self.menu_bar.clone())
+                    .into_any_element()
+            })
             .children(self.render_tabs(cx))
             .child(div().flex_1().min_h_0().child(content))
             .child(div().px_2().py_1().text_sm().child(self.status()))

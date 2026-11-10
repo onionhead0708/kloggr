@@ -57,7 +57,7 @@ fn main() {
             saved_searches::SavedSearches::init(config_dir.clone(), cx);
             let options = WindowOptions {
                 app_id: Some(APP_ID.into()),
-                ..Default::default()
+                ..window_base_options()
             };
             let update_dir = config_dir.clone();
             let main_window = cx
@@ -99,4 +99,15 @@ fn main() {
             .detach();
             cx.activate(true);
         });
+}
+
+/// Window options shared by every window. Linux draws its own title bar
+/// (GNOME on Wayland has no server decorations); Windows and macOS keep the
+/// native one.
+pub(crate) fn window_base_options() -> WindowOptions {
+    if cfg!(target_os = "linux") {
+        gpui_component::TitleBar::window_options()
+    } else {
+        WindowOptions::default()
+    }
 }
