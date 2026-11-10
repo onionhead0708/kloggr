@@ -1337,7 +1337,7 @@ mod tests {
         assert!(vp.visible_lines().contains(&297), "{vp:?}");
 
         // Copy from the filtered view copies the file's lines.
-        cx.simulate_keystrokes("shift-up ctrl-shift-c");
+        cx.simulate_keystrokes("shift-up secondary-shift-c");
         assert_eq!(
             cx.read_from_clipboard().and_then(|c| c.text()).as_deref(),
             Some("295: line 294 ERROR\n298: line 297 ERROR")
@@ -1414,7 +1414,7 @@ mod tests {
                 auto_refresh: false
             }
         );
-        cx.simulate_keystrokes("ctrl-s");
+        cx.simulate_keystrokes("secondary-s");
         let focused = crawler.update_in(cx, |c, window, cx| {
             c.input.focus_handle(cx).is_focused(window)
         });
@@ -1500,7 +1500,7 @@ mod tests {
         let (main, filtered) = crawler.read_with(cx, |c, _| {
             (c.main_view().clone(), c.filtered_view().clone())
         });
-        cx.simulate_keystrokes("ctrl-l");
+        cx.simulate_keystrokes("secondary-l");
         assert!(crawler.read_with(cx, |c, _| c.go_to.open));
         // Not a number: an error, the box stays open.
         cx.simulate_keystrokes("x enter");
@@ -1513,7 +1513,7 @@ mod tests {
         cx.simulate_keystrokes("j");
         assert_eq!(selection(&main, cx), Selection::Line(13));
         // Esc closes without jumping.
-        cx.simulate_keystrokes("ctrl-l 5 escape");
+        cx.simulate_keystrokes("secondary-l 5 escape");
         assert!(crawler.read_with(cx, |c, _| !c.go_to.open));
         assert_eq!(selection(&main, cx), Selection::Line(13));
     }
@@ -1711,12 +1711,14 @@ mod tests {
         assert!(crawler.read_with(cx, |c, _| c.color_labels.words()[3].is_empty()));
 
         // What X11 and Wayland send for Ctrl+Shift+1 and Ctrl+Shift+0 on a
-        // US layout.
-        select(cx, 0, 0..4);
-        cx.simulate_keystrokes("ctrl-!");
-        assert_eq!(label(cx, &main, "line"), Some(0));
-        cx.simulate_keystrokes("ctrl-)");
-        assert!(crawler.read_with(cx, |c, _| c.color_labels.is_empty()));
+        // US layout (the aliases are only bound on Linux).
+        if cfg!(target_os = "linux") {
+            select(cx, 0, 0..4);
+            cx.simulate_keystrokes("ctrl-!");
+            assert_eq!(label(cx, &main, "line"), Some(0));
+            cx.simulate_keystrokes("ctrl-)");
+            assert!(crawler.read_with(cx, |c, _| c.color_labels.is_empty()));
+        }
 
         // Ctrl+Shift+0 clears every label.
         select(cx, 0, 0..4);

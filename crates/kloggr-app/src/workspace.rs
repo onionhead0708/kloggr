@@ -1260,7 +1260,7 @@ mod tests {
         let (ws, cx) = workspace(cx, fx.config());
         assert!(menu_labels(cx).contains(&"Open…".to_string()));
 
-        cx.simulate_keystrokes("ctrl-o");
+        cx.simulate_keystrokes("secondary-o");
         assert!(cx.did_prompt_for_paths());
         cx.simulate_path_prompt_response(|_| Some(vec![a.clone()]));
         assert_eq!(wait_indexed(&ws, cx), 10);
@@ -1328,7 +1328,7 @@ mod tests {
         assert_eq!(wait_indexed(&ws, cx), 7);
         assert_eq!(recent(&ws, cx), [a]);
 
-        cx.simulate_keystrokes("ctrl-w");
+        cx.simulate_keystrokes("secondary-w");
         cx.run_until_parked();
         assert!(ws.read_with(cx, |ws, _| ws.crawler().is_none()));
         assert_eq!(ws.read_with(cx, |ws, _| ws.status()), IDLE_STATUS);
@@ -1374,9 +1374,9 @@ mod tests {
         assert_eq!(tab_names(&ws, cx).1, 2);
         cx.simulate_keystrokes("ctrl-shift-tab ctrl-shift-tab ctrl-shift-tab");
         assert_eq!(tab_names(&ws, cx).1, 3);
-        cx.simulate_keystrokes("ctrl-1");
+        cx.simulate_keystrokes("secondary-1");
         assert_eq!(tab_names(&ws, cx).1, 0);
-        cx.simulate_keystrokes("ctrl-9");
+        cx.simulate_keystrokes("secondary-9");
         assert_eq!(tab_names(&ws, cx).1, 3);
         cx.simulate_keystrokes("ctrl-pageup");
         assert_eq!(tab_names(&ws, cx).1, 2);
@@ -1390,7 +1390,7 @@ mod tests {
         assert!(focused);
 
         // Ctrl+W closes the current tab; the next one takes its place.
-        cx.simulate_keystrokes("ctrl-w");
+        cx.simulate_keystrokes("secondary-w");
         assert_eq!(tab_names(&ws, cx), (names(&["a.log", "b.log", "d.log"]), 2));
         assert_eq!(cx.window_title().as_deref(), Some("d.log — kloggr"));
 
@@ -1476,7 +1476,7 @@ mod tests {
             })
         };
         assert_eq!(new_data(cx), [true, false]);
-        cx.simulate_keystrokes("ctrl-1");
+        cx.simulate_keystrokes("secondary-1");
         assert_eq!(new_data(cx), [false, false]);
         assert!(ws.read_with(cx, |ws, _| ws.status().contains("3 lines")));
     }
@@ -1502,7 +1502,7 @@ mod tests {
                 .crawler
                 .update(cx, |c, cx| c.set_follow(true, cx));
         });
-        cx.simulate_keystrokes("ctrl-2");
+        cx.simulate_keystrokes("secondary-2");
         // What quitting does.
         ws.update(cx, |ws, cx| ws.save_open_files(cx));
         std::fs::remove_file(&c).unwrap();
@@ -1647,7 +1647,7 @@ mod tests {
         // klogg: "Rename tab" asks for the name; Enter confirms.
         cx.dispatch_action(RenameTab { index: 0 });
         cx.run_until_parked();
-        cx.simulate_keystrokes("ctrl-a");
+        cx.simulate_keystrokes("secondary-a");
         cx.simulate_input("API server");
         cx.simulate_keystrokes("enter");
         assert_eq!(label(&ws, cx, 0), "API server");

@@ -2301,7 +2301,7 @@ mod tests {
         cx.simulate_mouse_up(at, MouseButton::Left, Modifiers::none());
         assert_eq!(selection(&view, cx), Selection::portion(2, 7, 12));
 
-        cx.simulate_keystrokes("ctrl-c");
+        cx.simulate_keystrokes("secondary-c");
         assert_eq!(
             cx.read_from_clipboard().and_then(|c| c.text()).as_deref(),
             Some("word_2")
@@ -2384,17 +2384,17 @@ mod tests {
         let (view, cx) = open(cx, "copy.log", "a\tb\nsecond\r\nthird\n");
         let l = layout(&view, cx);
         cx.simulate_click(cell(&l, 0., 0.), Modifiers::none());
-        cx.simulate_keystrokes("shift-down ctrl-c");
+        cx.simulate_keystrokes("shift-down secondary-c");
         assert_eq!(
             cx.read_from_clipboard().and_then(|c| c.text()).as_deref(),
             Some("a\tb\nsecond")
         );
-        cx.simulate_keystrokes("ctrl-shift-c");
+        cx.simulate_keystrokes("secondary-shift-c");
         assert_eq!(
             cx.read_from_clipboard().and_then(|c| c.text()).as_deref(),
             Some("1: a\tb\n2: second")
         );
-        cx.simulate_keystrokes("ctrl-a ctrl-c");
+        cx.simulate_keystrokes("secondary-a secondary-c");
         assert_eq!(
             cx.read_from_clipboard().and_then(|c| c.text()).as_deref(),
             Some("a\tb\nsecond\nthird")
@@ -2560,7 +2560,7 @@ mod tests {
         // Clicks map screen columns to file columns.
         let l = layout(&view, cx);
         cx.simulate_click(cell(&l, 0., 3.), Modifiers::none());
-        cx.simulate_keystrokes("ctrl-c");
+        cx.simulate_keystrokes("secondary-c");
         let at = |cx: &mut VisualTestContext, col: f32| {
             view.read_with(cx, |v, cx| {
                 v.position_at(cell(&l, 0., col), &l, cx).unwrap().col

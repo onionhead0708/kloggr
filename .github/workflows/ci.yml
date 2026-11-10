@@ -26,7 +26,7 @@ jobs:
           tool: cargo-nextest,cargo-deny
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo nextest run
+      - run: cargo nextest run --no-fail-fast
       - run: cargo deny check
 
   # Windows and macOS: build and test. Formatting and licences are the same
@@ -47,4 +47,4 @@ jobs:
         with:
           tool: cargo-nextest
       - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo nextest run
+      - run: cargo nextest run --no-fail-fast
