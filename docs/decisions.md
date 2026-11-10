@@ -23,7 +23,7 @@ Newest first. Each entry gives the date, what klogg does, what rlogg does, and w
 **klogg:** highlighter sets and color label styles are kept in `QSettings` (`HighlighterSetCollection`), exported and imported as `.conf` files. A highlighter with an empty pattern matches every line (an empty `QRegularExpression` matches anywhere), so an empty whole-line highlighter colours the whole file. "Variate colours" seeds `std::minstd_rand0` with the CRC32 of the matched text and draws a factor from `uniform_int_distribution`. Color labels are drawn over the search-match highlight.
 
 **rlogg:**
-- Sets, active sets and color label styles are saved in `highlighters.toml` next to `session.toml`, with colours as klogg's `#aarrggbb` strings. Importing klogg's `.conf` files is not done yet.
+- Sets, active sets and color label styles are saved in `highlighters.toml` next to `session.toml`, with colours as klogg's `#aarrggbb` strings. The highlighters dialog imports and exports klogg's `.conf` files (`highlight::klogg_conf`), so sets move between klogg and rlogg.
 - A highlighter with an empty pattern never matches.
 - "Variate colours" hashes the matched text with FNV-1a for the factor (same range, `100 ± variance`, and Qt's `darker`). The shades differ from klogg's, but each string still always gets the same colour.
 - Highlighter and color label colours are opaque and drawn first. The search-match highlight (translucent gray), quick-find occurrences and the selection are drawn over them, so the search highlight tints a labelled word instead of hiding under it.

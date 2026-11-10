@@ -27,7 +27,8 @@ use rlogg_core::{IndexProgress, LogFile, OpenOptions};
 
 use crate::background;
 use crate::crawler::{Crawler, CrawlerEvent};
-use crate::highlighters::{Highlighters, NoHighlighters, ToggleHighlighterSet};
+use crate::highlighters::{EditHighlighters, Highlighters, NoHighlighters, ToggleHighlighterSet};
+use crate::highlighters_dialog;
 
 actions!(
     workspace,
@@ -154,6 +155,9 @@ impl Workspace {
             error: None,
         };
         this.update_menus(cx);
+        // Set names and active sets show in the menus.
+        cx.observe_global::<Highlighters>(|this, cx| this.update_menus(cx))
+            .detach();
         this
     }
 
@@ -186,7 +190,10 @@ impl Workspace {
                 MenuItem::action("Close All", CloseAllTabs),
                 MenuItem::action("Quit", Quit),
             ]),
-            Menu::new("Tools").items([MenuItem::submenu(Highlighters::menu(cx))]),
+            Menu::new("Tools").items([
+                MenuItem::action("Highlighters…", EditHighlighters),
+                MenuItem::submenu(Highlighters::menu(cx)),
+            ]),
         ]
     }
 
@@ -620,6 +627,9 @@ impl Render for Workspace {
                     }
                 });
                 this.update_menus(cx);
+            }))
+            .on_action(cx.listener(|_, _: &EditHighlighters, window, cx| {
+                highlighters_dialog::open(window, cx)
             }))
             .on_action(cx.listener(|this, _: &NoHighlighters, _, cx| {
                 Highlighters::update(cx, |sets| sets.deactivate_all());

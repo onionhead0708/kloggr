@@ -32,7 +32,8 @@ stays GPLv3. Keep klogg's copyright notices where code is translated closely.
 | `ui/crawlerwidget`, `tabbedcrawlerwidget`, `mainwindow`, `menu` | `rlogg-app` workspace, tabs, menus | gpui-component |
 | `ui/quickfind*` (QuickFind engine) | `rlogg-core::search::find`, `rlogg-app` quick_find | rayon |
 | `ui/highlighterset`, `colorlabelsmanager`, `highlightedmatch` | `rlogg-core::highlight` (done), app `highlighters` | regex |
-| `ui/highlighters*dialog`, `predefinedfilters*`, `savedsearches`, `scratchpad` | `rlogg-app` features | gpui-component |
+| `ui/highlightersdialog`, `highlighterset(edit)`, `highlighteredit` | `rlogg-app` highlighters_dialog (done), `rlogg-core::highlight::klogg_conf` | gpui-component |
+| `ui/predefinedfilters*`, `savedsearches`, `scratchpad` | `rlogg-app` features | gpui-component |
 | `versioncheck/`, `logging/`, `crash_handler/` | later | ureq (rustls), tracing, panic hook |
 
 ## Architecture
@@ -125,7 +126,7 @@ check new shortcuts in the real app too (see the color-label entry in `docs/deci
 ### Phase 3: live files and workspace
 - [x] Follow mode / tail: incremental reindex on growth, detect truncation and rotation (`filewatch/`); `f` / F10, search auto-refresh
 - [x] Tabs and multiple files, sessions (open tabs restored at startup with search options, follow and marks; tab renaming not done)
-- [ ] Highlighters and highlighter sets, color labels (engine, line colouring, Tools and context menus, color labels `Ctrl+Shift+1`–`9` / `Ctrl+D` / `Ctrl+Shift+0` done; still todo: the highlighters dialog to edit sets and label styles, import/export of klogg `.conf` files)
+- [x] Highlighters and highlighter sets, color labels: engine, line colouring, Tools and context menus, color labels `Ctrl+Shift+1`–`9` / `Ctrl+D` / `Ctrl+Shift+0`, the highlighters dialog (sets, highlighters, label styles), klogg `.conf` import/export
 - [ ] Frozen columns (klogg `frozencolumns`)
 - [ ] Wide characters (CJK, emoji): map columns using real glyph widths instead of one column per `char`
 - [ ] Settings and options dialog, keyboard shortcuts matching klogg's defaults (include the search-match highlight: on/off and its colour, as klogg's "main search highlight" checkbox and colour button)

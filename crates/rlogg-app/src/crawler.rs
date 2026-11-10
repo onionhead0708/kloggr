@@ -208,6 +208,8 @@ impl Crawler {
                 LogViewEvent::ColorLabel(op, text) => this.color_label(*op, text, cx),
             }),
             cx.observe(&filter, |_, _, cx| cx.notify()),
+            // Color label styles may change in the highlighters dialog.
+            cx.observe_global::<Highlighters>(|this, cx| this.show_color_labels(cx)),
             cx.on_focus_in(&main_focus, window, |this, _, _| this.target = Target::Main),
             cx.on_focus_in(&filtered_focus, window, |this, _, _| {
                 this.target = Target::Filtered

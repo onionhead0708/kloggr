@@ -5,6 +5,7 @@ mod crawler;
 mod follow;
 mod go_to_line;
 mod highlighters;
+mod highlighters_dialog;
 mod log_view;
 mod quick_find;
 mod workspace;

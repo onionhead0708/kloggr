@@ -19,6 +19,7 @@
 //! them to display columns.
 
 mod color;
+pub mod klogg_conf;
 mod ranges;
 
 use std::hash::{BuildHasher, Hasher};

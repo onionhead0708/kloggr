@@ -17,6 +17,7 @@ use crate::log_view;
 actions!(
     highlighters,
     [
+        EditHighlighters,
         NoHighlighters,
         NextColorLabel,
         ClearColorLabels,
