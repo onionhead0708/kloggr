@@ -8,6 +8,14 @@
 //! A key without Ctrl, Alt or Cmd (`n`, `shift-g`, `home`) only works in the
 //! log views, whatever the shortcut's context, so it can still be typed in
 //! the search box (except F1–F24).
+//!
+//! Each action has up to two keys, a primary and a secondary one, as in
+//! klogg's options dialog.
+//!
+//! GPUI's Linux backends report Shift+digit as the shifted character
+//! (Ctrl+Shift+1 is `ctrl-!`) and have no layout mapping for bindings, so
+//! on Linux a key with Shift and a digit is also bound as the US layout's
+//! symbol (docs/decisions.md).
 
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -64,32 +72,126 @@ impl Shortcut {
         }
     }
 
-    fn binding(&self, key: &str, action: Box<dyn Action>) -> Option<KeyBinding> {
+    /// Bindings of `key` to `action`: the key, and on Linux its US-layout
+    /// alias (see the module docs). The alias comes first, so menus show
+    /// the key itself.
+    fn binding(&self, key: &str, action: Box<dyn Action>) -> Vec<KeyBinding> {
         let stroke = match Keystroke::parse(key) {
             Ok(stroke) => stroke,
             Err(e) => {
                 tracing::warn!("shortcut {}: invalid key {key:?}: {e}", self.id);
-                return None;
+                return Vec::new();
             }
         };
         let context = self
             .context_for(&stroke)
             .and_then(|c| KeyBindingContextPredicate::parse(c).ok())
             .map(Rc::new);
-        KeyBinding::load(key, action, context, false, None, &DummyKeyboardMapper)
-            .inspect_err(|e| tracing::warn!("shortcut {}: {e}", self.id))
-            .ok()
+        let mut keys = Vec::new();
+        if cfg!(target_os = "linux")
+            && let Some(alias) = shifted_digit_alias(&stroke)
+        {
+            keys.push(alias);
+        }
+        keys.push(key.to_owned());
+        keys.iter()
+            .filter_map(|k| {
+                KeyBinding::load(
+                    k,
+                    action.boxed_clone(),
+                    context.clone(),
+                    false,
+                    None,
+                    &DummyKeyboardMapper,
+                )
+                .inspect_err(|e| tracing::warn!("shortcut {}: {e}", self.id))
+                .ok()
+            })
+            .collect()
     }
 
     /// Bindings of `keys` to the action.
     fn bindings(&self, keys: &[String]) -> Vec<KeyBinding> {
         keys.iter()
-            .filter_map(|k| self.binding(k, self.action.boxed_clone()))
+            .flat_map(|k| self.binding(k, self.action.boxed_clone()))
             .collect()
     }
 }
 
-/// Whether `key` is a valid keystroke (for the options dialog).
+/// Shift+0 … Shift+9 on a US layout.
+const US_SHIFTED_DIGITS: [char; 10] = [')', '!', '@', '#', '$', '%', '^', '&', '*', '('];
+
+/// `ctrl-!` for `ctrl-shift-1`: what GPUI reports on Linux.
+fn shifted_digit_alias(stroke: &Keystroke) -> Option<String> {
+    let digit = stroke.key.parse::<usize>().ok().filter(|d| *d < 10)?;
+    if !stroke.modifiers.shift || stroke.key.len() != 1 {
+        return None;
+    }
+    let mut alias = stroke.clone();
+    alias.modifiers.shift = false;
+    alias.key = US_SHIFTED_DIGITS[digit].to_string();
+    alias.key_char = None;
+    Some(alias.unparse())
+}
+
+/// A key as klogg shows it: `Ctrl+Shift+F`, `PgDown`, `F3`.
+pub fn display(key: &str) -> String {
+    let Ok(stroke) = Keystroke::parse(key) else {
+        return key.to_owned();
+    };
+    let m = stroke.modifiers;
+    let mut parts: Vec<String> = Vec::new();
+    if m.control {
+        parts.push("Ctrl".into());
+    }
+    if m.alt {
+        parts.push("Alt".into());
+    }
+    if m.shift {
+        parts.push("Shift".into());
+    }
+    if m.platform {
+        parts.push(
+            if cfg!(target_os = "macos") {
+                "Cmd"
+            } else {
+                "Super"
+            }
+            .into(),
+        );
+    }
+    if m.function {
+        parts.push("Fn".into());
+    }
+    let name = match stroke.key.as_str() {
+        "pageup" => "PgUp".to_owned(),
+        "pagedown" => "PgDown".to_owned(),
+        "escape" => "Esc".to_owned(),
+        "backspace" => "Backspace".to_owned(),
+        "delete" => "Del".to_owned(),
+        "insert" => "Ins".to_owned(),
+        k => {
+            let mut chars = k.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().chain(chars).collect(),
+                None => String::new(),
+            }
+        }
+    };
+    parts.push(name);
+    parts.join("+")
+}
+
+/// A key in one canonical spelling (`secondary-` resolved, modifiers in
+/// order), to find duplicates.
+pub fn normalize(key: &str) -> String {
+    Keystroke::parse(key).map_or_else(|_| key.to_owned(), |k| k.unparse())
+}
+
+impl Shortcut {}
+
+/// Whether `key` is a valid keystroke.
+#[cfg(test)]
 pub fn is_valid_key(key: &str) -> bool {
     let dangling = key.ends_with('-') && key != "-" && !key.ends_with("--");
     !key.is_empty()
@@ -168,6 +270,34 @@ mod tests {
         assert!(is_valid_key("ctrl-shift-f"));
         assert!(is_valid_key("ctrl--") && is_valid_key("-"));
         assert!(!is_valid_key(""));
+    }
+
+    #[test]
+    fn at_most_two_keys_and_no_duplicates() {
+        let mut seen = std::collections::HashMap::new();
+        for s in all() {
+            assert!(s.keys.len() <= 2, "{}: {:?}", s.id, s.keys);
+            for k in &s.keys {
+                if let Some(other) = seen.insert(normalize(k), s.id) {
+                    panic!("{k} is bound to {other} and {}", s.id);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn display_and_aliases() {
+        assert_eq!(display("ctrl-shift-f"), "Ctrl+Shift+F");
+        assert_eq!(display("pagedown"), "PgDown");
+        assert_eq!(display("f3"), "F3");
+        assert_eq!(display("shift-g"), "Shift+G");
+        assert_eq!(display("'"), "'");
+        assert_eq!(normalize("shift-ctrl-a"), normalize("ctrl-shift-a"));
+        let alias = |k: &str| shifted_digit_alias(&Keystroke::parse(k).unwrap());
+        assert_eq!(alias("ctrl-shift-1").as_deref(), Some("ctrl-!"));
+        assert_eq!(alias("ctrl-shift-0").as_deref(), Some("ctrl-)"));
+        assert_eq!(alias("ctrl-1"), None);
+        assert_eq!(alias("ctrl-shift-a"), None);
     }
 
     #[test]

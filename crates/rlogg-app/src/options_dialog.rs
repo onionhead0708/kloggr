@@ -6,7 +6,8 @@
 
 use gpui::{
     App, AppContext, Context, Entity, EventEmitter, InteractiveElement, IntoElement, ParentElement,
-    Render, SharedString, StatefulInteractiveElement, Styled, Subscription, Window, div, px,
+    Render, SharedString, StatefulInteractiveElement, Styled, Subscription, Window, div,
+    prelude::FluentBuilder, px,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::checkbox::Checkbox;
@@ -14,11 +15,12 @@ use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerSta
 use gpui_component::input::{Input, InputState};
 use gpui_component::radio::{Radio, RadioGroup};
 use gpui_component::tab::{Tab, TabBar};
-use gpui_component::{ActiveTheme, Sizable, WindowExt, h_flex, v_flex};
+use gpui_component::{ActiveTheme, Disableable, Sizable, WindowExt, h_flex, v_flex};
 use rlogg_core::highlight::Color;
 use rlogg_core::options::{Options, Style};
 
 use crate::highlighters::hsla;
+use crate::key_capture;
 use crate::preferences::Preferences;
 use crate::shortcuts::{self, Shortcut};
 
@@ -33,10 +35,15 @@ const STYLES: [(Style, &str); 3] = [
     (Style::Dark, "Dark"),
 ];
 
-/// One row of the Shortcuts tab.
+/// One row of the Shortcuts tab: the action and its primary and secondary
+/// keys (klogg: `PRIMARY_COL`, `SECONDARY_COL`).
 struct ShortcutRow {
     shortcut: Shortcut,
-    input: Entity<InputState>,
+    keys: [Option<String>; 2],
+}
+
+fn slots(keys: &[String]) -> [Option<String>; 2] {
+    [keys.first().cloned(), keys.get(1).cloned()]
 }
 
 pub struct OptionsEditor {
@@ -50,6 +57,8 @@ pub struct OptionsEditor {
     shortcuts: Vec<ShortcutRow>,
     /// Why the last Apply was refused.
     error: Option<String>,
+    /// The open key dialog (see [`key_capture::open`]).
+    capture: Option<Entity<key_capture::KeyCapture>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -95,14 +104,15 @@ impl OptionsEditor {
         };
         let search_color = picker(options.search.highlight_color, window, cx);
         let quickfind_color = picker(options.search.quickfind_color, window, cx);
-        let shortcuts = shortcuts::all()
+        // klogg's table is sorted by action name.
+        let mut shortcuts: Vec<ShortcutRow> = shortcuts::all()
             .into_iter()
-            .map(|shortcut| {
-                let keys = shortcut.keys(&options.shortcuts).join(" ");
-                let input = input(keys, "none", window, cx);
-                ShortcutRow { shortcut, input }
+            .map(|shortcut| ShortcutRow {
+                keys: slots(shortcut.keys(&options.shortcuts)),
+                shortcut,
             })
             .collect();
+        shortcuts.sort_by_key(|r| r.shortcut.label.to_lowercase());
         let subscriptions = vec![
             cx.subscribe(&search_color, |this, _, e: &ColorPickerEvent, cx| {
                 let ColorPickerEvent::Change(c) = e;
@@ -125,6 +135,7 @@ impl OptionsEditor {
             quickfind_color,
             shortcuts,
             error: None,
+            capture: None,
             _subscriptions: subscriptions,
         }
     }
@@ -155,20 +166,68 @@ impl OptionsEditor {
                 ));
             }
         };
+        if let Some(key) = self.duplicates().first() {
+            return Err(format!(
+                "{} is used by more than one action",
+                shortcuts::display(key)
+            ));
+        }
         o.shortcuts.clear();
         for row in &self.shortcuts {
-            let keys: Vec<String> = text(&row.input)
-                .split_whitespace()
-                .map(str::to_owned)
-                .collect();
-            if let Some(bad) = keys.iter().find(|k| !shortcuts::is_valid_key(k)) {
-                return Err(format!("{}: {bad:?} is not a key", row.shortcut.label));
-            }
+            let keys: Vec<String> = row.keys.iter().flatten().cloned().collect();
             if keys != row.shortcut.keys {
                 o.shortcuts.insert(row.shortcut.id.to_owned(), keys);
             }
         }
         Ok(o)
+    }
+
+    /// Keys given to more than one slot (klogg: `checkShortcutsOnDuplicate`,
+    /// which shows them in red and disables OK and Apply).
+    fn duplicates(&self) -> Vec<String> {
+        let mut count = std::collections::BTreeMap::<String, usize>::new();
+        for key in self.shortcuts.iter().flat_map(|r| r.keys.iter().flatten()) {
+            *count.entry(shortcuts::normalize(key)).or_default() += 1;
+        }
+        count
+            .into_iter()
+            .filter(|(_, n)| *n > 1)
+            .map(|(k, _)| k)
+            .collect()
+    }
+
+    /// Sets one key of a row (`slot` 0: primary, 1: secondary).
+    pub fn set_key(&mut self, id: &str, slot: usize, key: Option<String>, cx: &mut Context<Self>) {
+        if let Some(row) = self.shortcuts.iter_mut().find(|r| r.shortcut.id == id) {
+            row.keys[slot] = key;
+            // Keep a lone key in the primary column.
+            if row.keys[0].is_none() {
+                row.keys.swap(0, 1);
+            }
+        }
+        self.error = None;
+        cx.notify();
+    }
+
+    /// Opens the key dialog for one slot (klogg: the "..." button).
+    fn edit_key(
+        &mut self,
+        id: &'static str,
+        slot: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current = self
+            .shortcuts
+            .iter()
+            .find(|r| r.shortcut.id == id)
+            .and_then(|r| r.keys[slot].clone());
+        let this = cx.entity().downgrade();
+        let capture = key_capture::open(current, window, cx, move |key, _, cx| {
+            this.update(cx, |this, cx| this.set_key(id, slot, key, cx))
+                .ok();
+        });
+        self.capture = Some(capture);
     }
 
     /// Installs the edited options; false if a field is invalid.
@@ -188,20 +247,29 @@ impl OptionsEditor {
         }
     }
 
-    fn restore_default_shortcuts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        for row in &self.shortcuts {
-            let keys = row.shortcut.keys.join(" ");
-            row.input.update(cx, |s, cx| s.set_value(keys, window, cx));
+    fn restore_default_shortcuts(&mut self, cx: &mut Context<Self>) {
+        for row in &mut self.shortcuts {
+            row.keys = slots(&row.shortcut.keys);
         }
+        self.error = None;
         cx.notify();
     }
 
-    #[cfg(test)]
-    pub fn set_shortcut_text(&mut self, id: &str, text: &str, window: &mut Window, cx: &mut App) {
-        if let Some(row) = self.shortcuts.iter().find(|r| r.shortcut.id == id) {
-            let text = text.to_owned();
-            row.input.update(cx, |s, cx| s.set_value(text, window, cx));
-        }
+    /// klogg asks first: "Do you want to restore default shortcuts?"
+    fn confirm_restore_defaults(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let this = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let this = this.clone();
+            alert
+                .title("Restore Default Shortcuts")
+                .description("Do you want to restore default shortcuts?")
+                .show_cancel(true)
+                .on_ok(move |_, _, cx| {
+                    this.update(cx, |this, cx| this.restore_default_shortcuts(cx))
+                        .ok();
+                    true
+                })
+        });
     }
 
     #[cfg(test)]
@@ -451,36 +519,72 @@ impl OptionsEditor {
 
     fn render_shortcuts(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let (muted, border) = (theme.muted_foreground, theme.border);
-        let rows = self.shortcuts.iter().map(|row| {
+        let (muted, border, danger) = (theme.muted_foreground, theme.border, theme.danger);
+        let duplicates = self.duplicates();
+        let header = h_flex()
+            .gap_2()
+            .px_2()
+            .text_sm()
+            .text_color(muted)
+            .child(div().w(px(330.)).child("Action"))
+            .child(div().flex_1().child("Primary shortcut"))
+            .child(div().flex_1().child("Secondary shortcut"));
+        let rows = self.shortcuts.iter().enumerate().map(|(i, row)| {
+            let id = row.shortcut.id;
+            let cell = |slot: usize| {
+                let key = row.keys[slot].as_deref();
+                let duplicate = key.is_some_and(|k| duplicates.contains(&shortcuts::normalize(k)));
+                h_flex()
+                    .flex_1()
+                    .gap_1()
+                    .child(
+                        div()
+                            .flex_1()
+                            .px_1()
+                            .rounded_sm()
+                            .text_sm()
+                            .when(duplicate, |d| d.bg(danger.opacity(0.35)))
+                            .child(key.map(shortcuts::display).unwrap_or_default()),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("key-{i}-{slot}")))
+                            .label("...")
+                            .small()
+                            .w(px(40.))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.edit_key(id, slot, window, cx)
+                            })),
+                    )
+            };
             h_flex()
                 .gap_2()
+                .px_2()
                 .py_0p5()
+                .border_b_1()
+                .border_color(border)
                 .child(
-                    v_flex()
-                        .w(px(300.))
-                        .child(div().text_sm().child(row.shortcut.label))
-                        .child(div().text_xs().text_color(muted).child(row.shortcut.id)),
+                    div()
+                        .w(px(330.))
+                        .text_sm()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(row.shortcut.label),
                 )
-                .child(div().flex_1().child(Input::new(&row.input).small()))
+                .child(cell(0))
+                .child(cell(1))
         });
         v_flex()
             .gap_2()
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(muted)
-                    .child("Keys separated by spaces, e.g. \"ctrl-shift-f f3\". \"secondary\" is Ctrl, or Cmd on macOS."),
-            )
+            .child(header)
             .child(
                 v_flex()
                     .id("shortcut-rows")
-                    .h(px(360.))
+                    .h(px(380.))
                     .overflow_y_scroll()
                     .border_1()
                     .border_color(border)
                     .rounded_md()
-                    .p_2()
                     .children(rows),
             )
             .child(
@@ -489,7 +593,7 @@ impl OptionsEditor {
                         .label("Restore defaults")
                         .small()
                         .on_click(cx.listener(|this, _, window, cx| {
-                            this.restore_default_shortcuts(window, cx)
+                            this.confirm_restore_defaults(window, cx)
                         })),
                 ),
             )
@@ -510,6 +614,7 @@ fn to_color(c: gpui::Hsla) -> Color {
 impl Render for OptionsEditor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let danger = cx.theme().danger;
+        let has_duplicates = !self.duplicates().is_empty();
         let body = match self.tab {
             0 => self.render_general(cx).into_any_element(),
             1 => self.render_view(cx).into_any_element(),
@@ -553,6 +658,7 @@ impl Render for OptionsEditor {
                         Button::new("apply")
                             .label("Apply")
                             .small()
+                            .disabled(has_duplicates)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.apply(window, cx);
                             })),
@@ -562,6 +668,7 @@ impl Render for OptionsEditor {
                             .label("OK")
                             .small()
                             .primary()
+                            .disabled(has_duplicates)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 if this.apply(window, cx) {
                                     cx.emit(Close);
@@ -625,7 +732,7 @@ mod tests {
 
         let editor = cx.update(|window, cx| cx.new(|cx| OptionsEditor::new(window, cx)));
         editor.update_in(cx, |e, window, cx| {
-            e.set_shortcut_text("logview.mark", "x", window, cx);
+            e.set_key("logview.mark", 0, Some("x".into()), cx);
             assert!(e.apply(window, cx));
         });
         let options = cx.update(|_, cx| Preferences::get(cx).clone());
@@ -642,7 +749,7 @@ mod tests {
 
         // Back to the default: no override is kept.
         editor.update_in(cx, |e, window, cx| {
-            e.restore_default_shortcuts(window, cx);
+            e.restore_default_shortcuts(cx);
             assert!(e.apply(window, cx));
         });
         assert!(cx.update(|_, cx| Preferences::get(cx).shortcuts.is_empty()));
@@ -651,14 +758,68 @@ mod tests {
     }
 
     #[gpui::test]
+    fn key_dialog_sets_a_slot(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            Preferences::init(None, cx);
+        });
+        let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let window = cx.add_window({
+            let slot = slot.clone();
+            move |window, cx| {
+                let editor = cx.new(|cx| OptionsEditor::new(window, cx));
+                *slot.borrow_mut() = Some(editor.clone());
+                gpui_component::Root::new(editor, window, cx)
+            }
+        });
+        let editor: Entity<OptionsEditor> = slot.borrow().clone().unwrap();
+        let cx = &mut VisualTestContext::from_window(window.into(), cx);
+        editor.update_in(cx, |e, window, cx| {
+            e.edit_key("logview.mark", 1, window, cx)
+        });
+        cx.run_until_parked();
+        cx.simulate_keystrokes("ctrl-shift-m");
+        // As the OK button does: the dialog closes in the same update.
+        let capture = editor.read_with(cx, |e, _| e.capture.clone().unwrap());
+        capture.update_in(cx, |c, window, cx| {
+            cx.emit(key_capture::Done(c.key().map(str::to_owned)));
+            window.close_dialog(cx);
+        });
+        drop(capture);
+        cx.run_until_parked();
+        let keys = editor.read_with(cx, |e, _| {
+            e.shortcuts
+                .iter()
+                .find(|r| r.shortcut.id == "logview.mark")
+                .unwrap()
+                .keys
+                .clone()
+        });
+        assert_eq!(
+            keys,
+            [Some("m".to_owned()), Some("ctrl-shift-m".to_owned())]
+        );
+    }
+
+    #[gpui::test]
     fn invalid_fields_are_refused(cx: &mut TestAppContext) {
         let (_, cx) = setup(cx);
         let editor = cx.update(|window, cx| cx.new(|cx| OptionsEditor::new(window, cx)));
         editor.update_in(cx, |e, window, cx| {
-            e.set_shortcut_text("logview.mark", "ctrl-", window, cx);
+            // A key used twice (klogg: shown in red, OK disabled).
+            e.set_key("logview.mark", 1, Some("ctrl-d".into()), cx);
+            assert_eq!(e.duplicates(), ["ctrl-d"]);
             assert!(!e.apply(window, cx));
-            assert!(e.error.as_ref().unwrap().contains("Mark selected lines"));
-            e.set_shortcut_text("logview.mark", "m", window, cx);
+            assert!(e.error.as_ref().unwrap().contains("Ctrl+D"));
+            e.set_key("logview.mark", 1, None, cx);
+            // Clearing the primary key moves the secondary one up.
+            e.set_key("qf.find_next", 0, None, cx);
+            let row = e
+                .shortcuts
+                .iter()
+                .find(|r| r.shortcut.id == "qf.find_next")
+                .unwrap();
+            assert_eq!(row.keys, [Some("secondary-g".to_owned()), None]);
             e.font_size
                 .update(cx, |s, cx| s.set_value("900", window, cx));
             assert!(!e.apply(window, cx));

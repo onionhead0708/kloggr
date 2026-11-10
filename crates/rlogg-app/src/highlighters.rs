@@ -42,21 +42,10 @@ pub struct SetColorLabel {
 }
 
 /// klogg's defaults: Ctrl+Shift+1…9, Ctrl+D, Ctrl+Shift+0.
-///
-/// GPUI's Linux backends have no layout mapping for bindings: they report
-/// Ctrl+Shift+1 as the shifted character, `ctrl-!`, and drop the shift. The
-/// US layout's shifted digits are bound too (docs/decisions.md), first:
-/// menus show the binding added last.
+/// On Linux the shifted symbols are bound too (see [`crate::shortcuts`]).
 pub fn shortcuts() -> Vec<Shortcut> {
     let view = Some(log_view::CONTEXT);
-    let keys = |digit: usize| -> Vec<String> {
-        let mut keys = Vec::new();
-        if cfg!(target_os = "linux") {
-            keys.push(format!("ctrl-{}", US_SHIFTED_DIGITS[digit]));
-        }
-        keys.push(format!("ctrl-shift-{digit}"));
-        keys
-    };
+    let keys = |digit: usize| vec![format!("ctrl-shift-{digit}")];
     const IDS: [&str; COLOR_LABELS] = [
         "logview.add_color_label_1",
         "logview.add_color_label_2",
@@ -116,9 +105,6 @@ pub fn shortcuts() -> Vec<Shortcut> {
 pub fn key_bindings() -> Vec<gpui::KeyBinding> {
     crate::shortcuts::default_bindings(shortcuts())
 }
-
-/// Shift+0 … Shift+9 on a US layout.
-const US_SHIFTED_DIGITS: [char; 10] = [')', '!', '@', '#', '$', '%', '^', '&', '*', '('];
 
 /// The global highlighter state.
 pub struct Highlighters {

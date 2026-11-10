@@ -6,6 +6,7 @@ mod follow;
 mod go_to_line;
 mod highlighters;
 mod highlighters_dialog;
+mod key_capture;
 mod log_view;
 mod options_dialog;
 mod preferences;

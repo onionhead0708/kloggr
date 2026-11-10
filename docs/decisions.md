@@ -8,20 +8,20 @@ Newest first. Each entry gives the date, what klogg does, what rlogg does, and w
 
 ---
 
-## 2026-11-10: Options dialog: line numbers on by default, typed shortcuts, fewer options
+## 2026-11-10: Options dialog: line numbers on by default, fewer options
 
-**klogg:** the main view hides line numbers by default (`lineNumbersVisibleInMain_ = false`). Shortcuts are edited by pressing the keys (`QKeySequenceEdit`). The options dialog also has text wrap, language, High DPI, ANSI colour hiding, archives, https verification, the regex engine, read buffers, the search cache, logging and version checking.
+**klogg:** the main view hides line numbers by default (`lineNumbersVisibleInMain_ = false`). The options dialog also has text wrap, language, High DPI, ANSI colour hiding, archives, https verification, the regex engine, read buffers, the search cache, logging and version checking.
 
 **rlogg:**
 - Line numbers show in both views by default, as rlogg always did. View > Line Numbers in Main View turns them off.
-- Shortcuts are typed as GPUI keystrokes separated by spaces (`ctrl-shift-f f3`, `secondary-o` for Ctrl or Cmd). An invalid key is reported and nothing is applied.
+- Shortcuts work as in klogg: a primary and a secondary key per action, each set by pressing it in a small dialog, with duplicates shown in red and OK disabled. rlogg's "Find next" and "Find previous" are split in two actions, the F3 / Ctrl+G keys and the `n` / `N` keys of the log views, so that each fits in two keys.
 - Changed shortcuts apply at once. GPUI's keymap can only grow, so a key that no longer applies is bound to `NoAction` in its context.
 - Options for features rlogg doesn't have yet are left out, and come with those features. The font is any installed font, typed by name.
 - Options are saved in `settings.toml` next to `session.toml`.
 
-**Why:** the line numbers are what `[number] g` and Ctrl+L refer to. A key-recording widget would need its own GPUI component, while typed keystrokes reuse GPUI's parser and show exactly what gets bound. Options that do nothing would be misleading.
+**Why:** the line numbers are what `[number] g` and Ctrl+L refer to. Options that do nothing would be misleading.
 
-**Code:** `rlogg_core::options`, `crate::preferences`, `crate::shortcuts`, `crate::options_dialog`.
+**Code:** `rlogg_core::options`, `crate::preferences`, `crate::shortcuts`, `crate::options_dialog`, `crate::key_capture`.
 
 ## 2026-11-10: Wide characters take two columns
 
@@ -37,11 +37,11 @@ Newest first. Each entry gives the date, what klogg does, what rlogg does, and w
 
 **klogg:** `Ctrl+Shift+1`…`9` set color labels 1–9 and `Ctrl+Shift+0` clears them. Qt matches these by key, whatever the layout.
 
-**rlogg:** binds `ctrl-shift-1`…`9` and `ctrl-shift-0` as klogg does. On Linux, it also binds the US layout's shifted digits: `ctrl-!` `ctrl-@` `ctrl-#` `ctrl-$` `ctrl-%` `ctrl-^` `ctrl-&` `ctrl-*` `ctrl-(` for the labels and `ctrl-)` to clear.
+**rlogg:** binds `ctrl-shift-1`…`9` and `ctrl-shift-0` as klogg does. On Linux, any shortcut with Shift and a digit is also bound as the US layout's shifted symbol: `ctrl-!` `ctrl-@` … `ctrl-(` for the labels and `ctrl-)` to clear. The shortcut editor records such a key as `ctrl-shift-1`, as klogg shows it.
 
 **Why:** GPUI's X11 and Wayland backends report Ctrl+Shift+1 as `ctrl-!`: the shifted character, without `shift`. Their keyboard mapper is a no-op, so `ctrl-shift-1` never matches a real key press (it only matches in tests). The extra bindings make the keys work on US-style layouts. On other layouts (e.g. German, where Shift+3 is `§`) the keys may not work; the log view's right-click menu sets labels on any layout. Revisit when GPUI gains a Linux keyboard mapper.
 
-**Code:** `highlighters::key_bindings`.
+**Code:** `shortcuts::shifted_digit_alias`, `key_capture::canonical`.
 
 ## 2026-11-10: Highlighters: TOML settings, empty patterns, colour variance and layering
 

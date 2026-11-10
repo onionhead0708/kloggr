@@ -68,18 +68,34 @@ pub fn shortcuts() -> Vec<Shortcut> {
             &["\""],
             OpenBackward,
         ),
+        // klogg: `QKeySequence::FindNext` (F3, Ctrl+G on Linux), and `n` in
+        // the log views (`AbstractLogView::keyPressEvent`).
         Shortcut::new(
             "qf.find_next",
             "Find next",
             crawler,
-            &["n", "f3", "secondary-g"],
+            &["f3", "secondary-g"],
             FindNext,
         ),
         Shortcut::new(
             "qf.find_prev",
             "Find previous",
             crawler,
-            &["shift-n", "shift-f3", "secondary-shift-g"],
+            &["shift-f3", "secondary-shift-g"],
+            FindPrevious,
+        ),
+        Shortcut::new(
+            "logview.qf_next",
+            "Find next (log view)",
+            view,
+            &["n"],
+            FindNext,
+        ),
+        Shortcut::new(
+            "logview.qf_prev",
+            "Find previous (log view)",
+            view,
+            &["shift-n"],
             FindPrevious,
         ),
         Shortcut::new(
