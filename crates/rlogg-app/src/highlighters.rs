@@ -42,19 +42,39 @@ pub struct SetColorLabel {
 /// klogg's defaults: Ctrl+Shift+1…9, Ctrl+D, Ctrl+Shift+0.
 pub fn key_bindings() -> Vec<KeyBinding> {
     let view = Some(log_view::CONTEXT);
-    let mut keys: Vec<KeyBinding> = (0..COLOR_LABELS)
-        .map(|label| {
-            KeyBinding::new(
-                &format!("ctrl-shift-{}", label + 1),
+    let mut keys = Vec::new();
+    // GPUI's Linux backends have no layout mapping for bindings: they
+    // report Ctrl+Shift+1 as the shifted character, `ctrl-!`, and drop the
+    // shift. Bind the US layout's shifted digits too (docs/decisions.md).
+    // They come first: menus show the binding added last.
+    if cfg!(target_os = "linux") {
+        for (label, symbol) in US_SHIFTED_DIGITS[1..].iter().enumerate() {
+            keys.push(KeyBinding::new(
+                &format!("ctrl-{symbol}"),
                 SetColorLabel { label },
                 view,
-            )
-        })
-        .collect();
+            ));
+        }
+        keys.push(KeyBinding::new(
+            &format!("ctrl-{}", US_SHIFTED_DIGITS[0]),
+            ClearColorLabels,
+            view,
+        ));
+    }
+    for label in 0..COLOR_LABELS {
+        keys.push(KeyBinding::new(
+            &format!("ctrl-shift-{}", label + 1),
+            SetColorLabel { label },
+            view,
+        ));
+    }
     keys.push(KeyBinding::new("ctrl-d", NextColorLabel, view));
     keys.push(KeyBinding::new("ctrl-shift-0", ClearColorLabels, view));
     keys
 }
+
+/// Shift+0 … Shift+9 on a US layout.
+const US_SHIFTED_DIGITS: [char; 10] = [')', '!', '@', '#', '$', '%', '^', '&', '*', '('];
 
 /// The global highlighter state.
 pub struct Highlighters {

@@ -1403,7 +1403,17 @@ mod tests {
         cx.simulate_keystrokes("shift-down ctrl-shift-4");
         assert!(crawler.read_with(cx, |c, _| c.color_labels.words()[3].is_empty()));
 
+        // What X11 and Wayland send for Ctrl+Shift+1 and Ctrl+Shift+0 on a
+        // US layout.
+        select(cx, 0, 0..4);
+        cx.simulate_keystrokes("ctrl-!");
+        assert_eq!(label(cx, &main, "line"), Some(0));
+        cx.simulate_keystrokes("ctrl-)");
+        assert!(crawler.read_with(cx, |c, _| c.color_labels.is_empty()));
+
         // Ctrl+Shift+0 clears every label.
+        select(cx, 0, 0..4);
+        cx.simulate_keystrokes("ctrl-shift-1");
         cx.simulate_keystrokes("ctrl-shift-0");
         assert!(crawler.read_with(cx, |c, _| c.color_labels.is_empty()));
         assert!(filtered.read_with(cx, |v, _| v.color_labels().is_empty()));

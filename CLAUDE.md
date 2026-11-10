@@ -55,7 +55,8 @@ Rules:
 
 - GPUI is pre-1.0 and breaks on minor bumps. `gpui-pre`, `gpui-pre-platform` and
   `gpui-component` are **pinned exactly** in the root `Cargo.toml`, and must be bumped
-  together (gpui-component pins its gpui-pre version). Current set: `gpui-pre =0.3.9`
+  together (gpui-component pins its gpui-pre version). `gpui-kit-assets` (the icons
+  gpui-component draws, registered in `main.rs`) follows gpui-component's version. Current set: `gpui-pre =0.3.9`
   and `gpui-component =0.8.0`, the same set dbdelve uses.
 - The `gpui` crate on crates.io is a stale Oct 2025 snapshot. Use `gpui-pre`, renamed
   to `gpui` in Cargo.
@@ -75,12 +76,29 @@ cargo bench -p rlogg-core        # criterion benches (RLOGG_BENCH_SIZE_MB=10240 
 scripts/bench-vs-klogg.sh 1024   # indexing time vs klogg on the same generated files
 ```
 
+### Visual check (headless)
+
+To see the real app without touching the desktop, run it in a virtual X display
+(packages `xvfb xdotool imagemagick`; Vulkan falls back to software rendering):
+
+```bash
+Xvfb :99 -screen 0 1400x900x24 &
+env -u WAYLAND_DISPLAY DISPLAY=:99 RLOGG_CONFIG_DIR=<scratch dir> target/debug/rlogg <file> &
+DISPLAY=:99 xdotool mousemove 300 60 click --repeat 2 1   # input: clicks, keys (xdotool key ctrl+d)
+DISPLAY=:99 import -window root shot.png                  # screenshot
+pkill -x rlogg                                            # not `pkill -f`: it matches the shell
+```
+
+Simulated keystrokes in `gpui::test` don't go through the platform's key translation:
+check new shortcuts in the real app too (see the color-label entry in `docs/decisions.md`).
+
 ## Environment (Ubuntu 26.04, Linux first)
 
 - Rust is pinned by `rust-toolchain.toml` (1.99.1), installed through rustup.
 - System packages: `build-essential pkg-config cmake libfontconfig-dev libxkbcommon-dev
   libxkbcommon-x11-dev libwayland-dev libdbus-1-dev libvulkan-dev mesa-vulkan-drivers`
 - Cargo tools: `bacon cargo-nextest cargo-deny`
+- For headless visual checks: `xvfb xdotool imagemagick`
 - Platforms: develop and test on Linux (X11 and Wayland). Keep code portable; Windows
   and macOS CI come later.
 

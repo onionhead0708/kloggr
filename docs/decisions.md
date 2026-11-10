@@ -8,6 +8,16 @@ Newest first. Each entry gives the date, what klogg does, what rlogg does, and w
 
 ---
 
+## 2026-11-10: Color label keys on Linux are also bound to the shifted symbols
+
+**klogg:** `Ctrl+Shift+1`…`9` set color labels 1–9 and `Ctrl+Shift+0` clears them. Qt matches these by key, whatever the layout.
+
+**rlogg:** binds `ctrl-shift-1`…`9` and `ctrl-shift-0` as klogg does. On Linux, it also binds the US layout's shifted digits: `ctrl-!` `ctrl-@` `ctrl-#` `ctrl-$` `ctrl-%` `ctrl-^` `ctrl-&` `ctrl-*` `ctrl-(` for the labels and `ctrl-)` to clear.
+
+**Why:** GPUI's X11 and Wayland backends report Ctrl+Shift+1 as `ctrl-!`: the shifted character, without `shift`. Their keyboard mapper is a no-op, so `ctrl-shift-1` never matches a real key press (it only matches in tests). The extra bindings make the keys work on US-style layouts. On other layouts (e.g. German, where Shift+3 is `§`) the keys may not work; the log view's right-click menu sets labels on any layout. Revisit when GPUI gains a Linux keyboard mapper.
+
+**Code:** `highlighters::key_bindings`.
+
 ## 2026-11-10: Highlighters: TOML settings, empty patterns, colour variance and layering
 
 **klogg:** highlighter sets and color label styles are kept in `QSettings` (`HighlighterSetCollection`), exported and imported as `.conf` files. A highlighter with an empty pattern matches every line (an empty `QRegularExpression` matches anywhere), so an empty whole-line highlighter colours the whole file. "Variate colours" seeds `std::minstd_rand0` with the CRC32 of the matched text and draws a factor from `uniform_int_distribution`. Color labels are drawn over the search-match highlight.

@@ -16,6 +16,7 @@ rlogg-core.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
 gpui-component.workspace = true
+gpui-kit-assets.workspace = true
 anyhow.workspace = true
 async-channel.workspace = true
 tracing.workspace = true

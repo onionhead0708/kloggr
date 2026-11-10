@@ -5576,6 +5576,7 @@ dependencies = [
  "anyhow",
  "async-channel",
  "gpui-component",
+ "gpui-kit-assets",
  "gpui-pre",
  "gpui-pre-platform",
  "rlogg-core",
