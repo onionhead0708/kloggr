@@ -58,35 +58,37 @@ fn main() {
             preferences::Preferences::apply_style(None, cx);
             highlighters::Highlighters::init(config_dir.clone(), cx);
             saved_searches::SavedSearches::init(config_dir.clone(), cx);
-            let options = WindowOptions {
-                app_id: Some(APP_ID.into()),
-                ..window_base_options()
+            // klogg: the last session's windows, then the file given in
+            // the first one.
+            let mut windows = if preferences::Preferences::get(cx).general.load_last_session {
+                config_dir
+                    .as_deref()
+                    .map(|dir| kloggr_core::settings::Session::load(dir).all_windows())
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
             };
-            let update_dir = config_dir.clone();
-            let main_window = cx
-                .open_window(options, |window, cx| {
-                    let crash_dir = config_dir.clone();
-                    let workspace = cx.new(|cx| {
-                        let mut workspace = Workspace::new(config_dir, window, cx);
-                        // klogg: the last session first, then the file given.
-                        if preferences::Preferences::get(cx).general.load_last_session {
-                            workspace.restore_session(window, cx);
-                        }
-                        if let Some(path) = path {
-                            workspace.open(path, window, cx);
-                        }
-                        workspace
-                    });
-                    if let Some(dir) = crash_dir {
+            if windows.is_empty() {
+                windows.push(Default::default());
+            }
+            let mut path = path;
+            let mut first = None;
+            for files in windows {
+                let handle = open_main_window(config_dir.clone(), Some(files), path.take(), cx);
+                first = first.or(handle);
+            }
+            let main_window = first.expect("failed to open window");
+            if let Some(dir) = config_dir.clone() {
+                main_window
+                    .update(cx, |_, window, cx| {
                         window.defer(cx, move |window, cx| {
                             crash_report::show_pending(&dir, window, cx)
-                        });
-                    }
-                    cx.new(|cx| Root::new(workspace, window, cx))
-                })
-                .expect("failed to open window");
-            if let Some(dir) = update_dir {
-                update_check::start(dir, main_window.into(), cx);
+                        })
+                    })
+                    .ok();
+            }
+            if let Some(dir) = config_dir {
+                update_check::start(dir, main_window, cx);
             }
             // The scratchpad and documentation windows don't keep the app
             // open (klogg's are children of the main window).
@@ -102,6 +104,36 @@ fn main() {
             .detach();
             cx.activate(true);
         });
+}
+
+/// Opens a main window: a workspace with `files` from the session, and
+/// `path` (klogg: `MainWindow`, File > New Window).
+pub(crate) fn open_main_window(
+    config_dir: Option<PathBuf>,
+    files: Option<kloggr_core::settings::WindowFiles>,
+    path: Option<PathBuf>,
+    cx: &mut App,
+) -> Option<gpui::AnyWindowHandle> {
+    let options = WindowOptions {
+        app_id: Some(APP_ID.into()),
+        ..window_base_options()
+    };
+    cx.open_window(options, |window, cx| {
+        let workspace = cx.new(|cx| {
+            let mut workspace = Workspace::new(config_dir, window, cx);
+            if let Some(files) = files {
+                workspace.restore(files, window, cx);
+            }
+            if let Some(path) = path {
+                workspace.open(path, window, cx);
+            }
+            workspace
+        });
+        cx.new(|cx| Root::new(workspace, window, cx))
+    })
+    .inspect_err(|e| tracing::error!("cannot open a window: {e}"))
+    .ok()
+    .map(Into::into)
 }
 
 /// Window options shared by every window. Linux draws its own title bar

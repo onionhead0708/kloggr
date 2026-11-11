@@ -8,6 +8,16 @@ Newest first. Each entry gives the date, what klogg does, what kloggr does, and 
 
 ---
 
+## 2026-11-11: New Window is always there, and every window is reopened
+
+**klogg:** File > New Window only shows with Options > General > "Enable multiple windows" (off by default). With it on, the session keeps the windows open at exit and reopens them; without it, a second launch reuses the window.
+
+**kloggr:** File > New Window is always in the menu and opens an empty window with its own tabs. The session keeps every main window's tabs (the first window where single-window sessions had them, the others under `windows`), and the next start reopens all of them. Closing a window while others stay open drops its tabs from the session; the last window closed keeps its tabs for the next start. Every session write reads the file again first, so windows don't overwrite each other's recent files or tab names. The menus are the active window's.
+
+**Why:** an option that only makes a menu item appear adds a setting without protecting anything; the session handling it needs is the same either way.
+
+**Code:** `MainWindows`, `Workspace::{save_open_files, update_session, released}`, `open_main_window` in `main.rs`, `Session::{windows, all_windows, set_windows}`.
+
 ## 2026-11-11: Open from URL: progress in the status line, https by default, no SSL override
 
 **klogg:** File > Open URL… asks for the URL (offering the clipboard's), downloads it with a modal progress dialog, and opens it. `QUrl::fromUserInput` turns `host/path` into `http://host/path`. Options > File has "Ignore SSL errors" for self-signed certificates.

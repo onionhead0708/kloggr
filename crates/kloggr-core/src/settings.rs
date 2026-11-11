@@ -169,6 +169,15 @@ pub struct OpenFile {
     pub context: FileContext,
 }
 
+/// The tabs of one window (klogg: a window of `SessionInfo`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WindowFiles {
+    /// Index in `open_files` of the current tab.
+    pub current_file: usize,
+    pub open_files: Vec<OpenFile>,
+}
+
 /// Everything stored in `session.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -186,6 +195,9 @@ pub struct Session {
     pub frozen_columns: Vec<FrozenFile>,
     /// Tab names chosen by the user, by file (klogg: `TabNameMapping`).
     pub tab_names: Vec<TabName>,
+    /// The windows after the first, whose tabs are `open_files` (klogg:
+    /// "Enable multiple windows").
+    pub windows: Vec<WindowFiles>,
 }
 
 impl Default for Session {
@@ -197,6 +209,7 @@ impl Default for Session {
             current_file: 0,
             frozen_columns: Vec::new(),
             tab_names: Vec::new(),
+            windows: Vec::new(),
         }
     }
 }
@@ -225,6 +238,26 @@ impl Session {
     /// Saves to `dir`, creating it if needed.
     pub fn save(&self, dir: &Path) -> Result<(), SettingsError> {
         save_toml(self, dir, SESSION_FILE)
+    }
+
+    /// The tabs of every window, the first one first.
+    pub fn all_windows(&self) -> Vec<WindowFiles> {
+        let first = WindowFiles {
+            current_file: self.current_file,
+            open_files: self.open_files.clone(),
+        };
+        std::iter::once(first)
+            .chain(self.windows.iter().cloned())
+            .collect()
+    }
+
+    /// Stores the tabs of every window, the first one first.
+    pub fn set_windows(&mut self, windows: Vec<WindowFiles>) {
+        let mut windows = windows.into_iter();
+        let first = windows.next().unwrap_or_default();
+        self.current_file = first.current_file;
+        self.open_files = first.open_files;
+        self.windows = windows.collect();
     }
 
     /// The name given to `path`'s tab, if any (klogg: `tabName`).
@@ -470,6 +503,35 @@ mod tests {
         // A session from before tabs: no open files.
         std::fs::write(dir.0.join(SESSION_FILE), "version = 1\n").unwrap();
         assert!(Session::load(&dir.0).open_files.is_empty());
+    }
+
+    #[test]
+    fn windows_round_trip() {
+        let dir = TempDir::new("windows");
+        let file = |p: &str| OpenFile {
+            path: p.into(),
+            context: FileContext::default(),
+        };
+        let windows = vec![
+            WindowFiles {
+                current_file: 1,
+                open_files: vec![file("/a.log"), file("/b.log")],
+            },
+            WindowFiles {
+                current_file: 0,
+                open_files: vec![file("/c.log")],
+            },
+        ];
+        let mut session = Session::default();
+        session.set_windows(windows.clone());
+        // The first window is where a session without windows has it.
+        assert_eq!(session.open_files, windows[0].open_files);
+        assert_eq!(session.current_file, 1);
+        session.save(&dir.0).unwrap();
+        let loaded = Session::load(&dir.0);
+        assert_eq!(loaded.all_windows(), windows);
+        session.set_windows(Vec::new());
+        assert_eq!(session.all_windows(), [WindowFiles::default()]);
     }
 
     #[test]

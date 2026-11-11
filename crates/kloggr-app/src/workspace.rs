@@ -11,10 +11,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use gpui::{
-    Action, App, AppContext, ClipboardItem, Context, Entity, ExternalPaths, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, Menu, MenuItem, MouseButton, ParentElement, PathPromptOptions,
-    PromptLevel, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
-    Subscription, Task, Window, actions, div, px,
+    Action, App, AppContext, ClipboardItem, Context, Entity, EntityId, ExternalPaths, FocusHandle,
+    Focusable, Global, InteractiveElement, IntoElement, Menu, MenuItem, MouseButton, ParentElement,
+    PathPromptOptions, PromptLevel, Render, ScrollHandle, SharedString, StatefulInteractiveElement,
+    Styled, Subscription, Task, WeakEntity, Window, actions, div, px,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -23,7 +23,7 @@ use gpui_component::tab::{Tab as GuiTab, TabBar};
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme, GlobalState, Sizable, TitleBar, WindowExt};
 use kloggr_core::file::OpenError;
-use kloggr_core::settings::{FileContext, OpenFile, Session};
+use kloggr_core::settings::{FileContext, OpenFile, Session, WindowFiles};
 use kloggr_core::{Encoding, IndexProgress, LogFile, OpenOptions, encoding};
 use kloggr_core::{archive, download};
 
@@ -66,7 +66,8 @@ actions!(
         ClearFile,
         OpenClipboard,
         SelectOpenFile,
-        OpenUrl
+        OpenUrl,
+        NewWindow
     ]
 );
 
@@ -111,6 +112,13 @@ tab_action!(
 /// of `TabbedCrawlerWidget::keyPressEvent`.
 pub fn shortcuts() -> Vec<Shortcut> {
     let mut out = vec![
+        Shortcut::new(
+            "mainwindow.new_window",
+            "Open new window",
+            None,
+            &[],
+            NewWindow,
+        ),
         Shortcut::new(
             "mainwindow.open_file",
             "Open file",
@@ -300,7 +308,27 @@ impl Drop for Tab {
     }
 }
 
+/// The main windows' workspaces, in the order the windows opened: their
+/// tabs are saved in that order (klogg: "Enable multiple windows").
+#[derive(Default)]
+struct MainWindows {
+    list: Vec<WeakEntity<Workspace>>,
+    quitting: bool,
+}
+
+impl Global for MainWindows {}
+
+impl MainWindows {
+    fn live(cx: &App) -> Vec<Entity<Workspace>> {
+        cx.try_global::<Self>()
+            .map(|w| w.list.iter().filter_map(WeakEntity::upgrade).collect())
+            .unwrap_or_default()
+    }
+}
+
 pub struct Workspace {
+    /// This workspace's entity, to find it among the main windows.
+    id: EntityId,
     tabs: Vec<Tab>,
     active: usize,
     /// In-window menu bar; `None` on macOS, which uses the native one.
@@ -337,8 +365,21 @@ impl Workspace {
             .set_shown(Preferences::get(cx).file.recent_files);
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
+        let me = cx.entity().downgrade();
+        cx.default_global::<MainWindows>().list.push(me);
+        cx.on_release(|this, cx| this.released(cx)).detach();
+        // Another window may have changed the recent files; the menus are
+        // the active window's.
+        cx.observe_window_activation(window, |this, window, cx| {
+            if window.is_window_active() {
+                this.reload_session(cx);
+                this.update_menus(cx);
+            }
+        })
+        .detach();
         // Marks and options change without a tab change: save them on exit.
         cx.on_app_quit(|this, cx| {
+            cx.default_global::<MainWindows>().quitting = true;
             this.save_open_files(cx);
             this.extract_cancel.store(true, Ordering::Relaxed);
             this.download_cancel.store(true, Ordering::Relaxed);
@@ -347,6 +388,7 @@ impl Workspace {
         })
         .detach();
         let mut this = Self {
+            id: cx.entity_id(),
             tabs: Vec::new(),
             active: 0,
             menu_bar: (!cfg!(target_os = "macos")).then(|| AppMenuBar::new(cx)),
@@ -403,6 +445,7 @@ impl Workspace {
         recent_items.push(MenuItem::action("Clear List", ClearRecent));
         vec![
             Menu::new("File").items([
+                MenuItem::action("New Window", NewWindow),
                 MenuItem::action("Open…", Open),
                 MenuItem::action("Open from Clipboard", OpenClipboard),
                 MenuItem::action("Open from URL…", OpenUrl),
@@ -532,11 +575,25 @@ impl Workspace {
         }
     }
 
-    fn save_session(&self) {
+    /// Changes the session and saves it. The file is read again first:
+    /// another window may have changed it (recent files, tab names…).
+    fn update_session(&mut self, cx: &App, f: impl FnOnce(&mut Session)) {
+        self.reload_session(cx);
+        f(&mut self.session);
         if let Some(dir) = &self.config_dir
             && let Err(e) = self.session.save(dir)
         {
             tracing::warn!("{e}");
+        }
+    }
+
+    /// Reads the session file again, for what other windows changed.
+    fn reload_session(&mut self, cx: &App) {
+        if let Some(dir) = &self.config_dir {
+            self.session = Session::load(dir);
+            self.session
+                .recent_files
+                .set_shown(Preferences::get(cx).file.recent_files);
         }
     }
 
@@ -847,8 +904,8 @@ impl Workspace {
                     // klogg: `saveFrozenColumns`.
                     if let Some(tab) = this.tabs.iter().find(|t| t.crawler == crawler) {
                         let (main, filtered) = crawler.read(cx).frozen_columns(cx);
-                        this.session.set_frozen_columns(&tab.path, main, filtered);
-                        this.save_session();
+                        let path = tab.path.clone();
+                        this.update_session(cx, |s| s.set_frozen_columns(&path, main, filtered));
                     }
                     this.update_menus(cx);
                     return;
@@ -949,19 +1006,24 @@ impl Workspace {
         if Self::is_temporary(path) {
             return;
         }
-        self.session.recent_files.add(path.to_path_buf());
-        self.save_session();
+        self.update_session(cx, |s| s.recent_files.add(path.to_path_buf()));
         self.update_menus(cx);
     }
 
     /// Reopens the files of the last session, each with its state, and
     /// shows the tab that was current (klogg: `reloadSession`). Files that
     /// are gone are skipped.
+    #[cfg(test)]
     pub fn restore_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let files = std::mem::take(&mut self.session.open_files);
-        let current = self.session.current_file;
+        let first = self.session.all_windows().swap_remove(0);
+        self.restore(first, window, cx);
+    }
+
+    /// Reopens one window's files from the session.
+    pub fn restore(&mut self, files: WindowFiles, window: &mut Window, cx: &mut Context<Self>) {
+        let current = files.current_file;
         let mut current_tab = None;
-        for (i, file) in files.into_iter().enumerate() {
+        for (i, file) in files.open_files.into_iter().enumerate() {
             if !file.path.is_file() {
                 continue;
             }
@@ -980,7 +1042,29 @@ impl Workspace {
     /// `writeSettings`, which does it on exit; here also on every tab change,
     /// so a crash keeps the tabs).
     fn save_open_files(&mut self, cx: &App) {
-        self.session.open_files = self
+        // Every main window's tabs, in the order the windows opened.
+        let id = self.id;
+        let windows = MainWindows::live(cx)
+            .iter()
+            .map(|ws| {
+                if ws.entity_id() == id {
+                    self.window_files(cx)
+                } else {
+                    ws.read(cx).window_files(cx)
+                }
+            })
+            .collect::<Vec<_>>();
+        let windows = if windows.is_empty() {
+            vec![self.window_files(cx)]
+        } else {
+            windows
+        };
+        self.update_session(cx, |s| s.set_windows(windows));
+    }
+
+    /// This window's tabs and their state, for the session.
+    fn window_files(&self, cx: &App) -> WindowFiles {
+        let open_files: Vec<OpenFile> = self
             .tabs
             .iter()
             .filter(|t| !Self::is_temporary(&t.path))
@@ -989,8 +1073,36 @@ impl Workspace {
                 context: t.crawler.read(cx).context(cx),
             })
             .collect();
-        self.session.current_file = self.active;
-        self.save_session();
+        // The current tab, counted without the temporary files.
+        let current_file = self
+            .tabs
+            .iter()
+            .take(self.active)
+            .filter(|t| !Self::is_temporary(&t.path))
+            .count()
+            .min(open_files.len().saturating_sub(1));
+        WindowFiles {
+            current_file,
+            open_files,
+        }
+    }
+
+    /// The window closed. If other main windows are left, the session
+    /// forgets its tabs; if it was the last, they are what the next start
+    /// reopens (klogg: the last closed window is saved).
+    fn released(&mut self, cx: &mut App) {
+        let quitting = cx.try_global::<MainWindows>().is_some_and(|w| w.quitting);
+        let id = self.id;
+        cx.default_global::<MainWindows>()
+            .list
+            .retain(|w| w.entity_id() != id);
+        if quitting {
+            return;
+        }
+        match MainWindows::live(cx).first() {
+            Some(next) => next.update(cx, |ws, cx| ws.save_open_files(cx)),
+            None => self.save_open_files(cx),
+        }
     }
 
     /// Shows tab `index` (klogg: `currentTabChanged`).
@@ -1108,8 +1220,7 @@ impl Workspace {
         cx.spawn_in(window, async move |this, cx| {
             if answer.await == Ok(0) {
                 this.update(cx, |this, cx| {
-                    this.session.recent_files.remove(&path);
-                    this.save_session();
+                    this.update_session(cx, |s| s.recent_files.remove(&path));
                     this.update_menus(cx);
                 })
                 .ok();
@@ -1119,8 +1230,7 @@ impl Workspace {
     }
 
     fn clear_recent(&mut self, cx: &mut Context<Self>) {
-        self.session.recent_files.clear();
-        self.save_session();
+        self.update_session(cx, |s| s.recent_files.clear());
         self.update_menus(cx);
     }
 
@@ -1231,8 +1341,8 @@ impl Workspace {
 
     pub fn rename_tab(&mut self, index: usize, name: &str, cx: &mut Context<Self>) {
         if let Some(tab) = self.tabs.get(index) {
-            self.session.set_tab_name(&tab.path, name);
-            self.save_session();
+            let path = tab.path.clone();
+            self.update_session(cx, |s| s.set_tab_name(&path, name));
             cx.notify();
         }
     }
@@ -1537,6 +1647,13 @@ impl Render for Workspace {
                 cx.listener(|this, _: &OpenClipboard, window, cx| this.open_clipboard(window, cx)),
             )
             .on_action(cx.listener(|this, _: &OpenUrl, window, cx| this.prompt_url(window, cx)))
+            // klogg: File > New Window; it starts empty.
+            .on_action(cx.listener(|this, _: &NewWindow, _, cx| {
+                let config_dir = this.config_dir.clone();
+                cx.defer(move |cx| {
+                    crate::open_main_window(config_dir, None, None, cx);
+                });
+            }))
             .on_action(
                 cx.listener(|this, _: &SelectOpenFile, window, cx| {
                     this.select_open_file(window, cx)
@@ -1740,6 +1857,12 @@ mod tests {
         panic!("indexing did not finish");
     }
 
+    /// As if kloggr started again: the workspaces made so far are no
+    /// longer main windows.
+    fn forget_windows(cx: &mut VisualTestContext) {
+        cx.update(|_, cx| cx.default_global::<MainWindows>().list.clear());
+    }
+
     fn recent(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> Vec<PathBuf> {
         ws.read_with(cx, |ws, _| ws.session.recent_files.files().to_vec())
     }
@@ -1801,6 +1924,7 @@ mod tests {
 
         // A new workspace starts with the saved recent files.
         let config = fx.config();
+        forget_windows(cx);
         let ws2 = cx.update(|window, cx| cx.new(|cx| Workspace::new(Some(config), window, cx)));
         assert_eq!(recent(&ws2, cx), [a]);
     }
@@ -2213,6 +2337,62 @@ mod tests {
     }
 
     #[gpui::test]
+    fn new_window_and_its_session(cx: &mut TestAppContext) {
+        let fx = Fixture::new("windows");
+        let (a, b) = (fx.log("a.log", 2), fx.log("b.log", 3));
+        let (ws, cx) = workspace(cx, fx.config());
+        ws.update_in(cx, |ws, window, cx| ws.open(a.clone(), window, cx));
+        wait_indexed(&ws, cx);
+
+        // File > New Window opens an empty one.
+        cx.dispatch_action(NewWindow);
+        cx.run_until_parked();
+        let ws2 = cx.update(|_, cx| {
+            let live = MainWindows::live(cx);
+            assert_eq!(live.len(), 2);
+            live[1].clone()
+        });
+        assert!(ws2.read_with(cx, |ws, _| ws.tabs.is_empty()));
+        ws2.update_in(cx, |ws, window, cx| ws.open(b.clone(), window, cx));
+        wait_indexed(&ws2, cx);
+
+        // Each window's tabs, in order; the recent files of both.
+        let paths = |w: &WindowFiles| {
+            w.open_files
+                .iter()
+                .map(|f| f.path.clone())
+                .collect::<Vec<_>>()
+        };
+        let saved = Session::load(&fx.config());
+        let windows = saved.all_windows();
+        assert_eq!(
+            windows.iter().map(paths).collect::<Vec<_>>(),
+            [vec![a.clone()], vec![b.clone()]]
+        );
+        assert_eq!(saved.recent_files.files(), [b.clone(), a.clone()]);
+        // The first window's menus show the second's recent file once it is
+        // active again.
+        ws.update(cx, |ws, cx| ws.reload_session(cx));
+        assert_eq!(recent(&ws, cx), [b.clone(), a.clone()]);
+
+        // Closing a window while another is open forgets its tabs.
+        let second = cx.update(|_, cx| cx.windows()[1]);
+        cx.update(|_, cx| {
+            second
+                .update(cx, |_, window, _| window.remove_window())
+                .unwrap();
+        });
+        drop(ws2);
+        cx.run_until_parked();
+        assert_eq!(cx.update(|_, cx| MainWindows::live(cx)).len(), 1);
+        let windows = Session::load(&fx.config()).all_windows();
+        assert_eq!(
+            windows.iter().map(paths).collect::<Vec<_>>(),
+            [vec![a.clone()]]
+        );
+    }
+
+    #[gpui::test]
     fn help_menu(cx: &mut TestAppContext) {
         let fx = Fixture::new("help");
         let (_ws, cx) = workspace(cx, fx.config());
@@ -2288,6 +2468,7 @@ mod tests {
         });
         cx.run_until_parked();
         let config = fx.config();
+        forget_windows(cx);
         let ws2 = cx.update(|window, cx| {
             cx.new(|cx| {
                 let mut ws = Workspace::new(Some(config), window, cx);
@@ -2367,6 +2548,7 @@ mod tests {
         std::fs::remove_file(&c).unwrap();
 
         let config = fx.config();
+        forget_windows(cx);
         let ws2 = cx.update(|window, cx| {
             cx.new(|cx| {
                 let mut ws = Workspace::new(Some(config), window, cx);

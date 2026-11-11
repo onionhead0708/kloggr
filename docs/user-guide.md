@@ -45,6 +45,10 @@ Ctrl+9 the last one, and Ctrl+Tab / Ctrl+Shift+Tab cycle through them.
 tab's context menu renames the tab, copies the file's path, opens its folder
 and closes tabs.
 
+**File > New Window** opens another window, with its own tabs. kloggr
+reopens every window that was open when it closed; closing one window while
+others stay open forgets its tabs.
+
 ### Archives and compressed files
 
 kloggr opens compressed files (gzip, bzip2, xz, lzma) and archives (zip, 7z,
