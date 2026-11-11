@@ -13,6 +13,7 @@ stays GPLv3. Keep klogg's copyright notices where code is translated closely.
 |---|---|---|
 | klogg source (C++/Qt) | `~/dev/klogg` (local checkout), upstream github.com/variar/klogg | Behavior and algorithms to reproduce. **The spec of record.** |
 | klogg user docs | `~/dev/klogg/DOCUMENTATION.md` | Feature list, search syntax, shortcuts |
+| kloggr user guide | `docs/user-guide.md` | Shown by Help > Documentation; update it with each user-visible change |
 | kloggr decisions | `docs/decisions.md` | Deliberate differences from klogg and why. Read before changing a behavior to match klogg, and add an entry for each new difference |
 | klogg test data | `~/dev/klogg/test_data`, `~/dev/klogg/tests` | Port the test cases, reuse the sample files |
 | dbdelve | https://github.com/ShayanAbbas1/dbdelve (GPL-3.0, GPUI) | Working GPUI app: bootstrap, keymaps, theming, virtualized grids, Linux packaging, its `AGENTS.md` GPUI rules |
@@ -162,7 +163,7 @@ Features of the log views and the search that klogg has and kloggr lacks (found 
 ### Phase 6: application, window and platform
 Menus, window management and platform integration still missing, plus open items from earlier phases.
 - [x] Edit menu: Copy, Select All, Find, Go to Line, Copy Path (`mainwindow.copy_path_to_clipboard`), Open Containing Folder, Open in Editor, Clear File (`mainwindow.clear_file`)
-- [ ] Help menu: About, Documentation, Report Issue
+- [x] Help menu: About, Documentation, Report Issue
 - [ ] File menu: Open from Clipboard, Open from URL, New Window, Opened Files switcher (`mainwindow.select_open_file`)
 - [ ] Favorites: add, remove and open favorite files (klogg favorites menu and toolbar button)
 - [ ] Single instance: a second launch passes its files to the running window

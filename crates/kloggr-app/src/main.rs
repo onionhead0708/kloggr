@@ -10,6 +10,7 @@ mod crash_report;
 mod crawler;
 mod follow;
 mod go_to_line;
+mod help;
 mod highlighters;
 mod highlighters_dialog;
 mod key_capture;
@@ -86,14 +87,14 @@ fn main() {
             if let Some(dir) = update_dir {
                 update_check::start(dir, main_window.into(), cx);
             }
-            // The scratchpad window doesn't keep the app open (klogg's is
-            // a child of the main window).
+            // The scratchpad and documentation windows don't keep the app
+            // open (klogg's are children of the main window).
             cx.on_window_closed(|cx, _| {
                 let windows = cx.windows();
-                if windows
-                    .iter()
-                    .all(|w| scratchpad::is_scratchpad_window(*w, cx))
-                {
+                if windows.iter().all(|w| {
+                    scratchpad::is_scratchpad_window(*w, cx)
+                        || help::is_documentation_window(*w, cx)
+                }) {
                     cx.quit();
                 }
             })

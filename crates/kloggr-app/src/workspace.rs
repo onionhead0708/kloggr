@@ -34,6 +34,7 @@ use crate::crawler::{
 };
 use crate::follow::{Reload, Stop, ToggleFollow};
 use crate::go_to_line;
+use crate::help;
 use crate::highlighters::{EditHighlighters, Highlighters, NoHighlighters, ToggleHighlighterSet};
 use crate::highlighters_dialog;
 use crate::options_dialog;
@@ -419,6 +420,14 @@ impl Workspace {
                 MenuItem::separator(),
                 MenuItem::action("Highlighters…", EditHighlighters),
                 MenuItem::submenu(Highlighters::menu(cx)),
+            ]),
+            // klogg: Help > Documentation, Report Issue, About.
+            Menu::new("Help").items([
+                MenuItem::action("Documentation", help::ShowDocumentation),
+                MenuItem::separator(),
+                MenuItem::action("Report Issue…", help::ReportIssue),
+                MenuItem::separator(),
+                MenuItem::action("About kloggr", help::About),
             ]),
         ]
     }
@@ -1308,6 +1317,11 @@ impl Render for Workspace {
                 }
             }))
             .on_action(cx.listener(|this, _: &ClearFile, window, cx| this.clear_file(window, cx)))
+            .on_action(
+                cx.listener(|_, _: &help::ShowDocumentation, _, cx| help::show_documentation(cx)),
+            )
+            .on_action(cx.listener(|_, _: &help::ReportIssue, _, cx| help::report_issue(cx)))
+            .on_action(cx.listener(|_, _: &help::About, window, cx| help::about(window, cx)))
             .on_action(cx.listener(|this, _: &Reload, _, cx| this.reload(cx)))
             .on_action(cx.listener(|this, a: &SetEncoding, _, cx| {
                 let encoding = a.name.as_deref().and_then(Encoding::for_label);
@@ -1789,6 +1803,28 @@ mod tests {
         assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
         assert!(crawler.read_with(cx, |c, cx| c.filter().read(cx).marks().is_empty()));
         assert!(ws.read_with(cx, |ws, _| ws.status().contains("0 lines")));
+    }
+
+    #[gpui::test]
+    fn help_menu(cx: &mut TestAppContext) {
+        let fx = Fixture::new("help");
+        let (_ws, cx) = workspace(cx, fx.config());
+        let labels = menu_labels(cx);
+        for label in ["Documentation", "Report Issue…", "About kloggr"] {
+            assert!(labels.contains(&label.to_owned()), "{label}");
+        }
+        // Documentation opens one window, and shows it again after that.
+        let windows = |cx: &mut VisualTestContext| cx.update(|_, cx| cx.windows().len());
+        assert_eq!(windows(cx), 1);
+        cx.dispatch_action(help::ShowDocumentation);
+        cx.run_until_parked();
+        assert_eq!(windows(cx), 2);
+        let docs = cx.update(|_, cx| cx.windows()[1]);
+        assert!(cx.update(|_, cx| help::is_documentation_window(docs, cx)));
+        cx.dispatch_action(help::ShowDocumentation);
+        cx.run_until_parked();
+        assert_eq!(windows(cx), 2);
+        assert!(help::GUIDE.contains("## Edit menu"));
     }
 
     #[gpui::test]

@@ -8,6 +8,16 @@ Newest first. Each entry gives the date, what klogg does, what kloggr does, and 
 
 ---
 
+## 2026-11-11: Help menu: a kloggr user guide, no community or Qt entries
+
+**klogg:** Help has Documentation (its `DOCUMENTATION.md` built in as HTML, shown in a window), Report Issue, Join Discord, Join Telegram, Generate Dump, About Qt and About.
+
+**kloggr:** Documentation, Report Issue… and About kloggr. Documentation shows `docs/user-guide.md`, built into the binary and rendered as Markdown in its own window; the guide is adapted from klogg's but describes kloggr (Rust regex syntax, Alt+1…9, local crash reports, no Hyperscan or Qt sections). Report Issue opens a GitHub issue with klogg's bug template and the version and system. The documentation window, like the scratchpad, doesn't keep the app open.
+
+**Why:** kloggr has no Discord or Telegram community, no Qt, and its crash reports are plain text written by the panic hook, so there is no dump to generate. Keeping the guide as Markdown in `docs/` lets it be read on GitHub too, and edited with the code.
+
+**Code:** `help.rs`, `kloggr_core::crash::bug_report_url`.
+
 ## 2026-11-11: Clear File lets go of the file before emptying it
 
 **klogg:** Edit > Clear File (`Ctrl+X`) asks, then truncates the file with `QFile::resize(0)` while it is still mapped; the file watcher then reloads it.

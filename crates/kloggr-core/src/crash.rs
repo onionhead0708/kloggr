@@ -29,24 +29,12 @@ impl Report {
     /// The report's text: the panic, then the build and the system, then
     /// the backtrace (as klogg's issue template: version, OS, concurrency).
     pub fn text(&self, unix_time: u64) -> String {
-        let concurrency = std::thread::available_parallelism().map_or(1, |n| n.get());
         let mut out = format!("kloggr crashed: {}\n", self.message);
         if let Some(location) = &self.location {
             out += &format!("at {location}\n");
         }
         out += &format!("thread: {}\n\n", self.thread);
-        out += &format!(
-            "> kloggr {} ({} build) [built for {}-{}]\n",
-            env!("CARGO_PKG_VERSION"),
-            if cfg!(debug_assertions) {
-                "debug"
-            } else {
-                "release"
-            },
-            std::env::consts::OS,
-            std::env::consts::ARCH,
-        );
-        out += &format!("> running on {}, concurrency {concurrency}\n", os_name());
+        out += &system_details();
         out += &format!("> time {unix_time} (seconds since 1970, UTC)\n\n");
         out += "Backtrace:\n";
         out += &self.backtrace;
@@ -55,6 +43,42 @@ impl Report {
         }
         out
     }
+}
+
+/// The build and the system, as klogg's issue footer: version, OS,
+/// concurrency.
+pub fn system_details() -> String {
+    let concurrency = std::thread::available_parallelism().map_or(1, |n| n.get());
+    format!(
+        "> kloggr {} ({} build) [built for {}-{}]\n> running on {}, concurrency {concurrency}\n",
+        env!("CARGO_PKG_VERSION"),
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        os_name(),
+    )
+}
+
+/// A link to a new GitHub bug report (klogg: Help > Report Issue,
+/// `IssueReporter` with `BugTemplate`): the questions to answer, then the
+/// build and the system.
+pub fn bug_report_url() -> String {
+    let body = format!(
+        "#### What did you do?\n\n\n#### What did you expect to see?\n\n\n\
+         #### What did you see instead?\n\n\n\
+         -------------------------\nUseful extra information\n\
+         -------------------------\n{}",
+        system_details()
+    );
+    format!(
+        "{}/issues/new?body={}",
+        crate::REPOSITORY,
+        percent_encode(&body)
+    )
 }
 
 /// The system's name, e.g. "Ubuntu 26.04 LTS" on Linux.
@@ -264,6 +288,13 @@ mod tests {
         assert!(text.contains(&format!("> kloggr {} (", env!("CARGO_PKG_VERSION"))));
         assert!(text.contains("> time 42 "));
         assert!(text.ends_with("Backtrace:\n0: frame\n"));
+    }
+
+    #[test]
+    fn bug_report_link() {
+        let url = bug_report_url();
+        assert!(url.starts_with("https://github.com/onionhead0708/kloggr/issues/new?body=%23%23%23%23%20What%20did%20you%20do%3F"));
+        assert!(url.contains(&format!("kloggr%20{}", env!("CARGO_PKG_VERSION"))));
     }
 
     #[test]
