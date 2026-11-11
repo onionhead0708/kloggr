@@ -182,7 +182,7 @@ impl QuickFind {
         }
     }
 
-    fn stop(&mut self) {
+    pub(crate) fn stop(&mut self) {
         self.queued.clear();
         self.running = false;
         self.cancel.store(true, Ordering::Relaxed);

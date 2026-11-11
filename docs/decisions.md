@@ -8,6 +8,16 @@ Newest first. Each entry gives the date, what klogg does, what kloggr does, and 
 
 ---
 
+## 2026-11-11: Clear File lets go of the file before emptying it
+
+**klogg:** Edit > Clear File (`Ctrl+X`) asks, then truncates the file with `QFile::resize(0)` while it is still mapped; the file watcher then reloads it.
+
+**kloggr:** the same menu item, key and question. Before truncating, the tab stops its search, quick find and Save to file, and drops every snapshot of the file; it truncates once no thread holds the mapping (waiting up to 5 seconds), then opens the empty file. Marks and results are dropped, as on any reload. If the file can't be emptied, an error says why.
+
+**Why:** reading a mapping past the end of a truncated file raises SIGBUS and kills the app on Linux and macOS, and Windows refuses to truncate a mapped file at all.
+
+**Code:** `Crawler::clear_file`, `Workspace::clear_file`.
+
 ## 2026-11-11: Hidden ANSI colour sequences: not in UTF-16, kept by Save to file
 
 **klogg:** Options > "Hide ANSI color sequences" removes `ESC [ … m` and `ESC [ … K` from every decoded line (a prefilter), so they are neither shown nor searched. Save to file writes the decoded lines, so without them.

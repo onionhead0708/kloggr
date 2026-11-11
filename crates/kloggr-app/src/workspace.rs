@@ -33,11 +33,13 @@ use crate::crawler::{
     Crawler, CrawlerEvent, EditPredefinedFilters, ToggleFreezeFiltered, ToggleFreezeMain,
 };
 use crate::follow::{Reload, Stop, ToggleFollow};
+use crate::go_to_line;
 use crate::highlighters::{EditHighlighters, Highlighters, NoHighlighters, ToggleHighlighterSet};
 use crate::highlighters_dialog;
 use crate::options_dialog;
 use crate::preferences::Preferences;
 use crate::shortcuts::Shortcut;
+use crate::{log_view, quick_find};
 
 actions!(
     workspace,
@@ -55,7 +57,11 @@ actions!(
         ToggleOverview,
         ToggleLineNumbersMain,
         ToggleLineNumbersFiltered,
-        ToggleTextWrap
+        ToggleTextWrap,
+        CopyPath,
+        OpenContainingFolder,
+        OpenInEditor,
+        ClearFile
     ]
 );
 
@@ -141,6 +147,35 @@ pub fn shortcuts() -> Vec<Shortcut> {
             None,
             &[],
             OpenScratchpad,
+        ),
+        Shortcut::new(
+            "mainwindow.copy_path_to_clipboard",
+            "Copy file path to clipboard",
+            None,
+            &[],
+            CopyPath,
+        ),
+        Shortcut::new(
+            "mainwindow.open_containing_folder",
+            "Open containing folder",
+            None,
+            &[],
+            OpenContainingFolder,
+        ),
+        Shortcut::new(
+            "mainwindow.open_in_editor",
+            "Open file in editor",
+            None,
+            &[],
+            OpenInEditor,
+        ),
+        // klogg: `QKeySequence::Cut`, after a confirmation.
+        Shortcut::new(
+            "mainwindow.clear_file",
+            "Clear file",
+            None,
+            &["secondary-x"],
+            ClearFile,
         ),
         // klogg: W; in the log views, so that W can be typed elsewhere.
         Shortcut::new(
@@ -335,6 +370,23 @@ impl Workspace {
                 MenuItem::action("Close All", CloseAllTabs),
                 MenuItem::action("Quit", Quit),
             ]),
+            // klogg: the Edit menu, disabled without a file.
+            Menu::new("Edit")
+                .items([
+                    MenuItem::action("Copy", log_view::Copy),
+                    MenuItem::action("Select All", log_view::SelectAll),
+                    MenuItem::separator(),
+                    MenuItem::action("Find…", quick_find::Open),
+                    MenuItem::separator(),
+                    MenuItem::action("Go to Line…", go_to_line::Open),
+                    MenuItem::separator(),
+                    MenuItem::action("Copy Path", CopyPath),
+                    MenuItem::action("Open Containing Folder", OpenContainingFolder),
+                    MenuItem::separator(),
+                    MenuItem::action("Open in Editor", OpenInEditor),
+                    MenuItem::action("Clear File…", ClearFile),
+                ])
+                .disabled(no_tab),
             // klogg: View > Freeze columns in main / filtered view.
             Menu::new("View").items([
                 MenuItem::action("Overview", ToggleOverview).checked(view.overview),
@@ -903,6 +955,52 @@ impl Workspace {
         }
     }
 
+    /// Edit > Copy Path, or the tab's Copy full path (klogg:
+    /// `copyFullPath`).
+    fn copy_path(&self, index: usize, cx: &mut Context<Self>) {
+        if let Some(tab) = self.tabs.get(index) {
+            let path = tab.path.display().to_string();
+            cx.write_to_clipboard(ClipboardItem::new_string(path));
+        }
+    }
+
+    /// Edit > Clear File (klogg: `clearLog`): empties the current file on
+    /// disk after a warning.
+    fn clear_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let crawler = tab.crawler.clone();
+        if crawler.read(cx).log.is_none() {
+            return;
+        }
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &format!(
+                "Clear file {}? Its content will be removed from disk. This can't be undone.",
+                tab.path.display()
+            ),
+            None,
+            &["Clear", "Cancel"],
+            cx,
+        );
+        cx.spawn_in(window, async move |_, cx| {
+            if answer.await != Ok(0) {
+                return;
+            }
+            let task = crawler.update(cx, |c, cx| c.clear_file(cx));
+            if let Err(e) = task.await {
+                let message = format!("Cannot clear the file: {e}");
+                if let Ok(shown) = cx.update(|window, cx| {
+                    window.prompt(PromptLevel::Critical, &message, None, &["OK"], cx)
+                }) {
+                    shown.await.ok();
+                }
+            }
+        })
+        .detach();
+    }
+
     /// View > Stop (klogg: `stopLoading`): stops the current tab's search,
     /// and its indexing, which closes the tab as in klogg (an interrupted
     /// load leaves no file to show).
@@ -1182,12 +1280,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &CloseAllTabs, window, cx| {
                 this.close_tabs(|_| true, window, cx)
             }))
-            .on_action(cx.listener(|this, a: &CopyTabPath, _, cx| {
-                if let Some(tab) = this.tabs.get(a.index) {
-                    let path = tab.path.display().to_string();
-                    cx.write_to_clipboard(ClipboardItem::new_string(path));
-                }
-            }))
+            .on_action(cx.listener(|this, a: &CopyTabPath, _, cx| this.copy_path(a.index, cx)))
             .on_action(
                 cx.listener(|this, a: &ActivateTab, window, cx| this.activate(a.index, window, cx)),
             )
@@ -1202,6 +1295,19 @@ impl Render for Workspace {
                     cx.reveal_path(&tab.path);
                 }
             }))
+            .on_action(cx.listener(|this, _: &CopyPath, _, cx| this.copy_path(this.active, cx)))
+            .on_action(cx.listener(|this, _: &OpenContainingFolder, _, cx| {
+                if let Some(tab) = this.tabs.get(this.active) {
+                    cx.reveal_path(&tab.path);
+                }
+            }))
+            // klogg: `openFileInDefaultApplication`.
+            .on_action(cx.listener(|this, _: &OpenInEditor, _, cx| {
+                if let Some(tab) = this.tabs.get(this.active) {
+                    cx.open_with_system(&tab.path);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ClearFile, window, cx| this.clear_file(window, cx)))
             .on_action(cx.listener(|this, _: &Reload, _, cx| this.reload(cx)))
             .on_action(cx.listener(|this, a: &SetEncoding, _, cx| {
                 let encoding = a.name.as_deref().and_then(Encoding::for_label);
@@ -1636,6 +1742,53 @@ mod tests {
         assert!(ws.read_with(cx, |ws, _| ws.status().contains("indexing 0%")));
         cx.simulate_keystrokes("escape");
         assert_eq!(ws.read_with(cx, |ws, _| ws.tabs.len()), 0);
+    }
+
+    #[gpui::test]
+    fn edit_menu(cx: &mut TestAppContext) {
+        let fx = Fixture::new("edit");
+        let path = fx.log("a.log", 3);
+        let (ws, cx) = workspace(cx, fx.config());
+        assert!(ws.read_with(cx, |ws, cx| {
+            ws.menus(cx).iter().any(|m| m.name == "Edit" && m.disabled)
+        }));
+        ws.update_in(cx, |ws, window, cx| ws.open(path.clone(), window, cx));
+        assert_eq!(wait_indexed(&ws, cx), 3);
+        assert!(ws.read_with(cx, |ws, cx| {
+            ws.menus(cx).iter().any(|m| m.name == "Edit" && !m.disabled)
+        }));
+        let crawler = ws.read_with(cx, |ws, _| ws.crawler().unwrap().clone());
+
+        // From the search box, Select All and Copy work on the log view.
+        cx.dispatch_action(crate::crawler::FocusSearch);
+        cx.dispatch_action(log_view::SelectAll);
+        cx.dispatch_action(log_view::Copy);
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|c| c.text()).as_deref(),
+            Some("a.log 0\na.log 1\na.log 2")
+        );
+
+        cx.dispatch_action(CopyPath);
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|c| c.text()),
+            Some(path.display().to_string())
+        );
+
+        // Clear File asks first; Cancel keeps the file.
+        cx.dispatch_action(ClearFile);
+        cx.run_until_parked();
+        cx.simulate_prompt_answer("Cancel");
+        cx.run_until_parked();
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 24);
+
+        crawler.update(cx, |c, cx| c.toggle_marks_for_test(1, cx));
+        cx.dispatch_action(ClearFile);
+        cx.run_until_parked();
+        cx.simulate_prompt_answer("Clear");
+        assert_eq!(wait_indexed(&ws, cx), 0);
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+        assert!(crawler.read_with(cx, |c, cx| c.filter().read(cx).marks().is_empty()));
+        assert!(ws.read_with(cx, |ws, _| ws.status().contains("0 lines")));
     }
 
     #[gpui::test]

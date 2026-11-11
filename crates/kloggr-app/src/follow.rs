@@ -303,6 +303,64 @@ impl Crawler {
         stopped
     }
 
+    /// Edit > Clear File (klogg: `MainWindow::clearLog`): empties the file
+    /// on disk, then shows it again. Everything that reads the file lets go
+    /// of it first: reading a mapping past the end of a truncated file
+    /// crashes (SIGBUS), and Windows refuses to truncate a mapped file.
+    pub(crate) fn clear_file(&mut self, cx: &mut Context<Self>) -> Task<std::io::Result<()>> {
+        let Some(log) = self.log.take() else {
+            return Task::ready(Ok(()));
+        };
+        let path = log.path().to_path_buf();
+        let mapped = Arc::downgrade(&log);
+        drop(log);
+        self.stop(cx);
+        self.qf.stop();
+        self.set_log(None, cx);
+        cx.emit(CrawlerEvent::Status);
+        let options = OpenOptions {
+            encoding: self.encoding,
+            hide_ansi: Preferences::get(cx).view.hide_ansi,
+        };
+        cx.spawn(async move |this, cx| {
+            let executor = cx.background_executor().clone();
+            // Cancelled workers stop at their next block.
+            for _ in 0..250 {
+                if mapped.strong_count() == 0 {
+                    break;
+                }
+                executor.timer(std::time::Duration::from_millis(20)).await;
+            }
+            let busy = mapped.strong_count() > 0;
+            let Some((cleared, log)) =
+                background::run_blocking("kloggr-clear", &executor, move || {
+                    let cleared = if busy {
+                        Err(std::io::Error::other("the file is still being read"))
+                    } else {
+                        std::fs::OpenOptions::new()
+                            .write(true)
+                            .open(&path)
+                            .and_then(|f| f.set_len(0))
+                    };
+                    let log = LogFile::open_with(&path, options, &AtomicBool::new(false), |_| {});
+                    (cleared, log)
+                })
+                .await
+            else {
+                return Err(std::io::Error::other("clearing the file failed"));
+            };
+            this.update(cx, |c, cx| {
+                match log {
+                    Ok(log) => c.set_log(Some(Arc::new(log)), cx),
+                    Err(e) => tracing::warn!("cannot reopen after clearing: {e}"),
+                }
+                cx.emit(CrawlerEvent::Status);
+            })
+            .ok();
+            cleared
+        })
+    }
+
     /// With auto-refresh on, searches the lines added since the last search
     /// (klogg: `updateSearch`). The last searched line is checked again: it
     /// may have been incomplete.

@@ -161,7 +161,7 @@ Features of the log views and the search that klogg has and kloggr lacks (found 
 
 ### Phase 6: application, window and platform
 Menus, window management and platform integration still missing, plus open items from earlier phases.
-- [ ] Edit menu: Copy, Select All, Find, Go to Line, Copy Path (`mainwindow.copy_path_to_clipboard`), Open Containing Folder, Open in Editor, Clear File (`mainwindow.clear_file`)
+- [x] Edit menu: Copy, Select All, Find, Go to Line, Copy Path (`mainwindow.copy_path_to_clipboard`), Open Containing Folder, Open in Editor, Clear File (`mainwindow.clear_file`)
 - [ ] Help menu: About, Documentation, Report Issue
 - [ ] File menu: Open from Clipboard, Open from URL, New Window, Opened Files switcher (`mainwindow.select_open_file`)
 - [ ] Favorites: add, remove and open favorite files (klogg favorites menu and toolbar button)
