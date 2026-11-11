@@ -2486,17 +2486,18 @@ mod tests {
         };
         assert_eq!(opened(cx)[3], (c.display().to_string(), true));
 
-        // Ctrl+Shift+O, a filter, then Enter.
-        cx.simulate_keystrokes("ctrl-shift-o");
+        // Ctrl+Shift+O (Cmd on macOS), a filter, then Enter.
+        cx.simulate_keystrokes("secondary-shift-o");
         let switcher = ws.read_with(cx, |ws, _| ws._switcher.clone().unwrap());
-        cx.simulate_input("ap*log");
+        // (Not just "ap*log": Windows' temp folder is under AppData.)
+        cx.simulate_input("app.l?g");
         assert_eq!(switcher.read_with(cx, |s, _| s.shown.clone()), vec![0]);
         cx.simulate_keystrokes("enter");
         assert_eq!(active(cx), 0);
         assert!(opened(cx)[1].1);
 
         // Down moves the selection; the list is filtered anew each time.
-        cx.simulate_keystrokes("ctrl-shift-o");
+        cx.simulate_keystrokes("secondary-shift-o");
         let switcher = ws.read_with(cx, |ws, _| ws._switcher.clone().unwrap());
         cx.simulate_input(".log");
         cx.simulate_keystrokes("down down down enter");

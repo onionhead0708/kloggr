@@ -237,10 +237,9 @@ mod tests {
         let absolute = PathBuf::from("/var/log/syslog");
         assert!(send_to_running(&dir.0, &[relative.clone(), absolute.clone()]).unwrap());
         let got = rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert_eq!(
-            got,
-            [std::path::absolute(&relative).unwrap(), absolute.clone()]
-        );
+        // (On Windows "/var/log/syslog" gets the current drive.)
+        let expected = [&relative, &absolute].map(|p| std::path::absolute(p).unwrap());
+        assert_eq!(got, expected);
         // No files: the running kloggr is just asked to show itself.
         assert!(send_to_running(&dir.0, &[]).unwrap());
         assert!(rx.recv_timeout(Duration::from_secs(5)).unwrap().is_empty());
