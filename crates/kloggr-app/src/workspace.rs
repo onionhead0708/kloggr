@@ -1957,10 +1957,26 @@ fn status_of(path: &Path, crawler: &Crawler) -> String {
                 "detected as"
             };
             let lines = log.line_count();
-            format!("{shown} — {lines} lines — {how} {}", log.encoding())
+            // klogg's toolbar: size, modification date, encoding, lines.
+            let size = archives::human_size(log.byte_len() as u64);
+            let modified = log
+                .modified()
+                .map(|t| format!(" — modified {}", local_time(t)))
+                .unwrap_or_default();
+            format!(
+                "{shown} — {size}{modified} — {lines} lines — {how} {}",
+                log.encoding()
+            )
         }
         (None, None) => format!("{shown} — indexing…"),
     }
+}
+
+/// "2026-11-11 14:02:05", in the local time zone.
+fn local_time(time: std::time::SystemTime) -> String {
+    chrono::DateTime::<chrono::Local>::from(time)
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string()
 }
 
 fn file_name(path: &Path) -> String {
@@ -2859,6 +2875,15 @@ mod tests {
         cx.simulate_keystrokes("secondary-1");
         assert_eq!(new_data(cx), [false, false]);
         assert!(ws.read_with(cx, |ws, _| ws.status().contains("3 lines")));
+        // klogg's toolbar fields: the size and the modification date.
+        let status = ws.read_with(cx, |ws, _| ws.status());
+        let size = std::fs::metadata(ws.read_with(cx, |ws, _| ws.tabs[0].path.clone()))
+            .unwrap()
+            .len();
+        assert!(
+            status.contains(&format!("— {size} B — modified 20")),
+            "{status}"
+        );
     }
 
     #[gpui::test]

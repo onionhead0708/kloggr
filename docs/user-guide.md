@@ -26,8 +26,9 @@ bottom one, the *filtered view*, shows the result of the search typed in the
 bar between them. Lines that match are listed in file order and get a bullet
 in the margin of both views.
 
-The status line at the bottom shows the file's path, its number of lines and
-its encoding, or the progress of indexing, searching and saving.
+The status line at the bottom shows the file's path, size, modification time,
+number of lines and encoding, or the progress of indexing, searching and
+saving.
 
 ## Opening files
 

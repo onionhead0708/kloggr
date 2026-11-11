@@ -177,7 +177,7 @@ Gaps found by comparing kloggr 0.2.0 with klogg's shortcuts, menus, options, com
 - [x] File watching by polling, with an interval option (klogg `filewatch.usePolling`, `pollingIntervalMs`): network shares, sftp mounts and volumes where notifications don't arrive
 - [x] Search box autocompletion from the search history as you type (klogg `QCompleter`, case-sensitive with the search option)
 - [x] Predefined filters: Import and Export in the dialog (klogg `PredefinedFiltersDialog::importFilters`, `exportFilters`)
-- [ ] File size and modification date in the status line (klogg toolbar `sizeField`, `dateField`)
+- [x] File size and modification date in the status line (klogg toolbar `sizeField`, `dateField`)
 - [ ] Ctrl+mouse wheel changes the font size in the log views (klogg `changeFontSize`)
 - [ ] Drag tabs to reorder them (klogg `setMovable`)
 - [ ] Default encoding for new files (klogg `defaultView.encodingMib`), instead of always detecting

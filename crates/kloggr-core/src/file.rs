@@ -250,6 +250,8 @@ pub struct LogFile {
     encoding: Encoding,
     detected_encoding: Encoding,
     id: FileId,
+    /// When the file was last modified, as of this snapshot.
+    modified: Option<std::time::SystemTime>,
     /// The first and last [`SAMPLE`] bytes of the mapping, to detect
     /// rewrites.
     head: Vec<u8>,
@@ -356,7 +358,9 @@ impl LogFile {
         let data = map.as_deref().unwrap_or_default();
         let head = data[..data.len().min(SAMPLE)].to_vec();
         let tail = data[data.len().saturating_sub(SAMPLE)..].to_vec();
+        let modified = file.metadata().and_then(|m| m.modified()).ok();
         Self {
+            modified,
             path,
             options,
             source: Source::new(map, file, options.access),
@@ -405,6 +409,7 @@ impl LogFile {
             encoding: new,
             detected_encoding: self.detected_encoding,
             id: self.id,
+            modified: self.modified,
             head: self.head.clone(),
             tail: self.tail.clone(),
         })
@@ -481,6 +486,7 @@ impl LogFile {
             encoding: self.encoding,
             detected_encoding: self.detected_encoding,
             id: self.id,
+            modified: self.modified,
             head: self.head.clone(),
             tail: self.tail.clone(),
         }
@@ -544,6 +550,12 @@ impl LogFile {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// When the file was last modified, as of this snapshot (klogg: the
+    /// toolbar's date field).
+    pub fn modified(&self) -> Option<std::time::SystemTime> {
+        self.modified
     }
 
     /// The size of this snapshot in bytes.
