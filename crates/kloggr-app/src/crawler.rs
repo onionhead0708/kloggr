@@ -20,7 +20,7 @@ use gpui_component::resizable::{resizable_panel, v_resizable};
 use gpui_component::{ActiveTheme, IconName, Sizable};
 use kloggr_core::search::{self, FilteredLines, Matcher, Pattern, SearchProgress, Visibility};
 use kloggr_core::settings::{FileContext, FrozenView};
-use kloggr_core::{Cancelled, LogFile};
+use kloggr_core::{Cancelled, Encoding, LogFile};
 
 use crate::background;
 use crate::follow::{self, Watch};
@@ -257,6 +257,8 @@ pub struct Crawler {
     pub(crate) watch: Watch,
     /// The file is being indexed again (View > Reload, or it was replaced).
     pub(crate) reindex: Option<follow::Reindex>,
+    /// Encoding chosen in the Encoding menu; `None`: the detected one.
+    pub(crate) encoding: Option<Encoding>,
     /// Lines and bytes covered by the last finished search (`None`: none
     /// finished); with auto-refresh, what comes after is searched when the
     /// file grows.
@@ -378,6 +380,7 @@ impl Crawler {
             following: false,
             watch: Watch::default(),
             reindex: None,
+            encoding: None,
             searched: None,
             search_covers: (0, 0),
             updating: false,
@@ -418,7 +421,44 @@ impl Crawler {
             self.run(pattern, cx);
         }
         self.start_watching(cx);
+        // The encoding was chosen while the file was first indexed.
+        if let Some(log) = &self.log
+            && log.options().encoding != self.encoding
+        {
+            self.set_encoding(self.encoding, cx);
+        }
         cx.notify();
+    }
+
+    /// Encoding > … (klogg: `CrawlerWidget::setEncoding`). The file is
+    /// decoded again; indexed again only if its lines are laid out
+    /// differently (UTF-16), which drops the marks. The search runs again.
+    pub(crate) fn set_encoding(&mut self, encoding: Option<Encoding>, cx: &mut Context<Self>) {
+        self.encoding = encoding;
+        cx.notify();
+        let Some(log) = self.log.clone() else {
+            // Applied once the file is indexed (`set_log`).
+            cx.emit(CrawlerEvent::Status);
+            return;
+        };
+        if self.reindex.is_some() {
+            self.reindex(cx);
+            return;
+        }
+        let Some(log) = log.with_encoding(encoding) else {
+            self.reindex(cx);
+            return;
+        };
+        let log = Arc::new(log);
+        self.log = Some(log.clone());
+        for view in [&self.main, &self.filtered] {
+            let log = log.clone();
+            view.update(cx, |v, cx| v.update_log(log, cx));
+        }
+        if let Some(pattern) = self.last_pattern.clone() {
+            self.run(pattern, cx);
+        }
+        cx.emit(CrawlerEvent::Status);
     }
 
     /// The per-file state saved in the session (klogg: `doGetViewContext`).
@@ -431,6 +471,7 @@ impl Crawler {
             boolean: o.boolean,
             auto_refresh: o.auto_refresh,
             follow: self.following,
+            encoding: self.encoding.map(|e| e.name().to_owned()),
             marks: self
                 .filter
                 .read(cx)
@@ -452,6 +493,7 @@ impl Crawler {
             auto_refresh: context.auto_refresh,
         };
         self.pending_marks = context.marks;
+        self.encoding = context.encoding.as_deref().and_then(Encoding::for_label);
         self.set_follow(context.follow, cx);
     }
 

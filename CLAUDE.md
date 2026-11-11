@@ -149,7 +149,7 @@ check new shortcuts in the real app too (see the color-label entry in `docs/deci
 ### Phase 5: viewing and search parity with klogg
 Features of the log views and the search that klogg has and kloggr lacks (found by comparing menus, context menus and `shortcuts.h` on 2026-11-10).
 - [x] Reload and Stop: `mainwindow.reload` (F5) reloads the file, `mainwindow.stop` cancels indexing or a search; progress shown when a replaced file is reindexed
-- [ ] Encoding choice: View > Encoding menu overriding the detected encoding, remembered per file in the session
+- [x] Encoding choice: View > Encoding menu overriding the detected encoding, remembered per file in the session
 - [ ] Search limits: log view context menu Set search start, Set search end, Clear search limits; the search only scans that line range
 - [ ] Search bar: Keep results toggle (`crawler.enable_keep_results`), shortcut for auto-refresh (`crawler.enable_auto_refresh`), "Save as Filter" in the search box context menu
 - [ ] Text wrap (`mainwindow.text_wrap`), still windowing very long lines before shaping

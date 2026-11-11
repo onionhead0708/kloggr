@@ -107,6 +107,8 @@ pub struct FileContext {
     pub follow: bool,
     /// Marked lines, 0-based.
     pub marks: Vec<u64>,
+    /// Encoding chosen in the Encoding menu (its name); `None`: detected.
+    pub encoding: Option<String>,
 }
 
 impl Default for FileContext {
@@ -120,6 +122,7 @@ impl Default for FileContext {
             auto_refresh: false,
             follow: false,
             marks: Vec::new(),
+            encoding: None,
         }
     }
 }

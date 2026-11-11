@@ -8,6 +8,20 @@ Newest first. Each entry gives the date, what klogg does, what kloggr does, and 
 
 ---
 
+## 2026-11-11: Encoding menu: remembered per file, no System entry
+
+**klogg:** the Encoding menu has Auto, "System (locale codec)" and Qt's codecs by group. The choice holds for the tab while it is open; Options has a default encoding for new files (`defaultView.encodingMib`).
+
+**kloggr:**
+- Auto, then klogg's groups with the encodings `encoding_rs` has (`encoding::MENU`). UTF-32 and IBM850 are missing; US-ASCII and ISO-8859-1 are windows-1252, GB2312 is GBK, CP949 is EUC-KR, TIS-620 is windows-874, as in browsers.
+- No "System" entry and no default-encoding option: Auto already detects legacy encodings with `chardetng`.
+- The choice is saved with the file in the session and used when it is opened again.
+- If the new encoding lays out lines the same way, the file is only decoded again and the marks stay; between UTF-16 and a single-byte encoding it is indexed again, which drops them. The search runs again either way.
+
+**Why:** a file that needed a manual encoding once needs it every time. The system codec is almost always UTF-8 on Linux and macOS.
+
+**Code:** `kloggr_core::encoding::MENU`, `LogFile::with_encoding`, `Crawler::set_encoding`, `Workspace::encoding_menu`.
+
 ## 2026-11-11: Reload keeps showing the file until it is indexed again
 
 **klogg:** View > Reload (F5) clears the search results and the marks, empties the views and indexes the file again. Stop (Esc, toolbar only) interrupts the search and the indexing; an interrupted load closes the tab. A file replaced on disk is indexed again with its progress in the status bar.

@@ -69,6 +69,40 @@ impl LineFeed {
     }
 }
 
+/// The encodings offered in the Encoding menu, by group (klogg:
+/// `EncodingMenu::supportedEncodings`). klogg's codecs that `encoding_rs`
+/// lacks are left out: UTF-32, IBM850, and US-ASCII and ISO-8859-1, which
+/// windows-1252 covers. GB2312 is GBK, CP949 is EUC-KR and TIS-620 is
+/// windows-874, as in browsers.
+pub const MENU: &[(&str, &[&str])] = &[
+    ("Unicode", &["UTF-8", "UTF-16LE", "UTF-16BE"]),
+    ("Arabic", &["ISO-8859-6", "windows-1256"]),
+    ("Baltic", &["ISO-8859-4", "ISO-8859-13", "windows-1257"]),
+    ("Celtic", &["ISO-8859-14"]),
+    (
+        "Cyrillic",
+        &[
+            "ISO-8859-5",
+            "KOI8-R",
+            "KOI8-U",
+            "x-mac-cyrillic",
+            "IBM866",
+            "windows-1251",
+        ],
+    ),
+    ("Central European", &["windows-1250"]),
+    ("Chinese", &["Big5", "GBK", "gb18030"]),
+    ("Eastern European", &["ISO-8859-2"]),
+    ("Greek", &["ISO-8859-7", "windows-1253"]),
+    ("Hebrew", &["ISO-8859-8-I", "windows-1255"]),
+    ("Japanese", &["Shift_JIS", "EUC-JP", "ISO-2022-JP"]),
+    ("Korean", &["EUC-KR"]),
+    ("Thai", &["windows-874"]),
+    ("Turkish", &["ISO-8859-3", "windows-1254"]),
+    ("Western European", &["windows-1252", "ISO-8859-15"]),
+    ("Vietnamese", &["windows-1258"]),
+];
+
 /// A text encoding supported by kloggr.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Encoding(&'static encoding_rs::Encoding);
@@ -263,5 +297,15 @@ mod tests {
         assert_eq!(Encoding::UTF_16LE.bom_len(b"\xFF\xFEa\0"), 2);
         assert_eq!(Encoding::UTF_8.bom_len(b"\xFF\xFEa\0"), 0);
         assert_eq!(Encoding::UTF_8.bom_len(b"\xEF\xBB\xBFa"), 3);
+    }
+
+    #[test]
+    fn menu_names_round_trip() {
+        for (_, names) in MENU {
+            for name in *names {
+                let enc = Encoding::for_label(name).unwrap_or_else(|| panic!("{name}"));
+                assert_eq!(enc.name(), *name);
+            }
+        }
     }
 }

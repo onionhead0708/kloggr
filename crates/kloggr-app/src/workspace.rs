@@ -25,7 +25,7 @@ use gpui_component::{ActiveTheme, GlobalState, Sizable, TitleBar, WindowExt};
 use kloggr_core::archive;
 use kloggr_core::file::OpenError;
 use kloggr_core::settings::{FileContext, OpenFile, Session};
-use kloggr_core::{IndexProgress, LogFile, OpenOptions};
+use kloggr_core::{Encoding, IndexProgress, LogFile, OpenOptions, encoding};
 
 use crate::archives;
 use crate::background;
@@ -57,6 +57,14 @@ actions!(
         ToggleLineNumbersFiltered
     ]
 );
+
+/// Encoding > …: decodes the current file with this encoding (its name),
+/// or the detected one (`None`, "Auto").
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = workspace, no_json)]
+pub struct SetEncoding {
+    pub name: Option<String>,
+}
 
 /// Opens a file from File > Open Recent.
 #[derive(Clone, PartialEq, Debug, Action)]
@@ -340,6 +348,7 @@ impl Workspace {
                 MenuItem::action("Reload", Reload).disabled(no_tab),
                 MenuItem::action("Stop", Stop).disabled(no_tab),
             ]),
+            self.encoding_menu(cx),
             Menu::new("Tools").items([
                 MenuItem::action("Options…", ShowOptions),
                 MenuItem::action("Predefined Filters…", EditPredefinedFilters),
@@ -349,6 +358,34 @@ impl Workspace {
                 MenuItem::submenu(Highlighters::menu(cx)),
             ]),
         ]
+    }
+
+    /// klogg: the Encoding menu (`EncodingMenu::generate`): Auto, then the
+    /// encodings by group. klogg's "System" entry is left out: kloggr
+    /// detects legacy encodings itself (`docs/decisions.md`).
+    fn encoding_menu(&self, cx: &App) -> Menu {
+        let crawler = self.crawler().map(|c| c.read(cx));
+        let chosen = crawler.and_then(|c| c.encoding);
+        let mut items = vec![
+            MenuItem::action("Auto", SetEncoding { name: None })
+                .checked(crawler.is_some() && chosen.is_none()),
+            MenuItem::separator(),
+        ];
+        items.extend(encoding::MENU.iter().map(|(group, names)| {
+            MenuItem::submenu(Menu::new(*group).items(names.iter().map(|name| {
+                let checked = chosen.is_some_and(|e| e.name() == *name);
+                MenuItem::action(
+                    *name,
+                    SetEncoding {
+                        name: Some((*name).to_owned()),
+                    },
+                )
+                .checked(checked)
+            })))
+        }));
+        Menu::new("Encoding")
+            .items(items)
+            .disabled(crawler.is_none())
     }
 
     /// Publishes the menus: native on macOS, the in-window bar elsewhere.
@@ -545,11 +582,14 @@ impl Workspace {
             return;
         }
         let (main_frozen, filtered_frozen) = self.session.frozen_columns(&path);
+        // klogg: a new file gets the default search options
+        // (`defaultView.*`), a session's file its own.
+        let context = context.unwrap_or_else(|| Preferences::get(cx).new_file_context());
+        let options = OpenOptions {
+            encoding: context.encoding.as_deref().and_then(Encoding::for_label),
+        };
         let crawler = cx.new(|cx| {
             let mut crawler = Crawler::new(window, cx);
-            // klogg: a new file gets the default search options
-            // (`defaultView.*`), a session's file its own.
-            let context = context.unwrap_or_else(|| Preferences::get(cx).new_file_context());
             crawler.set_context(context, cx);
             crawler.set_frozen_columns(main_frozen, filtered_frozen, cx);
             crawler
@@ -593,10 +633,9 @@ impl Workspace {
         background::spawn_blocking(
             "kloggr-index",
             move || {
-                let result =
-                    LogFile::open_with(&thread_path, OpenOptions::default(), &thread_cancel, |p| {
-                        tx.send_blocking(IndexEvent::Progress(p)).ok();
-                    });
+                let result = LogFile::open_with(&thread_path, options, &thread_cancel, |p| {
+                    tx.send_blocking(IndexEvent::Progress(p)).ok();
+                });
                 tx.send_blocking(IndexEvent::Done(result.map(Arc::new)))
                     .ok();
             },
@@ -1149,6 +1188,13 @@ impl Render for Workspace {
                 }
             }))
             .on_action(cx.listener(|this, _: &Reload, _, cx| this.reload(cx)))
+            .on_action(cx.listener(|this, a: &SetEncoding, _, cx| {
+                let encoding = a.name.as_deref().and_then(Encoding::for_label);
+                if let Some(crawler) = this.crawler().cloned() {
+                    crawler.update(cx, |c, cx| c.set_encoding(encoding, cx));
+                    this.save_open_files(cx);
+                }
+            }))
             .on_action(cx.listener(|this, _: &Stop, window, cx| this.stop(window, cx)))
             .on_action(cx.listener(|this, _: &LastTab, window, cx| {
                 let last = this.tabs.len().saturating_sub(1);
@@ -1206,7 +1252,16 @@ fn status_of(path: &Path, crawler: &Crawler) -> String {
     let shown = path.display();
     match (crawler.reindex_percent(), &crawler.log) {
         (Some(p), _) => format!("{shown} — indexing {p}%"),
-        (None, Some(log)) => format!("{shown} — {} lines — {}", log.line_count(), log.encoding()),
+        (None, Some(log)) => {
+            // klogg: "Detected as …" or "Displayed as …".
+            let how = if crawler.encoding.is_some() {
+                "displayed as"
+            } else {
+                "detected as"
+            };
+            let lines = log.line_count();
+            format!("{shown} — {lines} lines — {how} {}", log.encoding())
+        }
         (None, None) => format!("{shown} — indexing…"),
     }
 }
@@ -1563,6 +1618,80 @@ mod tests {
         assert!(ws.read_with(cx, |ws, _| ws.status().contains("indexing 0%")));
         cx.simulate_keystrokes("escape");
         assert_eq!(ws.read_with(cx, |ws, _| ws.tabs.len()), 0);
+    }
+
+    #[gpui::test]
+    fn encoding_menu(cx: &mut TestAppContext) {
+        let fx = Fixture::new("encoding");
+        let path = fx.dir.join("utf8.log");
+        std::fs::write(&path, "caf\u{e9}\nx\n").unwrap();
+        let (ws, cx) = workspace(cx, fx.config());
+        ws.update_in(cx, |ws, window, cx| ws.open(path.clone(), window, cx));
+        assert_eq!(wait_indexed(&ws, cx), 2);
+        let crawler = ws.read_with(cx, |ws, _| ws.crawler().unwrap().clone());
+        let line0 = |cx: &mut VisualTestContext| {
+            crawler.read_with(cx, |c, _| {
+                c.log().unwrap().line_text(0).unwrap().into_owned()
+            })
+        };
+        assert!(ws.read_with(cx, |ws, _| ws.status().contains("detected as UTF-8")));
+        crawler.update(cx, |c, cx| c.toggle_marks_for_test(1, cx));
+
+        // A single-byte encoding: decoded again, the marks stay.
+        cx.dispatch_action(SetEncoding {
+            name: Some("windows-1252".into()),
+        });
+        cx.run_until_parked();
+        assert_eq!(line0(cx), "caf\u{c3}\u{a9}");
+        assert!(ws.read_with(cx, |ws, _| {
+            ws.status().contains("displayed as windows-1252")
+        }));
+        assert!(crawler.read_with(cx, |c, cx| c.filter().read(cx).marks().contains(1)));
+        assert_eq!(
+            Session::load(&fx.config()).open_files[0]
+                .context
+                .encoding
+                .as_deref(),
+            Some("windows-1252")
+        );
+
+        // UTF-16 lays the lines out differently: indexed again.
+        cx.dispatch_action(SetEncoding {
+            name: Some("UTF-16LE".into()),
+        });
+        cx.run_until_parked();
+        assert_eq!(wait_indexed(&ws, cx), 1);
+        assert!(crawler.read_with(cx, |c, cx| c.filter().read(cx).marks().is_empty()));
+
+        // Auto goes back to the detected encoding.
+        cx.dispatch_action(SetEncoding { name: None });
+        cx.run_until_parked();
+        assert_eq!(line0(cx), "caf\u{e9}");
+
+        // Remembered for the file in the session.
+        cx.dispatch_action(SetEncoding {
+            name: Some("ISO-8859-15".into()),
+        });
+        cx.run_until_parked();
+        let config = fx.config();
+        let ws2 = cx.update(|window, cx| {
+            cx.new(|cx| {
+                let mut ws = Workspace::new(Some(config), window, cx);
+                ws.restore_session(window, cx);
+                ws
+            })
+        });
+        assert_eq!(wait_indexed(&ws2, cx), 2);
+        let restored = ws2.read_with(cx, |ws, cx| {
+            ws.crawler()
+                .unwrap()
+                .read(cx)
+                .log()
+                .unwrap()
+                .encoding()
+                .name()
+        });
+        assert_eq!(restored, "ISO-8859-15");
     }
 
     #[gpui::test]

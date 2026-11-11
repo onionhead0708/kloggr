@@ -4,6 +4,7 @@ use std::borrow::Cow;
 use std::fs::File;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use memmap2::Mmap;
@@ -84,7 +85,8 @@ pub struct LogFile {
     path: PathBuf,
     options: OpenOptions,
     /// `None` for an empty file: mapping 0 bytes fails on some platforms.
-    map: Option<Mmap>,
+    /// Shared by snapshots that only differ by encoding.
+    map: Option<Arc<Mmap>>,
     index: LineIndex,
     encoding: Encoding,
     detected_encoding: Encoding,
@@ -96,7 +98,7 @@ pub struct LogFile {
 }
 
 /// Maps `path` (`None` for an empty file) and returns its identity.
-fn map_file(path: &Path) -> Result<(Option<Mmap>, FileId), OpenError> {
+fn map_file(path: &Path) -> Result<(Option<Arc<Mmap>>, FileId), OpenError> {
     let io_err = |source| OpenError::Io {
         path: path.to_path_buf(),
         source,
@@ -110,7 +112,7 @@ fn map_file(path: &Path) -> Result<(Option<Mmap>, FileId), OpenError> {
         // reads of a truncated region raise SIGBUS. Accepted risk, same as
         // klogg; follow mode checks for truncation (`LogFile::check`) and
         // opens the file again before reading past a change.
-        Some(unsafe { Mmap::map(&file) }.map_err(io_err)?)
+        Some(Arc::new(unsafe { Mmap::map(&file) }.map_err(io_err)?))
     };
     Ok((map, FileId::of(&meta)))
 }
@@ -164,7 +166,7 @@ impl LogFile {
     ) -> Result<Self, OpenError> {
         let path = path.as_ref().to_path_buf();
         let (map, id) = map_file(&path)?;
-        let data = map.as_deref().unwrap_or_default();
+        let data = map.as_deref().map_or(&[][..], |m| &m[..]);
         let detected_encoding =
             encoding::detect(&data[..data.len().min(encoding::DETECTION_SAMPLE)]);
         let encoding = options.encoding.unwrap_or(detected_encoding);
@@ -184,13 +186,13 @@ impl LogFile {
     fn assemble(
         path: PathBuf,
         options: OpenOptions,
-        map: Option<Mmap>,
+        map: Option<Arc<Mmap>>,
         index: LineIndex,
         encoding: Encoding,
         detected_encoding: Encoding,
         id: FileId,
     ) -> Self {
-        let data = map.as_deref().unwrap_or_default();
+        let data = map.as_deref().map_or(&[][..], |m| &m[..]);
         let head = data[..data.len().min(SAMPLE)].to_vec();
         let tail = data[data.len().saturating_sub(SAMPLE)..].to_vec();
         Self {
@@ -214,6 +216,38 @@ impl LogFile {
         on_progress: impl FnMut(IndexProgress),
     ) -> Result<Self, OpenError> {
         Self::open_with(&self.path, self.options, cancel, on_progress)
+    }
+
+    /// The same snapshot decoded with another encoding (`None`: the
+    /// detected one), without indexing again. `None` if the line layout
+    /// differs (UTF-16 against a single-byte encoding, or a byte-order mark
+    /// only one of them skips): the file must then be opened again with
+    /// [`OpenOptions::encoding`] (klogg: `setDisplayEncoding`, which also
+    /// reindexes when the line feed changes).
+    pub fn with_encoding(&self, encoding: Option<Encoding>) -> Option<Self> {
+        let new = encoding.unwrap_or(self.detected_encoding);
+        let data = self.bytes();
+        if new.line_feed() != self.encoding.line_feed()
+            || new.bom_len(data) != self.encoding.bom_len(data)
+        {
+            return None;
+        }
+        Some(Self {
+            path: self.path.clone(),
+            options: OpenOptions { encoding },
+            map: self.map.clone(),
+            index: self.index.clone(),
+            encoding: new,
+            detected_encoding: self.detected_encoding,
+            id: self.id,
+            head: self.head.clone(),
+            tail: self.tail.clone(),
+        })
+    }
+
+    /// The options the file was opened with.
+    pub fn options(&self) -> OpenOptions {
+        self.options
     }
 
     /// Compares the file on disk with this snapshot (klogg:
@@ -253,7 +287,7 @@ impl LogFile {
         on_progress: impl FnMut(IndexProgress),
     ) -> Result<Self, OpenError> {
         let (map, id) = map_file(&self.path)?;
-        let data = map.as_deref().unwrap_or_default();
+        let data = map.as_deref().map_or(&[][..], |m| &m[..]);
         let mut index = self.index.clone();
         index.extend_with(data, cancel, on_progress)?;
         Ok(Self::assemble(
@@ -272,7 +306,7 @@ impl LogFile {
     }
 
     pub fn bytes(&self) -> &[u8] {
-        self.map.as_deref().unwrap_or_default()
+        self.map.as_deref().map_or(&[][..], |m| &m[..])
     }
 
     pub fn line_count(&self) -> usize {
@@ -378,6 +412,23 @@ mod tests {
         };
         let log = LogFile::open_with(&path, opts, &AtomicBool::new(false), |_| {}).unwrap();
         assert_eq!(log.line_text(0).as_deref(), Some("caf\u{e9}"));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn switching_encodings() {
+        let path = temp_file("switch.log", b"caf\xc3\xa9\nx\n");
+        let log = LogFile::open(&path).unwrap();
+        assert_eq!(log.encoding(), Encoding::UTF_8);
+        // Same layout: decoded again, nothing indexed.
+        let latin = log.with_encoding(Encoding::for_label("latin1")).unwrap();
+        assert_eq!(latin.line_text(0).as_deref(), Some("caf\u{c3}\u{a9}"));
+        assert_eq!(latin.options().encoding, Encoding::for_label("latin1"));
+        let auto = latin.with_encoding(None).unwrap();
+        assert_eq!(auto.encoding(), Encoding::UTF_8);
+        assert_eq!(auto.line_text(0).as_deref(), Some("caf\u{e9}"));
+        // UTF-16 lays the lines out differently.
+        assert!(log.with_encoding(Some(Encoding::UTF_16LE)).is_none());
         std::fs::remove_file(path).unwrap();
     }
 

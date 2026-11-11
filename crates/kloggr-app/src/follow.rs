@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use gpui::{Context, Task, actions};
 use kloggr_core::file::OpenError;
 use kloggr_core::search::FilteredLines;
-use kloggr_core::{FileChange, LogFile, Watcher};
+use kloggr_core::{FileChange, LogFile, OpenOptions, Watcher};
 
 use crate::background;
 use crate::crawler::{self, Crawler, CrawlerEvent, SearchInfo};
@@ -190,6 +190,10 @@ impl Crawler {
     /// old snapshot until it is done.
     pub(crate) fn reindex(&mut self, cx: &mut Context<Self>) {
         let Some(log) = self.log.clone() else { return };
+        let path = log.path().to_path_buf();
+        let options = OpenOptions {
+            encoding: self.encoding,
+        };
         let (tx, rx) = async_channel::unbounded();
         let cancel = Arc::new(AtomicBool::new(false));
         let thread_cancel = cancel.clone();
@@ -197,7 +201,7 @@ impl Crawler {
             "kloggr-reindex",
             move || {
                 let mut last = None;
-                let result = log.reopen(&thread_cancel, |p| {
+                let result = LogFile::open_with(&path, options, &thread_cancel, |p| {
                     // One event per percent: progress comes per block.
                     if last.replace(p.percent()) != Some(p.percent()) {
                         tx.send_blocking(ReindexEvent::Progress(p.percent())).ok();
