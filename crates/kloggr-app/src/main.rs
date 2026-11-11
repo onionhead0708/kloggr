@@ -36,10 +36,10 @@ use workspace::{Quit, Workspace};
 /// desktops show the launcher's icon for kloggr's windows.
 pub const APP_ID: &str = "kloggr";
 
+/// The log file of this run, if one is written (shown in Help > About).
+pub(crate) static LOG_FILE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
 fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
     let args = match Args::parse(std::env::args_os().skip(1)) {
         Ok(args) => args,
         Err(message) => {
@@ -47,6 +47,18 @@ fn main() {
             return;
         }
     };
+    let options =
+        kloggr_core::settings::config_dir().map(|d| kloggr_core::options::Options::load(&d));
+    if let Some(path) = init_logging(&args, options.as_ref()) {
+        LOG_FILE.set(path).ok();
+    }
+    tracing::info!(
+        "kloggr {} on {}-{}, files {:?}",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        args.files
+    );
     // klogg: a second kloggr hands its files to the first, unless
     // -m/--multi.
     let single = !args.multi;
@@ -163,6 +175,10 @@ struct Args {
     load_session: bool,
     /// -n, --new-session: don't reopen the last session.
     new_session: bool,
+    /// -l, --log: write a log file.
+    log: bool,
+    /// -d, --debug, once per level above warnings.
+    debug: usize,
 }
 
 impl Args {
@@ -174,6 +190,8 @@ Options:
   -f, --follow       follow the files given
   -s, --load-session reopen the last session (the default without files)
   -n, --new-session  don't reopen the last session (the default with files)
+  -l, --log          write a log file in the temporary folder
+  -d, --debug        log more: -d info, -dd debug, -ddd trace
   -m, --multi        allow several kloggr to run, instead of opening the files
                      in the one already running
   -h, --help         print this help and exit
@@ -213,6 +231,8 @@ Options:
                     "-f" | "--follow" => out.follow = true,
                     "-s" | "--load-session" => out.load_session = true,
                     "-n" | "--new-session" => out.new_session = true,
+                    "-l" | "--log" => out.log = true,
+                    "-d" | "--debug" => out.debug += 1,
                     "-h" | "--help" => return Err(Self::HELP.to_owned()),
                     "-v" | "--version" => {
                         return Err(format!("kloggr {}", env!("CARGO_PKG_VERSION")));
@@ -229,6 +249,61 @@ Options:
     fn reopen_session(&self, files_given: bool, load_last_session: bool) -> bool {
         self.load_session || (!files_given && !self.new_session && load_last_session)
     }
+}
+
+/// Sets up the log (klogg: `enableLogging`, `enableFileLogging`): errors
+/// on the terminal, or more with `-d`; with `-l` or Options > General > "Write
+/// a log file", also a file in the temporary folder at the higher of the two
+/// levels. Only kloggr's own messages go below warnings. `RUST_LOG`
+/// overrides both. Returns the file's path.
+fn init_logging(args: &Args, options: Option<&kloggr_core::options::Options>) -> Option<PathBuf> {
+    use kloggr_core::options::LogLevel;
+    use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
+
+    let env = std::env::var("RUST_LOG").ok().filter(|e| !e.is_empty());
+    let filter = |level: Option<LogLevel>| match (&env, level) {
+        (Some(directives), _) => EnvFilter::new(directives),
+        (None, Some(level)) => EnvFilter::new(format!(
+            "warn,kloggr={0},kloggr_core={0}",
+            level.directive()
+        )),
+        (None, None) => EnvFilter::new("error"),
+    };
+    let cli = (args.debug > 0).then(|| LogLevel::from_debug_flags(args.debug));
+    let terminal = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_filter(filter(cli));
+    let file_level = [
+        args.log.then(|| cli.unwrap_or(LogLevel::Warning)),
+        options
+            .filter(|o| o.general.log_file)
+            .map(|o| o.general.log_level),
+    ]
+    .into_iter()
+    .flatten()
+    .max();
+    let mut path = None;
+    let file = file_level.and_then(|level| {
+        let name = format!(
+            "kloggr_{}_{}.log",
+            chrono::Local::now().format("%Y-%m-%d_%H-%M-%S"),
+            std::process::id()
+        );
+        let file_path = std::env::temp_dir().join(name);
+        let file = std::fs::File::create(&file_path).ok()?;
+        path = Some(file_path);
+        Some(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(std::sync::Mutex::new(file))
+                .with_filter(filter(Some(level))),
+        )
+    });
+    tracing_subscriber::registry()
+        .with(terminal)
+        .with(file)
+        .init();
+    path
 }
 
 /// Files sent by later launches open in the last active window (klogg:
@@ -422,5 +497,9 @@ mod tests {
         assert!(parse(&["--help"]).unwrap_err().starts_with("Usage: kloggr"));
         assert!(parse(&["-v"]).unwrap_err().starts_with("kloggr 0."));
         assert!(parse(&["-x"]).unwrap_err().starts_with("Unknown option -x"));
+        // klogg: -l writes a file, each -d is one level more than warnings.
+        let args = parse(&["-l", "-dd"]).unwrap();
+        assert!(args.log);
+        assert_eq!(args.debug, 2);
     }
 }

@@ -19,7 +19,7 @@ use gpui_component::tab::{Tab, TabBar};
 use gpui_component::{ActiveTheme, Disableable, Sizable, WindowExt, h_flex, v_flex};
 use kloggr_core::encoding;
 use kloggr_core::highlight::Color;
-use kloggr_core::options::{Options, Style};
+use kloggr_core::options::{LogLevel, Options, Style};
 
 use crate::highlighters::hsla;
 use crate::key_capture;
@@ -388,6 +388,35 @@ impl OptionsEditor {
                 |o, v| o.general.check_for_updates = v,
                 cx,
             ))
+            // klogg: Options > Advanced > logging, and its verbosity.
+            .child(heading("Logging"))
+            .child(
+                h_flex()
+                    .gap_4()
+                    .child(self.check(
+                        "log-file",
+                        "Write a log file (from the next start)",
+                        o.general.log_file,
+                        |o, v| o.general.log_file = v,
+                        cx,
+                    ))
+                    .child(
+                        RadioGroup::horizontal("log-level")
+                            .children(
+                                LogLevel::ALL
+                                    .iter()
+                                    .map(|l| Radio::new(l.label()).label(l.label())),
+                            )
+                            .selected_index(
+                                LogLevel::ALL.iter().position(|l| *l == o.general.log_level),
+                            )
+                            .disabled(!o.general.log_file)
+                            .on_click(cx.listener(|this, index: &usize, _, cx| {
+                                this.options.general.log_level = LogLevel::ALL[*index];
+                                cx.notify();
+                            })),
+                    ),
+            )
             .child(heading("Search options for new files"))
             .child(
                 h_flex()

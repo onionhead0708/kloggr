@@ -279,7 +279,7 @@ it.
 **Tools > Options…** has four tabs:
 
 - **General**: reopen the last session, follow new files, check for new
-  versions once a week, the default search options, match highlighting and
+  versions once a week, write a log file (and how detailed), the default search options, match highlighting and
   its colour, search history size, and quick find options.
 - **View**: font, overview bar, line numbers, and hiding ANSI colour
   sequences (`ESC[…m`) that some programs write for terminals.
@@ -293,6 +293,10 @@ Settings are kept in `settings.toml` in kloggr's configuration folder
 searches.
 
 ## When something goes wrong
+
+`kloggr -l` writes a log file in the temporary folder (`-d`, `-dd`, `-ddd`
+for more detail), as does **Options > General > Write a log file** from the
+next start; **Help > About** shows where it is.
 
 If kloggr crashes, it saves a report and shows it at the next start, with a
 button that opens a GitHub issue with the report. **Help > Report Issue**

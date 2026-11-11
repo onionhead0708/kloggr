@@ -8,6 +8,16 @@ Newest first. Each entry gives the date, what klogg does, what kloggr does, and 
 
 ---
 
+## 2026-11-11: Log file: kloggr's own messages, levels by name, set at startup
+
+**klogg:** `-l/--log` writes `klogg_<date>_<pid>.log` in the temporary folder; `-d` adds a level each time, from warnings; Options > Advanced "Enable logging" with a verbosity number (4 = info) also writes the file and logs to the console.
+
+**kloggr:** the same flags and file (`kloggr_<date>_<pid>.log`), and Options > General > Logging with Error, Warning, Info, Debug and Trace (default Info). The file gets the higher of the command line's and the option's levels; the terminal shows errors only unless `-d` is given. Below warnings only kloggr's own messages are written (libraries such as the graphics stack stay at warnings), and `RUST_LOG` overrides everything. The option applies from the next start. Help > About shows the file's path.
+
+**Why:** at debug level GPUI and wgpu write thousands of lines a second, which would bury kloggr's. Changing the subscriber of a running process isn't worth it for an option used to report a problem.
+
+**Code:** `init_logging` in `main.rs`, `kloggr_core::options::LogLevel`.
+
 ## 2026-11-11: macOS Open With also offers kloggr for compressed logs
 
 **klogg:** its `Info.plist` declares `public.text` as a Viewer document type, so Finder offers klogg in Open With for text files; files arrive through `QFileOpenEvent`.

@@ -290,6 +290,8 @@ pub struct Crawler {
     /// The pattern of the last search started, re-run when a file is opened.
     pub(crate) last_pattern: Option<Pattern>,
     searching: bool,
+    /// When the running search started, for the log.
+    search_started: std::time::Instant,
     /// Line last selected in either view (klogg: `currentLineNumber_`), to
     /// keep the filtered view near it after a search or visibility change.
     pub(crate) current_line: usize,
@@ -437,6 +439,7 @@ impl Crawler {
             info: SearchInfo::default(),
             last_pattern: None,
             searching: false,
+            search_started: std::time::Instant::now(),
             current_line: 0,
             go_to,
             following: false,
@@ -884,6 +887,7 @@ impl Crawler {
         };
         self.search_covers = (log.line_count(), log.byte_len());
         self.searching = true;
+        self.search_started = std::time::Instant::now();
         self.info = SearchInfo {
             text: "Search in progress…".into(),
             error: false,
@@ -939,6 +943,12 @@ impl Crawler {
                 self.searched = Some(self.search_covers);
                 let count = self.filter.read(cx).matches().len();
                 self.info.text = format!("{} found", matches_text(count));
+                tracing::info!(
+                    matches = count,
+                    elapsed = ?self.search_started.elapsed(),
+                    "searched {:?}",
+                    self.last_pattern.as_ref().map(|p| p.text.as_str()).unwrap_or_default()
+                );
                 if !self.updating {
                     // klogg: restore the filtered selection near the current
                     // line.

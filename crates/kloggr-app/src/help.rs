@@ -109,6 +109,10 @@ pub fn about(window: &mut Window, cx: &mut App) {
         env!("CARGO_PKG_VERSION"),
         repo = kloggr_core::REPOSITORY,
     );
+    let text = match crate::LOG_FILE.get() {
+        Some(path) => format!("{text}\n\nLog file: `{}`", path.display()),
+        None => text,
+    };
     window.open_alert_dialog(cx, move |alert, _, _| {
         alert
             .title("About kloggr")

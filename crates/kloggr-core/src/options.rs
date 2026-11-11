@@ -38,6 +38,11 @@ pub struct General {
     /// Ask GitHub for a newer release once a week (klogg:
     /// `versionchecker.enabled`, also on by default).
     pub check_for_updates: bool,
+    /// Write a log file, from the next start (klogg:
+    /// `logging.enableLogging`).
+    pub log_file: bool,
+    /// How much it says (klogg: `logging.verbosity`, 4 = info).
+    pub log_level: LogLevel,
 }
 
 impl Default for General {
@@ -46,6 +51,56 @@ impl Default for General {
             load_last_session: true,
             follow_on_load: false,
             check_for_updates: true,
+            log_file: false,
+            log_level: LogLevel::Info,
+        }
+    }
+}
+
+/// How much the log says (klogg: `LogLevel`, without None and Fatal).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    Error,
+    Warning,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl LogLevel {
+    pub const ALL: [Self; 5] = [
+        Self::Error,
+        Self::Warning,
+        Self::Info,
+        Self::Debug,
+        Self::Trace,
+    ];
+
+    /// The level after `steps` more `-d` options, from Warning (klogg:
+    /// `log_level = 3` plus one per `-d`).
+    pub fn from_debug_flags(steps: usize) -> Self {
+        Self::ALL[(1 + steps).min(Self::ALL.len() - 1)]
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Error => "Error",
+            Self::Warning => "Warning",
+            Self::Info => "Info",
+            Self::Debug => "Debug",
+            Self::Trace => "Trace",
+        }
+    }
+
+    /// The `tracing` / `RUST_LOG` name.
+    pub fn directive(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warning => "warn",
+            Self::Info => "info",
+            Self::Debug => "debug",
+            Self::Trace => "trace",
         }
     }
 }
@@ -262,6 +317,21 @@ impl Options {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn log_levels() {
+        assert_eq!(LogLevel::from_debug_flags(0), LogLevel::Warning);
+        assert_eq!(LogLevel::from_debug_flags(1), LogLevel::Info);
+        assert_eq!(LogLevel::from_debug_flags(2), LogLevel::Debug);
+        assert_eq!(LogLevel::from_debug_flags(9), LogLevel::Trace);
+        assert!(LogLevel::Debug > LogLevel::Info);
+        let mut o = Options::default();
+        o.general.log_file = true;
+        o.general.log_level = LogLevel::Debug;
+        let text = toml::to_string(&o).unwrap();
+        assert!(text.contains("log_level = \"debug\""), "{text}");
+        assert_eq!(toml::from_str::<Options>(&text).unwrap().general, o.general);
+    }
 
     #[test]
     fn defaults_follow_klogg() {
