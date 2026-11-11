@@ -271,6 +271,8 @@ impl Crawler {
         self.log = Some(log.clone());
         self.current_line = 0;
         self.searched = None;
+        // klogg: `loadingFinishedHandler` clears the search limits.
+        self.set_search_limits(0..usize::MAX, cx);
         for view in [&self.main, &self.filtered] {
             let log = log.clone();
             view.update(cx, |v, cx| v.set_log(Some(log), cx));

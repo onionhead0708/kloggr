@@ -83,6 +83,9 @@ actions!(
         ReplaceSearch,
         SendToScratchpad,
         ReplaceScratchpad,
+        SetSearchStart,
+        SetSearchEnd,
+        ClearSearchLimits,
     ]
 );
 
@@ -316,6 +319,19 @@ pub enum LogViewEvent {
     /// The user left the bottom while following, or asked to follow again
     /// by going to the bottom (klogg: `followModeChanged`).
     FollowChanged(bool),
+    /// Set search start / end, Clear search limits (klogg:
+    /// `changeSearchLimits`, `clearSearchLimits`).
+    SearchLimit(LimitOp),
+}
+
+/// A change to the lines a search covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LimitOp {
+    /// Searches start at this file line (`None`: the first).
+    Start(Option<usize>),
+    /// Searches end with this file line (`None`: the last).
+    End(Option<usize>),
+    Clear,
 }
 
 /// What the selection does to the search (klogg: `addToSearch`,
@@ -413,6 +429,9 @@ pub struct LogView {
     /// Search pattern: its matches on visible rows are highlighted (klogg:
     /// `searchPattern_`, "main search highlight").
     search_highlight: Option<Arc<Matcher>>,
+    /// File lines a search covers; the others are drawn dimmed (klogg:
+    /// `searchStart_`, `searchEnd_`).
+    search_limits: std::ops::Range<usize>,
     /// The tab's color labels (klogg: `quickHighlighters_`), and as
     /// highlighters.
     color_labels: ColorLabels,
@@ -447,6 +466,7 @@ impl LogView {
             hscroll_carry: px(0.),
             quick_find: None,
             search_highlight: None,
+            search_limits: 0..usize::MAX,
             color_labels: ColorLabels::new(),
             labels_compiled: Arc::default(),
             following: false,
@@ -623,6 +643,30 @@ impl LogView {
     pub fn set_search_highlight(&mut self, matcher: Option<Arc<Matcher>>, cx: &mut Context<Self>) {
         self.search_highlight = matcher;
         cx.notify();
+    }
+
+    pub fn set_search_limits(&mut self, limits: std::ops::Range<usize>, cx: &mut Context<Self>) {
+        self.search_limits = limits;
+        cx.notify();
+    }
+
+    /// The file line of the selection's first or last line, for Set search
+    /// start / end (klogg: `selection_.selectedLine()`; nothing selected
+    /// means the start or end of the file).
+    fn selected_line(&self, last: bool, cx: &App) -> Option<usize> {
+        let row = match self.selection {
+            Selection::None => return None,
+            Selection::Line(row) => row,
+            Selection::Range { start, end, .. } => {
+                if last {
+                    end
+                } else {
+                    start
+                }
+            }
+            Selection::Portion { line, .. } => line,
+        };
+        self.line_of(row, cx)
     }
 
     pub fn freeze(&self) -> FrozenView {
@@ -1259,6 +1303,17 @@ impl Render for LogView {
             }))
             .on_action(cx.listener(|v, _: &ToggleFreezeColumns, _, cx| v.toggle_freeze(cx)))
             .on_action(cx.listener(|v, _: &AddToSearch, _, cx| v.search_op(SearchOp::Add, cx)))
+            .on_action(cx.listener(|v, _: &SetSearchStart, _, cx| {
+                let line = v.selected_line(false, cx);
+                cx.emit(LogViewEvent::SearchLimit(LimitOp::Start(line)));
+            }))
+            .on_action(cx.listener(|v, _: &SetSearchEnd, _, cx| {
+                let line = v.selected_line(true, cx);
+                cx.emit(LogViewEvent::SearchLimit(LimitOp::End(line)));
+            }))
+            .on_action(cx.listener(|_, _: &ClearSearchLimits, _, cx| {
+                cx.emit(LogViewEvent::SearchLimit(LimitOp::Clear));
+            }))
             .on_action(
                 cx.listener(|v, _: &SendToScratchpad, w, cx| v.send_to_scratchpad(false, w, cx)),
             )
@@ -1349,6 +1404,7 @@ impl LogView {
         let no_text = text.is_none();
         let (focus, nothing_selected) = (this.focus.clone(), this.selection == Selection::None);
         let frozen = this.freeze.enabled;
+        let limited = this.search_limits != (0..usize::MAX);
         let styles = Highlighters::color_label_styles(cx);
         let sets: Vec<(String, String, bool)> = cx
             .try_global::<Highlighters>()
@@ -1366,6 +1422,10 @@ impl LogView {
             .menu_with_disabled("Add to search", Box::new(AddToSearch), no_text)
             .menu_with_disabled("Exclude from search", Box::new(ExcludeFromSearch), no_text)
             .menu_with_disabled("Replace search", Box::new(ReplaceSearch), no_text)
+            .separator()
+            .menu("Set search start", Box::new(SetSearchStart))
+            .menu("Set search end", Box::new(SetSearchEnd))
+            .menu_with_disabled("Clear search limits", Box::new(ClearSearchLimits), !limited)
             .separator()
             .menu_with_disabled(
                 "Send to scratchpad",
@@ -1649,6 +1709,9 @@ impl Element for LogElement {
                 let colouring = !highlighters.is_empty() || !labels.is_empty();
                 for (row, line, bytes) in shown {
                     let kind = filter.map_or_else(LineKind::default, |f| f.kind(line));
+                    // klogg: lines outside the search limits are drawn in
+                    // the disabled text colour, without highlighters.
+                    let outside = !view.search_limits.contains(&line);
                     let (shown_text, seen) = screen_text(&log, bytes, &vp);
                     view.viewport.grow_max_cols(seen);
                     let highlight = if view.selection.is_line_selected(row) {
@@ -1678,13 +1741,20 @@ impl Element for LogElement {
                     };
                     // Highlighters and color labels (klogg: not on lines
                     // selected whole, which are drawn reversed).
-                    let (line_colors, spans) =
-                        if colouring && short && !view.selection.is_line_selected(row) {
-                            colored_columns(&log, line, &highlighters, &labels, &vp)
-                        } else {
-                            (None, Vec::new())
-                        };
-                    let line_fg = line_colors.and_then(|c| c.fore).map_or(fg, hsla);
+                    let (line_colors, spans) = if colouring
+                        && short
+                        && !outside
+                        && !view.selection.is_line_selected(row)
+                    {
+                        colored_columns(&log, line, &highlighters, &labels, &vp)
+                    } else {
+                        (None, Vec::new())
+                    };
+                    let line_fg = if outside {
+                        muted
+                    } else {
+                        line_colors.and_then(|c| c.fore).map_or(fg, hsla)
+                    };
                     let runs = text_runs(&shown_text, line_fg, &spans);
                     let y =
                         text_bounds.top() + metrics.line_height * (row as f64 - vp.top()) as f32;

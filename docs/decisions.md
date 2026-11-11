@@ -8,6 +8,19 @@ Newest first. Each entry gives the date, what klogg does, what kloggr does, and 
 
 ---
 
+## 2026-11-11: Search limits survive appended data
+
+**klogg:** Set search start / end set the limits at the selected line; lines outside are drawn in the disabled colour. Every finished load clears the limits, also when the file only grew.
+
+**kloggr:**
+- Same menu items and drawing. A range of lines selected sets the start at its first line and the end at its last.
+- The limits are cleared when the file is reloaded or replaced, not when it grows. An end that was never set follows the end of the file.
+- Setting a start after the end drops the end (and an end before the start drops the start), so the range is never empty.
+
+**Why:** with follow mode and auto-refresh, clearing the limits on every append would make them useless on a live log.
+
+**Code:** `Crawler::change_search_limits`, `LogView::search_limits`.
+
 ## 2026-11-11: Encoding menu: remembered per file, no System entry
 
 **klogg:** the Encoding menu has Auto, "System (locale codec)" and Qt's codecs by group. The choice holds for the tab while it is open; Options has a default encoding for new files (`defaultView.encodingMib`).

@@ -26,7 +26,7 @@ use crate::background;
 use crate::follow::{self, Watch};
 use crate::go_to_line::{self, GoToLine};
 use crate::highlighters::Highlighters;
-use crate::log_view::{self, LabelOp, LogView, LogViewEvent, SearchOp};
+use crate::log_view::{self, LabelOp, LimitOp, LogView, LogViewEvent, SearchOp};
 use crate::quick_find::{self, QuickFind, Target};
 use crate::saved_searches::{self, SavedSearches};
 use crate::shortcuts::Shortcut;
@@ -257,6 +257,9 @@ pub struct Crawler {
     pub(crate) watch: Watch,
     /// The file is being indexed again (View > Reload, or it was replaced).
     pub(crate) reindex: Option<follow::Reindex>,
+    /// File lines searched (klogg: `searchStartLine_`, `searchEndLine_`);
+    /// `usize::MAX`: to the end of the file, however long it grows.
+    pub(crate) search_limits: std::ops::Range<usize>,
     /// Encoding chosen in the Encoding menu; `None`: the detected one.
     pub(crate) encoding: Option<Encoding>,
     /// Lines and bytes covered by the last finished search (`None`: none
@@ -311,6 +314,7 @@ impl Crawler {
                     LogViewEvent::ColorLabel(op, text) => this.color_label(*op, text, cx),
                     LogViewEvent::FreezeChanged(_) => cx.emit(CrawlerEvent::FrozenChanged),
                     LogViewEvent::Search(op, text) => this.search_from_view(*op, text, window, cx),
+                    &LogViewEvent::SearchLimit(op) => this.change_search_limits(op, cx),
                 },
             ),
             cx.subscribe_in(
@@ -328,6 +332,7 @@ impl Crawler {
                     LogViewEvent::ColorLabel(op, text) => this.color_label(*op, text, cx),
                     LogViewEvent::FreezeChanged(_) => cx.emit(CrawlerEvent::FrozenChanged),
                     LogViewEvent::Search(op, text) => this.search_from_view(*op, text, window, cx),
+                    &LogViewEvent::SearchLimit(op) => this.change_search_limits(op, cx),
                 },
             ),
             cx.observe(&filter, |_, _, cx| cx.notify()),
@@ -381,6 +386,7 @@ impl Crawler {
             watch: Watch::default(),
             reindex: None,
             encoding: None,
+            search_limits: 0..usize::MAX,
             searched: None,
             search_covers: (0, 0),
             updating: false,
@@ -397,6 +403,7 @@ impl Crawler {
     pub fn set_log(&mut self, log: Option<Arc<LogFile>>, cx: &mut Context<Self>) {
         self.stop_search();
         self.reindex = None;
+        self.set_search_limits(0..usize::MAX, cx);
         self.filter.update(cx, |f, cx| {
             *f = FilteredLines::new();
             cx.notify();
@@ -426,6 +433,42 @@ impl Crawler {
             && log.options().encoding != self.encoding
         {
             self.set_encoding(self.encoding, cx);
+        }
+        cx.notify();
+    }
+
+    /// Set search start / end, Clear search limits (klogg:
+    /// `setSearchLimits`). The next search covers only these lines. A start
+    /// after the end (or an end before the start) drops the other limit.
+    pub(crate) fn change_search_limits(&mut self, op: LimitOp, cx: &mut Context<Self>) {
+        let mut limits = self.search_limits.clone();
+        match op {
+            LimitOp::Start(line) => {
+                limits.start = line.unwrap_or(0);
+                if limits.start >= limits.end {
+                    limits.end = usize::MAX;
+                }
+            }
+            LimitOp::End(line) => {
+                limits.end = line.map_or(usize::MAX, |l| l + 1);
+                if limits.start >= limits.end {
+                    limits.start = 0;
+                }
+            }
+            LimitOp::Clear => limits = 0..usize::MAX,
+        }
+        self.set_search_limits(limits, cx);
+    }
+
+    pub(crate) fn set_search_limits(
+        &mut self,
+        limits: std::ops::Range<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        self.search_limits = limits;
+        for view in [&self.main, &self.filtered] {
+            let limits = self.search_limits.clone();
+            view.update(cx, |v, cx| v.set_search_limits(limits, cx));
         }
         cx.notify();
     }
@@ -714,13 +757,13 @@ impl Crawler {
 
         let (tx, rx) = async_channel::unbounded();
         let cancel = self.cancel.clone();
+        let range = from.max(self.search_limits.start)..self.search_limits.end;
         background::spawn_blocking(
             "kloggr-search",
             move || {
-                let result =
-                    search::search(&log, &matcher, from..usize::MAX, &cancel, |p, found| {
-                        tx.send_blocking(SearchEvent::Batch(p, found.to_vec())).ok();
-                    });
+                let result = search::search(&log, &matcher, range, &cancel, |p, found| {
+                    tx.send_blocking(SearchEvent::Batch(p, found.to_vec())).ok();
+                });
                 tx.send_blocking(SearchEvent::Done(result)).ok();
             },
             cx,
@@ -1707,6 +1750,33 @@ mod tests {
         windows,
         ignore = "Windows refuses to truncate a mapped file (docs/decisions.md)"
     )]
+    #[gpui::test]
+    fn search_limits(cx: &mut TestAppContext) {
+        let log = TempLog::new("limits", 12);
+        let (crawler, cx) = crawler(cx, &log);
+        // From the selected line 4 to line 7 (1-based), both included.
+        cx.simulate_keystrokes("4 g");
+        cx.dispatch_action(log_view::SetSearchStart);
+        cx.simulate_keystrokes("7 g");
+        cx.dispatch_action(log_view::SetSearchEnd);
+        assert_eq!(crawler.read_with(cx, |c, _| c.search_limits.clone()), 3..7);
+        assert_eq!(
+            search(&crawler, cx, "ERROR", SearchOptions::default()),
+            [3, 6]
+        );
+
+        // A start after the end drops the end.
+        cx.simulate_keystrokes("1 0 g");
+        cx.dispatch_action(log_view::SetSearchStart);
+        assert_eq!(search(&crawler, cx, "ERROR", SearchOptions::default()), [9]);
+
+        cx.dispatch_action(log_view::ClearSearchLimits);
+        assert_eq!(
+            search(&crawler, cx, "ERROR", SearchOptions::default()),
+            [0, 3, 6, 9]
+        );
+    }
+
     #[gpui::test]
     fn truncation_drops_marks_and_results(cx: &mut TestAppContext) {
         let log = TempLog::new("truncate", 9);
