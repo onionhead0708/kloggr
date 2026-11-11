@@ -16,7 +16,7 @@ use gpui::{
 use gpui_component::button::{Button, ButtonVariants, Toggle};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{DropdownMenu, PopupMenu};
-use gpui_component::resizable::{resizable_panel, v_resizable};
+use gpui_component::resizable::{ResizableState, resizable_panel, v_resizable};
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::{ActiveTheme, IconName, Sizable};
 use kloggr_core::search::{self, FilteredLines, Matcher, Pattern, SearchProgress, Visibility};
@@ -28,6 +28,7 @@ use crate::follow::{self, Watch};
 use crate::go_to_line::{self, GoToLine};
 use crate::highlighters::Highlighters;
 use crate::log_view::{self, LabelOp, LimitOp, LogView, LogViewEvent, SearchOp};
+use crate::preferences::Preferences;
 use crate::quick_find::{self, QuickFind, Target};
 use crate::results::Results;
 use crate::saved_searches::{self, SavedSearches};
@@ -51,6 +52,8 @@ actions!(
         ToggleBoolean,
         ToggleAutoRefresh,
         ToggleKeepResults,
+        IncreaseTopView,
+        DecreaseTopView,
         ToggleFreezeMain,
         ToggleFreezeFiltered,
         ClearSearchHistory,
@@ -168,6 +171,20 @@ pub fn shortcuts() -> Vec<Shortcut> {
             view,
             &["alt-9"],
             ToggleKeepResults,
+        ),
+        Shortcut::new(
+            "crawler.increase_top_view_size",
+            "Increase main view",
+            view,
+            &["+", "shift-="],
+            IncreaseTopView,
+        ),
+        Shortcut::new(
+            "crawler.decrease_top_view_size",
+            "Decrease main view",
+            view,
+            &["-"],
+            DecreaseTopView,
         ),
         Shortcut::new(
             "mainwindow.freeze_main",
@@ -289,6 +306,10 @@ pub struct Crawler {
     pub(crate) keep_results: bool,
     /// Progress of a Save to file from either view.
     pub(crate) saving: Option<u8>,
+    /// Sizes of the main and filtered views.
+    split: Entity<ResizableState>,
+    /// Height of the filtered view until the split is first laid out.
+    filtered_height: f32,
     /// Lines and bytes covered by the last finished search (`None`: none
     /// finished); with auto-refresh, what comes after is searched when the
     /// file grows.
@@ -342,6 +363,7 @@ impl Crawler {
                     LogViewEvent::FreezeChanged(_) => cx.emit(CrawlerEvent::FrozenChanged),
                     LogViewEvent::Search(op, text) => this.search_from_view(*op, text, window, cx),
                     &LogViewEvent::SearchLimit(op) => this.change_search_limits(op, cx),
+                    LogViewEvent::SaveSplitterPosition => this.save_split(cx),
                     &LogViewEvent::Saving(p) => {
                         this.saving = p;
                         cx.emit(CrawlerEvent::Status);
@@ -399,6 +421,8 @@ impl Crawler {
             current_results: 0,
             keep_results: false,
             saving: None,
+            split: cx.new(|_| ResizableState::default()),
+            filtered_height: Preferences::get(cx).view.filtered_height,
             search_limits: 0..usize::MAX,
             searched: None,
             search_covers: (0, 0),
@@ -487,6 +511,34 @@ impl Crawler {
         cx.notify();
     }
 
+    /// Height of the filtered view, in pixels.
+    pub(crate) fn filtered_height(&self, cx: &gpui::App) -> f32 {
+        self.split
+            .read(cx)
+            .sizes()
+            .get(1)
+            .map_or(self.filtered_height, |h| f32::from(*h))
+    }
+
+    /// `+` and `-` (klogg: `changeTopViewSize`): the main view grows or
+    /// shrinks by 10 pixels per step.
+    fn change_top_view_size(&mut self, steps: f32, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(&top) = self.split.read(cx).sizes().first() else {
+            return;
+        };
+        self.split.update(cx, |s, cx| {
+            s.resize_panel(0, top + px(10. * steps), window, cx)
+        });
+    }
+
+    /// Save splitter position (klogg: `saveSplitterSizes`): new tabs get
+    /// this filtered view height.
+    pub(crate) fn save_split(&mut self, cx: &mut Context<Self>) {
+        let mut options = Preferences::get(cx).clone();
+        options.view.filtered_height = self.filtered_height(cx);
+        Preferences::set(options, None, cx);
+    }
+
     /// Encoding > … (klogg: `CrawlerWidget::setEncoding`). The file is
     /// decoded again; indexed again only if its lines are laid out
     /// differently (UTF-16), which drops the marks. The search runs again.
@@ -529,6 +581,7 @@ impl Crawler {
             auto_refresh: o.auto_refresh,
             follow: self.following,
             encoding: self.encoding.map(|e| e.name().to_owned()),
+            filtered_height: Some(self.filtered_height(cx) as u32),
             marks: self
                 .filter
                 .read(cx)
@@ -551,6 +604,9 @@ impl Crawler {
         };
         self.pending_marks = context.marks;
         self.encoding = context.encoding.as_deref().and_then(Encoding::for_label);
+        if let Some(height) = context.filtered_height {
+            self.filtered_height = height as f32;
+        }
         self.set_follow(context.follow, cx);
     }
 
@@ -1227,6 +1283,12 @@ impl Render for Crawler {
                 this.toggle(|o| o.auto_refresh = !o.auto_refresh, cx);
                 this.refresh_search(cx);
             }))
+            .on_action(cx.listener(|this, _: &IncreaseTopView, window, cx| {
+                this.change_top_view_size(1., window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &DecreaseTopView, window, cx| {
+                this.change_top_view_size(-1., window, cx)
+            }))
             .on_action(cx.listener(|this, _: &ToggleKeepResults, _, cx| {
                 this.keep_results = !this.keep_results;
                 cx.notify();
@@ -1304,8 +1366,13 @@ impl Render for Crawler {
             .child(
                 div().flex_1().min_h_0().child(
                     v_resizable("crawler-split")
+                        .with_state(&self.split)
                         .child(resizable_panel().child(self.main.clone()))
-                        .child(resizable_panel().size(px(260.)).child(bottom)),
+                        .child(
+                            resizable_panel()
+                                .size(px(self.filtered_height))
+                                .child(bottom),
+                        ),
                 ),
             )
             .children(self.qf.open.then(|| {
@@ -1907,6 +1974,39 @@ mod tests {
         // Alt+8 toggles auto-refresh.
         cx.simulate_keystrokes("alt-8");
         assert!(crawler.read_with(cx, |c, _| c.options().auto_refresh));
+    }
+
+    #[gpui::test]
+    fn split_between_the_views(cx: &mut TestAppContext) {
+        let log = TempLog::new("split", 9);
+        let (crawler, cx) = crawler(cx, &log);
+        let sizes = |cx: &mut VisualTestContext| {
+            crawler.read_with(cx, |c, cx| {
+                c.split
+                    .read(cx)
+                    .sizes()
+                    .iter()
+                    .map(|s| f32::from(*s))
+                    .collect::<Vec<_>>()
+            })
+        };
+        let before = sizes(cx);
+        assert_eq!(before.len(), 2);
+        cx.simulate_keystrokes("- - +");
+        cx.run_until_parked();
+        let after = sizes(cx);
+        assert!(
+            (after[0] - (before[0] - 10.)).abs() < 0.5,
+            "{before:?} {after:?}"
+        );
+
+        // Save splitter position: the default for new tabs.
+        cx.dispatch_action(log_view::SaveSplitterPosition);
+        let saved = cx.update(|_, cx| Preferences::get(cx).view.filtered_height);
+        assert!((saved - after[1]).abs() < 0.5);
+        // Remembered per file in the session.
+        let height = crawler.read_with(cx, |c, cx| c.context(cx).filtered_height);
+        assert_eq!(height, Some(after[1] as u32));
     }
 
     #[gpui::test]

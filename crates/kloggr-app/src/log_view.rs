@@ -89,6 +89,7 @@ actions!(
         ClearSearchLimits,
         SaveToFile,
         SaveSelectedToFile,
+        SaveSplitterPosition,
     ]
 );
 
@@ -327,6 +328,8 @@ pub enum LogViewEvent {
     SearchLimit(LimitOp),
     /// Progress of Save to file, for the status line; `None` when done.
     Saving(Option<u8>),
+    /// Save splitter position (klogg: `saveDefaultSplitterSizes`).
+    SaveSplitterPosition,
 }
 
 /// The lines Save to file writes.
@@ -1483,6 +1486,9 @@ impl Render for LogView {
                     v.save_to_file(true, window, cx)
                 }),
             )
+            .on_action(cx.listener(|_, _: &SaveSplitterPosition, _, cx| {
+                cx.emit(LogViewEvent::SaveSplitterPosition)
+            }))
             .on_action(cx.listener(|_, _: &ClearSearchLimits, _, cx| {
                 cx.emit(LogViewEvent::SearchLimit(LimitOp::Clear));
             }))
@@ -1623,6 +1629,8 @@ impl LogView {
                 Box::new(ToggleFreezeColumns),
                 this.wrapping,
             )
+            .separator()
+            .menu("Save splitter position", Box::new(SaveSplitterPosition))
             .separator()
             .submenu("Color labels", window, cx, move |menu, _, _| {
                 let mut menu = menu

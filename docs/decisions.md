@@ -8,6 +8,16 @@ Newest first. Each entry gives the date, what klogg does, what kloggr does, and 
 
 ---
 
+## 2026-11-11: The split is the filtered view's height
+
+**klogg:** the splitter sizes of both views are saved by "Save splitter position" (`splitterSizes`) and with each file in the session; `+` and `-` move the splitter by 10 pixels.
+
+**kloggr:** the same keys and menu item, in the log views (so `+` and `-` can still be typed in the search box). Only the filtered view's height is stored, in pixels (`view.filtered_height`, and `filtered_height` per file in the session); the main view takes the rest of the window.
+
+**Why:** with the window resized between runs, a fixed bottom pane keeps the search results the size the user chose, and one number can't disagree with itself.
+
+**Code:** `Crawler::{change_top_view_size, save_split, filtered_height}`.
+
 ## 2026-11-11: Save to file writes the lines as they are
 
 **klogg:** Save to file and Save selected to file decode the lines and encode them again with the display encoding, ending each with a line feed (and a carriage return outside Windows). A modal progress dialog can cancel.

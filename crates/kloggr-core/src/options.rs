@@ -116,6 +116,9 @@ pub struct View {
     pub line_numbers_filtered: bool,
     /// Long lines wrap at the view's width (klogg: `view.textWrap`).
     pub text_wrap: bool,
+    /// Height of the filtered view in a new tab, in pixels (klogg: "Save
+    /// splitter position", `splitterSizes`).
+    pub filtered_height: f32,
 }
 
 impl Default for View {
@@ -128,6 +131,7 @@ impl Default for View {
             line_numbers_main: true,
             line_numbers_filtered: true,
             text_wrap: false,
+            filtered_height: 260.,
         }
     }
 }

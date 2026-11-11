@@ -109,6 +109,9 @@ pub struct FileContext {
     pub marks: Vec<u64>,
     /// Encoding chosen in the Encoding menu (its name); `None`: detected.
     pub encoding: Option<String>,
+    /// Height of the filtered view in pixels (klogg: the splitter `sizes`
+    /// of the view context); `None`: the default.
+    pub filtered_height: Option<u32>,
 }
 
 impl Default for FileContext {
@@ -123,6 +126,7 @@ impl Default for FileContext {
             follow: false,
             marks: Vec::new(),
             encoding: None,
+            filtered_height: None,
         }
     }
 }
