@@ -186,6 +186,8 @@ pub struct Session {
     /// Index in `open_files` of the current tab. (Plain values come before
     /// tables in TOML.)
     pub current_file: usize,
+    /// Favorite files, by path (klogg: `FavoriteFiles`, sorted by name).
+    pub favorites: Vec<PathBuf>,
     pub recent_files: RecentFiles,
     /// Files open in the window, in tab order, reopened at startup (klogg:
     /// `loadLastSession`, on by default).
@@ -205,6 +207,7 @@ impl Default for Session {
         Self {
             version: SESSION_VERSION,
             recent_files: RecentFiles::default(),
+            favorites: Vec::new(),
             open_files: Vec::new(),
             current_file: 0,
             frozen_columns: Vec::new(),
@@ -222,6 +225,8 @@ impl Session {
         match load_toml::<Self>(dir, SESSION_FILE) {
             Some(mut session) if session.version == SESSION_VERSION => {
                 session.recent_files.sanitize();
+                session.favorites.sort();
+                session.favorites.dedup();
                 session
             }
             Some(session) => {
@@ -238,6 +243,21 @@ impl Session {
     /// Saves to `dir`, creating it if needed.
     pub fn save(&self, dir: &Path) -> Result<(), SettingsError> {
         save_toml(self, dir, SESSION_FILE)
+    }
+
+    /// Adds `path` to the favorites, kept sorted (klogg: `FavoriteFiles::add`).
+    pub fn add_favorite(&mut self, path: &Path) {
+        if let Err(at) = self.favorites.binary_search_by(|f| f.as_path().cmp(path)) {
+            self.favorites.insert(at, path.to_path_buf());
+        }
+    }
+
+    pub fn remove_favorite(&mut self, path: &Path) {
+        self.favorites.retain(|f| f != path);
+    }
+
+    pub fn is_favorite(&self, path: &Path) -> bool {
+        self.favorites.iter().any(|f| f == path)
     }
 
     /// The tabs of every window, the first one first.
@@ -503,6 +523,30 @@ mod tests {
         // A session from before tabs: no open files.
         std::fs::write(dir.0.join(SESSION_FILE), "version = 1\n").unwrap();
         assert!(Session::load(&dir.0).open_files.is_empty());
+    }
+
+    #[test]
+    fn favorites() {
+        let dir = TempDir::new("favorites");
+        let mut session = Session::default();
+        for p in [
+            "/var/log/b.log",
+            "/var/log/a.log",
+            "/srv/c.log",
+            "/var/log/a.log",
+        ] {
+            session.add_favorite(Path::new(p));
+        }
+        let expected: Vec<PathBuf> = ["/srv/c.log", "/var/log/a.log", "/var/log/b.log"]
+            .map(PathBuf::from)
+            .into();
+        assert_eq!(session.favorites, expected);
+        assert!(session.is_favorite(Path::new("/srv/c.log")));
+        session.save(&dir.0).unwrap();
+        assert_eq!(Session::load(&dir.0).favorites, expected);
+        session.remove_favorite(Path::new("/srv/c.log"));
+        assert!(!session.is_favorite(Path::new("/srv/c.log")));
+        assert_eq!(session.favorites.len(), 2);
     }
 
     #[test]

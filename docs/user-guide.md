@@ -49,6 +49,12 @@ and closes tabs.
 reopens every window that was open when it closed; closing one window while
 others stay open forgets its tabs.
 
+### Favorites
+
+**Favorites > Add to Favorites** keeps the current file in the Favorites
+menu, for files you open often that drop out of the recent files.
+**Remove from Favorites…** asks which one to remove.
+
 ### Archives and compressed files
 
 kloggr opens compressed files (gzip, bzip2, xz, lzma) and archives (zip, 7z,

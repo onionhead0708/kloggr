@@ -67,7 +67,9 @@ actions!(
         OpenClipboard,
         SelectOpenFile,
         OpenUrl,
-        NewWindow
+        NewWindow,
+        AddToFavorites,
+        RemoveFromFavorites
     ]
 );
 
@@ -83,6 +85,13 @@ pub struct SetEncoding {
 #[derive(Clone, PartialEq, Debug, Action)]
 #[action(namespace = workspace, no_json)]
 pub struct OpenRecent {
+    pub path: PathBuf,
+}
+
+/// Opens a file from the Favorites menu.
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = workspace, no_json)]
+pub struct OpenFavorite {
     pub path: PathBuf,
 }
 
@@ -511,6 +520,7 @@ impl Workspace {
                 MenuItem::action("Highlighters…", EditHighlighters),
                 MenuItem::submenu(Highlighters::menu(cx)),
             ]),
+            self.favorites_menu(),
             // klogg: Help > Documentation, Report Issue, About.
             Menu::new("Help").items([
                 MenuItem::action("Documentation", help::ShowDocumentation),
@@ -520,6 +530,28 @@ impl Workspace {
                 MenuItem::action("About kloggr", help::About),
             ]),
         ]
+    }
+
+    /// klogg: the Favorites menu (`updateFavoritesMenu`): add the current
+    /// file, remove one, then the favorites.
+    fn favorites_menu(&self) -> Menu {
+        let current = self.tabs.get(self.active).map(|t| t.path.as_path());
+        let can_add =
+            current.is_some_and(|p| !self.session.is_favorite(p) && !Self::is_temporary(p));
+        let mut items = vec![
+            MenuItem::action("Add to Favorites", AddToFavorites).disabled(!can_add),
+            MenuItem::action("Remove from Favorites…", RemoveFromFavorites)
+                .disabled(self.session.favorites.is_empty()),
+        ];
+        if !self.session.favorites.is_empty() {
+            items.push(MenuItem::separator());
+        }
+        items.extend(
+            self.session.favorites.iter().map(|path| {
+                MenuItem::action(path_label(path), OpenFavorite { path: path.clone() })
+            }),
+        );
+        Menu::new("Favorites").items(items)
     }
 
     /// klogg: View > Opened Files: the switcher, then a tab per file.
@@ -672,8 +704,14 @@ impl Workspace {
         }
         let files = self.tabs.iter().map(|t| t.path.clone()).collect();
         let this = cx.entity().downgrade();
+        let labels = switcher::Labels {
+            title: "Switch to file",
+            ok: "Switch",
+        };
         self._switcher = Some(switcher::open(
+            labels,
             files,
+            self.active,
             window,
             cx,
             move |index, window, cx| {
@@ -1200,6 +1238,82 @@ impl Workspace {
         .detach();
     }
 
+    /// Favorites > Add to Favorites (klogg: `addToFavorites`).
+    fn add_to_favorites(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.tabs.get(self.active).map(|t| t.path.clone()) else {
+            return;
+        };
+        if Self::is_temporary(&path) {
+            return;
+        }
+        self.update_session(cx, |s| s.add_favorite(&path));
+        self.update_menus(cx);
+    }
+
+    /// Favorites > Remove from Favorites… (klogg: `removeFromFavorites`,
+    /// which asks which one, the current file first).
+    fn prompt_remove_favorite(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let files = self.session.favorites.clone();
+        if files.is_empty() {
+            return;
+        }
+        let current = self.tabs.get(self.active).map(|t| t.path.as_path());
+        let selected = files
+            .iter()
+            .position(|f| Some(f.as_path()) == current)
+            .unwrap_or(0);
+        let this = cx.entity().downgrade();
+        let labels = switcher::Labels {
+            title: "Remove from favorites",
+            ok: "Remove",
+        };
+        let chosen_files = files.clone();
+        self._switcher = Some(switcher::open(
+            labels,
+            files,
+            selected,
+            window,
+            cx,
+            move |index, _, cx| {
+                let path = chosen_files[index].clone();
+                this.update(cx, |ws, cx| {
+                    ws.update_session(cx, |s| s.remove_favorite(&path));
+                    ws.update_menus(cx);
+                })
+                .ok();
+            },
+        ));
+    }
+
+    /// Opens a favorite, offering to remove it if it is gone (klogg:
+    /// `openFileFromFavorites`).
+    fn open_favorite(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if std::fs::File::open(&path).is_ok() {
+            self.open(path, window, cx);
+            return;
+        }
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &format!(
+                "Could not read file {}. Remove it from favorites?",
+                path.display()
+            ),
+            None,
+            &["Yes", "No"],
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            if answer.await == Ok(0) {
+                this.update(cx, |this, cx| {
+                    this.update_session(cx, |s| s.remove_favorite(&path));
+                    this.update_menus(cx);
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
     /// Opens a recent file, offering to forget it if it is gone (klogg:
     /// `openFileFromRecent`).
     fn open_recent(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
@@ -1647,6 +1761,13 @@ impl Render for Workspace {
                 cx.listener(|this, _: &OpenClipboard, window, cx| this.open_clipboard(window, cx)),
             )
             .on_action(cx.listener(|this, _: &OpenUrl, window, cx| this.prompt_url(window, cx)))
+            .on_action(cx.listener(|this, _: &AddToFavorites, _, cx| this.add_to_favorites(cx)))
+            .on_action(cx.listener(|this, _: &RemoveFromFavorites, window, cx| {
+                this.prompt_remove_favorite(window, cx)
+            }))
+            .on_action(cx.listener(|this, a: &OpenFavorite, window, cx| {
+                this.open_favorite(a.path.clone(), window, cx)
+            }))
             // klogg: File > New Window; it starts empty.
             .on_action(cx.listener(|this, _: &NewWindow, _, cx| {
                 let config_dir = this.config_dir.clone();
@@ -1771,11 +1892,27 @@ fn recent_label(index: usize, path: &Path) -> String {
         0..=8 => char::from(b'1' + index as u8),
         _ => char::from(b'a' + (index - 9) as u8),
     };
+    format!("{key}  {}", path_label(path))
+}
+
+/// "app.log — /var/log", the folder shortened in the middle when long
+/// (klogg: `DisplayFilePath`, `shrinkPath`).
+fn path_label(path: &Path) -> String {
+    const MAX_DIR: usize = 60;
     let dir = path
         .parent()
         .map(|d| d.display().to_string())
         .unwrap_or_default();
-    format!("{key}  {} — {dir}", file_name(path))
+    let chars: Vec<char> = dir.chars().collect();
+    let dir = if chars.len() > MAX_DIR {
+        let keep = (MAX_DIR - 1) / 2;
+        let head: String = chars[..keep].iter().collect();
+        let tail: String = chars[chars.len() - keep..].iter().collect();
+        format!("{head}…{tail}")
+    } else {
+        dir
+    };
+    format!("{} — {dir}", file_name(path))
 }
 
 #[cfg(test)]
@@ -2390,6 +2527,74 @@ mod tests {
             windows.iter().map(paths).collect::<Vec<_>>(),
             [vec![a.clone()]]
         );
+    }
+
+    #[test]
+    fn long_folders_are_shortened() {
+        assert_eq!(
+            path_label(Path::new("/var/log/app.log")),
+            "app.log — /var/log"
+        );
+        let deep = format!("/{}/app.log", "d".repeat(100));
+        let label = path_label(Path::new(&deep));
+        assert_eq!(label.chars().count(), "app.log — ".chars().count() + 59);
+        assert!(label.starts_with("app.log — /ddd") && label.contains('…'));
+    }
+
+    #[gpui::test]
+    fn favorites(cx: &mut TestAppContext) {
+        let fx = Fixture::new("favorites");
+        let (a, b) = (fx.log("a.log", 2), fx.log("b.log", 3));
+        let (ws, cx) = workspace(cx, fx.config());
+        let menu = |cx: &mut VisualTestContext| {
+            ws.read_with(cx, |ws, _| ws.favorites_menu())
+                .items
+                .into_iter()
+                .filter_map(|i| match i {
+                    MenuItem::Action { name, disabled, .. } => Some((name.to_string(), disabled)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        // Nothing to add or remove without a file.
+        assert_eq!(
+            menu(cx),
+            [
+                ("Add to Favorites".into(), true),
+                ("Remove from Favorites…".into(), true)
+            ]
+        );
+        for path in [&b, &a] {
+            ws.update_in(cx, |ws, window, cx| ws.open(path.clone(), window, cx));
+            wait_indexed(&ws, cx);
+            cx.dispatch_action(AddToFavorites);
+        }
+        // Sorted, and the current file can't be added twice.
+        let items = menu(cx);
+        assert_eq!(items[0], ("Add to Favorites".into(), true));
+        assert_eq!(items[2].0, path_label(&a));
+        assert_eq!(items[3].0, path_label(&b));
+        assert_eq!(
+            Session::load(&fx.config()).favorites,
+            [a.clone(), b.clone()]
+        );
+
+        // Remove from Favorites… offers the current file first.
+        cx.dispatch_action(RemoveFromFavorites);
+        cx.run_until_parked();
+        cx.simulate_keystrokes("enter");
+        assert_eq!(Session::load(&fx.config()).favorites, std::slice::from_ref(&b));
+
+        // A favorite that disappeared: asked, then removed.
+        ws.update_in(cx, |ws, window, cx| ws.activate(0, window, cx));
+        cx.dispatch_action(CloseAllTabs);
+        std::fs::remove_file(&b).unwrap();
+        cx.dispatch_action(OpenFavorite { path: b.clone() });
+        assert!(cx.has_pending_prompt());
+        cx.simulate_prompt_answer("Yes");
+        cx.run_until_parked();
+        assert!(Session::load(&fx.config()).favorites.is_empty());
+        assert!(ws.read_with(cx, |ws, _| ws.session.favorites.is_empty()));
     }
 
     #[gpui::test]

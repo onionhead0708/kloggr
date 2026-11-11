@@ -8,6 +8,16 @@ Newest first. Each entry gives the date, what klogg does, what kloggr does, and 
 
 ---
 
+## 2026-11-11: Favorites: no toolbar star, temporary files can't be added
+
+**klogg:** a Favorites menu (Add to Favorites, Remove from Favorites…, then the files sorted by name) and a star button on the toolbar that adds or removes the current file. Favorites are kept with the session settings.
+
+**kloggr:** the same menu, kept in `session.toml` and sorted by path. There is no toolbar, so no star. Files from the clipboard, downloads and archives can't be added (they are deleted on quit). Long folders are shortened in the middle in the Favorites and Open Recent menus (klogg shortens the whole path to 128 characters).
+
+**Why:** kloggr has no toolbar; a favorite that is deleted on quit would only lead to the "Could not read file" question.
+
+**Code:** `Workspace::{favorites_menu, add_to_favorites, prompt_remove_favorite, open_favorite}`, `Session::{add_favorite, remove_favorite}`.
+
 ## 2026-11-11: New Window is always there, and every window is reopened
 
 **klogg:** File > New Window only shows with Options > General > "Enable multiple windows" (off by default). With it on, the session keeps the windows open at exit and reopens them; without it, a second launch reuses the window.

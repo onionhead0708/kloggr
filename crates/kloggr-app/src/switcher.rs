@@ -1,5 +1,6 @@
-//! Switch to an open file, Ctrl+Shift+O (klogg: `MainWindow::selectOpenedFile`,
-//! a dialog listing the open files' paths with a wildcard filter).
+//! Choosing a file from a list: Switch to File (Ctrl+Shift+O, klogg:
+//! `MainWindow::selectOpenedFile`, the open files' paths with a wildcard
+//! filter) and Remove from Favorites (klogg: a `QInputDialog` list).
 //!
 //! Typing filters the list (`*` and `?` are wildcards, case is ignored, the
 //! text may match anywhere in the path); Up and Down move the selection,
@@ -22,6 +23,7 @@ pub struct Chosen(pub usize);
 
 pub struct FileSwitcher {
     files: Vec<PathBuf>,
+    ok: &'static str,
     input: Entity<InputState>,
     /// Indexes in `files` that match the filter.
     pub(crate) shown: Vec<usize>,
@@ -39,7 +41,13 @@ impl Focusable for FileSwitcher {
 }
 
 impl FileSwitcher {
-    pub fn new(files: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        files: Vec<PathBuf>,
+        selected: usize,
+        ok: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Filter"));
         let subscription = cx.subscribe_in(
             &input,
@@ -55,10 +63,11 @@ impl FileSwitcher {
         );
         let shown = (0..files.len()).collect();
         Self {
+            selected: selected.min(files.len().saturating_sub(1)),
             files,
+            ok,
             input,
             shown,
-            selected: 0,
             _subscription: subscription,
         }
     }
@@ -150,7 +159,7 @@ impl Render for FileSwitcher {
                     )
                     .child(
                         Button::new("switch-ok")
-                            .label("Switch")
+                            .label(self.ok)
                             .small()
                             .primary()
                             .disabled(empty)
@@ -190,15 +199,25 @@ pub fn wildcard_match(pattern: &str, text: &str) -> bool {
     }
 }
 
-/// Shows the switcher; `chosen` gets the tab index. Keep the returned
-/// entity until then (see `key_capture::open`).
+/// What the dialog shows.
+pub struct Labels {
+    pub title: &'static str,
+    /// The button that chooses.
+    pub ok: &'static str,
+}
+
+/// Shows the list with `selected` selected; `chosen` gets the index of the
+/// file chosen. Keep the returned entity until then (see
+/// `key_capture::open`).
 pub fn open(
+    labels: Labels,
     files: Vec<PathBuf>,
+    selected: usize,
     window: &mut Window,
     cx: &mut App,
     chosen: impl Fn(usize, &mut Window, &mut App) + 'static,
 ) -> Entity<FileSwitcher> {
-    let switcher = cx.new(|cx| FileSwitcher::new(files, window, cx));
+    let switcher = cx.new(|cx| FileSwitcher::new(files, selected, labels.ok, window, cx));
     window
         .subscribe(&switcher, cx, move |_, Chosen(index), window, cx| {
             chosen(*index, window, cx)
@@ -207,7 +226,7 @@ pub fn open(
     let dialog_switcher = switcher.clone();
     window.open_dialog(cx, move |dialog, _, _| {
         dialog
-            .title("Switch to file")
+            .title(labels.title)
             .w(px(800.))
             .child(dialog_switcher.clone())
     });
