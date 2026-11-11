@@ -8,6 +8,16 @@ Newest first. Each entry gives the date, what klogg does, what kloggr does, and 
 
 ---
 
+## 2026-11-11: Full Screen toggles, with F11, in the View menu
+
+**klogg:** `mainwindow.fullscreen`, `mainwindow.max_window` and `mainwindow.min_window` are shortcuts without default keys or menu items; they call `showFullScreen`, `showMaximized` and `showMinimized`, so full screen can't be left with the same key. Window geometry is saved with the session (`saveGeometry`).
+
+**kloggr:** Full Screen toggles, has F11 by default (Ctrl+Cmd+F on macOS) and is in the View menu, checked when on. Maximize toggles too (GPUI's `zoom_window`); Minimize is the same. Each window's size, place and maximized or full-screen state is saved with its tabs; a window that would open off every display (one was unplugged) is centred with its size.
+
+**Why:** a full-screen key that can't bring the window back is a trap; F11 is what other Linux and Windows apps use. Wayland compositors don't let apps choose their place, so there only the size comes back.
+
+**Code:** `geometry_of` in `workspace.rs`, `window_bounds` in `main.rs`, `WindowGeometry`.
+
 ## 2026-11-11: Single instance over loopback TCP with a token; fewer command-line options
 
 **klogg:** `SingleApplication` (a local socket named after the user) makes a second launch send its files to the first, which opens them in its active window; `-m/--multi` allows several instances. The command line also has `-s/--load-session`, `-n/--new-session`, `-l/--log`, `-f/--follow`, `-d/--debug` and window size options.

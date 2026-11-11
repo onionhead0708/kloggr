@@ -169,17 +169,31 @@ pub struct OpenFile {
     pub context: FileContext,
 }
 
+/// A window's size and place, in logical pixels (klogg: `saveGeometry`).
+/// When maximized or full screen, the bounds are those it returns to.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WindowGeometry {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub maximized: bool,
+    pub fullscreen: bool,
+}
+
 /// The tabs of one window (klogg: a window of `SessionInfo`).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WindowFiles {
     /// Index in `open_files` of the current tab.
     pub current_file: usize,
     pub open_files: Vec<OpenFile>,
+    pub geometry: Option<WindowGeometry>,
 }
 
 /// Everything stored in `session.toml`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Session {
     version: u32,
@@ -200,6 +214,8 @@ pub struct Session {
     /// The windows after the first, whose tabs are `open_files` (klogg:
     /// "Enable multiple windows").
     pub windows: Vec<WindowFiles>,
+    /// The first window's size and place.
+    pub geometry: Option<WindowGeometry>,
 }
 
 impl Default for Session {
@@ -213,6 +229,7 @@ impl Default for Session {
             frozen_columns: Vec::new(),
             tab_names: Vec::new(),
             windows: Vec::new(),
+            geometry: None,
         }
     }
 }
@@ -265,6 +282,7 @@ impl Session {
         let first = WindowFiles {
             current_file: self.current_file,
             open_files: self.open_files.clone(),
+            geometry: self.geometry,
         };
         std::iter::once(first)
             .chain(self.windows.iter().cloned())
@@ -277,6 +295,7 @@ impl Session {
         let first = windows.next().unwrap_or_default();
         self.current_file = first.current_file;
         self.open_files = first.open_files;
+        self.geometry = first.geometry;
         self.windows = windows.collect();
     }
 
@@ -560,10 +579,23 @@ mod tests {
             WindowFiles {
                 current_file: 1,
                 open_files: vec![file("/a.log"), file("/b.log")],
+                geometry: Some(WindowGeometry {
+                    x: 10.,
+                    y: 20.,
+                    width: 1200.,
+                    height: 800.,
+                    maximized: true,
+                    fullscreen: false,
+                }),
             },
             WindowFiles {
                 current_file: 0,
                 open_files: vec![file("/c.log")],
+                geometry: Some(WindowGeometry {
+                    width: 640.,
+                    height: 480.,
+                    ..WindowGeometry::default()
+                }),
             },
         ];
         let mut session = Session::default();

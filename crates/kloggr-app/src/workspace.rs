@@ -23,7 +23,7 @@ use gpui_component::tab::{Tab as GuiTab, TabBar};
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme, GlobalState, Sizable, TitleBar, WindowExt};
 use kloggr_core::file::OpenError;
-use kloggr_core::settings::{FileContext, OpenFile, Session, WindowFiles};
+use kloggr_core::settings::{FileContext, OpenFile, Session, WindowFiles, WindowGeometry};
 use kloggr_core::{Encoding, IndexProgress, LogFile, OpenOptions, encoding};
 use kloggr_core::{archive, download};
 
@@ -69,7 +69,10 @@ actions!(
         OpenUrl,
         NewWindow,
         AddToFavorites,
-        RemoveFromFavorites
+        RemoveFromFavorites,
+        ToggleFullScreen,
+        MaximizeWindow,
+        MinimizeWindow
     ]
 );
 
@@ -127,6 +130,33 @@ pub fn shortcuts() -> Vec<Shortcut> {
             None,
             &[],
             NewWindow,
+        ),
+        // klogg: no default keys, and Full Screen can't be left; F11 (and
+        // macOS's Ctrl+Cmd+F) toggles it here.
+        Shortcut::new(
+            "mainwindow.fullscreen",
+            "Full Screen",
+            None,
+            if cfg!(target_os = "macos") {
+                &["ctrl-cmd-f"]
+            } else {
+                &["f11"]
+            },
+            ToggleFullScreen,
+        ),
+        Shortcut::new(
+            "mainwindow.max_window",
+            "Maximize window",
+            None,
+            &[],
+            MaximizeWindow,
+        ),
+        Shortcut::new(
+            "mainwindow.min_window",
+            "Minimize window",
+            None,
+            &[],
+            MinimizeWindow,
         ),
         Shortcut::new(
             "mainwindow.open_file",
@@ -366,6 +396,8 @@ pub struct Workspace {
     /// This workspace's entity, to find it among the main windows.
     id: EntityId,
     window: gpui::AnyWindowHandle,
+    /// The window's size and place, kept up to date for the session.
+    geometry: Option<WindowGeometry>,
     tabs: Vec<Tab>,
     active: usize,
     /// In-window menu bar; `None` on macOS, which uses the native one.
@@ -416,6 +448,16 @@ impl Workspace {
             }
         })
         .detach();
+        cx.observe_window_bounds(window, |this, window, cx| {
+            let geometry = geometry_of(window);
+            let fullscreen_changed =
+                this.geometry.map(|g| g.fullscreen) != Some(geometry.fullscreen);
+            this.geometry = Some(geometry);
+            if fullscreen_changed {
+                this.update_menus(cx);
+            }
+        })
+        .detach();
         // Marks and options change without a tab change: save them on exit.
         cx.on_app_quit(|this, cx| {
             cx.default_global::<MainWindows>().quitting = true;
@@ -429,6 +471,7 @@ impl Workspace {
         let mut this = Self {
             id: cx.entity_id(),
             window: window.window_handle(),
+            geometry: Some(geometry_of(window)),
             tabs: Vec::new(),
             active: 0,
             menu_bar: (!cfg!(target_os = "macos")).then(|| AppMenuBar::new(cx)),
@@ -541,6 +584,9 @@ impl Workspace {
                 MenuItem::action("Stop", Stop).disabled(no_tab),
                 MenuItem::separator(),
                 MenuItem::submenu(self.opened_files_menu()),
+                MenuItem::separator(),
+                MenuItem::action("Full Screen", ToggleFullScreen)
+                    .checked(self.geometry.is_some_and(|g| g.fullscreen)),
             ]),
             self.encoding_menu(cx),
             Menu::new("Tools").items([
@@ -1153,6 +1199,7 @@ impl Workspace {
         WindowFiles {
             current_file,
             open_files,
+            geometry: self.geometry,
         }
     }
 
@@ -1793,6 +1840,10 @@ impl Render for Workspace {
             )
             .on_action(cx.listener(|this, _: &OpenUrl, window, cx| this.prompt_url(window, cx)))
             .on_action(cx.listener(|this, _: &AddToFavorites, _, cx| this.add_to_favorites(cx)))
+            .on_action(cx.listener(|_, _: &ToggleFullScreen, window, _| window.toggle_fullscreen()))
+            // klogg: `showMaximized`; here it also restores a maximized window.
+            .on_action(cx.listener(|_, _: &MaximizeWindow, window, _| window.zoom_window()))
+            .on_action(cx.listener(|_, _: &MinimizeWindow, window, _| window.minimize_window()))
             .on_action(cx.listener(|this, _: &RemoveFromFavorites, window, cx| {
                 this.prompt_remove_favorite(window, cx)
             }))
@@ -1915,6 +1966,23 @@ fn file_name(path: &Path) -> String {
         || path.display().to_string(),
         |n| n.to_string_lossy().into_owned(),
     )
+}
+
+/// The window's size and place, and whether it is maximized or full screen.
+fn geometry_of(window: &Window) -> WindowGeometry {
+    let (bounds, maximized, fullscreen) = match window.window_bounds() {
+        gpui::WindowBounds::Windowed(b) => (b, false, false),
+        gpui::WindowBounds::Maximized(b) => (b, true, false),
+        gpui::WindowBounds::Fullscreen(b) => (b, false, true),
+    };
+    WindowGeometry {
+        x: f32::from(bounds.origin.x),
+        y: f32::from(bounds.origin.y),
+        width: f32::from(bounds.size.width),
+        height: f32::from(bounds.size.height),
+        maximized,
+        fullscreen,
+    }
 }
 
 /// "1  app.log — /var/log" (klogg numbers recent files 1..9, then a, b, …).
@@ -2524,6 +2592,13 @@ mod tests {
         ws2.update_in(cx, |ws, window, cx| ws.open(b.clone(), window, cx));
         wait_indexed(&ws2, cx);
 
+        // Each window's size and place is saved with its tabs.
+        let saved = Session::load(&fx.config()).all_windows();
+        assert!(
+            saved
+                .iter()
+                .all(|w| w.geometry.is_some_and(|g| g.width > 0.))
+        );
         // Each window's tabs, in order; the recent files of both.
         let paths = |w: &WindowFiles| {
             w.open_files

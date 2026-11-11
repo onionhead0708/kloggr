@@ -50,8 +50,10 @@ tab's context menu renames the tab, copies the file's path, opens its folder
 and closes tabs.
 
 **File > New Window** opens another window, with its own tabs. kloggr
-reopens every window that was open when it closed; closing one window while
-others stay open forgets its tabs.
+reopens every window that was open when it closed, at the same size and
+place; closing one window while others stay open forgets its tabs.
+**View > Full Screen** (F11) toggles full screen; maximizing and minimizing
+can be given keys in **Tools > Options… > Shortcuts**.
 
 ### Favorites
 

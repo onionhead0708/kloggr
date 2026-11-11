@@ -216,6 +216,10 @@ pub(crate) fn open_main_window(
 ) -> Option<gpui::AnyWindowHandle> {
     let options = WindowOptions {
         app_id: Some(APP_ID.into()),
+        window_bounds: files
+            .as_ref()
+            .and_then(|f| f.geometry)
+            .and_then(|g| window_bounds(g, cx)),
         ..window_base_options()
     };
     cx.open_window(options, |window, cx| {
@@ -236,6 +240,33 @@ pub(crate) fn open_main_window(
     .map(Into::into)
 }
 
+/// Where a window saved in the session opens again (klogg:
+/// `restoreGeometry`). A window that would be off every display (one was
+/// unplugged) keeps its size but is centred instead.
+fn window_bounds(g: kloggr_core::settings::WindowGeometry, cx: &App) -> Option<gpui::WindowBounds> {
+    use gpui::{Bounds, point, px, size};
+    if !(g.width >= 200. && g.height >= 150.) {
+        return None;
+    }
+    let saved = Bounds::new(point(px(g.x), px(g.y)), size(px(g.width), px(g.height)));
+    let visible = cx.displays().iter().any(|d| {
+        let shown = d.bounds().intersect(&saved);
+        f32::from(shown.size.width) >= 100. && f32::from(shown.size.height) >= 50.
+    });
+    let bounds = if visible {
+        saved
+    } else {
+        Bounds::centered(None, saved.size, cx)
+    };
+    Some(if g.fullscreen {
+        gpui::WindowBounds::Fullscreen(bounds)
+    } else if g.maximized {
+        gpui::WindowBounds::Maximized(bounds)
+    } else {
+        gpui::WindowBounds::Windowed(bounds)
+    })
+}
+
 /// Window options shared by every window. Linux draws its own title bar
 /// (GNOME on Wayland has no server decorations); Windows and macOS keep the
 /// native one.
@@ -253,6 +284,47 @@ mod tests {
 
     fn parse(args: &[&str]) -> Result<Args, String> {
         Args::parse(args.iter().map(std::ffi::OsString::from))
+    }
+
+    #[gpui::test]
+    fn saved_bounds(cx: &mut gpui::TestAppContext) {
+        use kloggr_core::settings::WindowGeometry;
+        let g = WindowGeometry {
+            x: 40.,
+            y: 30.,
+            width: 900.,
+            height: 600.,
+            ..WindowGeometry::default()
+        };
+        cx.update(|cx| {
+            let display = cx.displays()[0].bounds();
+            let bounds = |w: Option<gpui::WindowBounds>| match w {
+                Some(gpui::WindowBounds::Windowed(b)) => b,
+                other => panic!("{other:?}"),
+            };
+            let shown = bounds(window_bounds(g, cx));
+            assert_eq!(
+                (f32::from(shown.origin.x), f32::from(shown.size.width)),
+                (40., 900.)
+            );
+            // Off every display: centred, same size.
+            let away = WindowGeometry { x: 90_000., ..g };
+            let shown = bounds(window_bounds(away, cx));
+            assert!(display.intersect(&shown).size == shown.size, "{shown:?}");
+            assert_eq!(f32::from(shown.size.height), 600.);
+            assert!(matches!(
+                window_bounds(
+                    WindowGeometry {
+                        maximized: true,
+                        ..g
+                    },
+                    cx
+                ),
+                Some(gpui::WindowBounds::Maximized(_))
+            ));
+            // Nonsense sizes are ignored.
+            assert_eq!(window_bounds(WindowGeometry::default(), cx), None);
+        });
     }
 
     #[test]
