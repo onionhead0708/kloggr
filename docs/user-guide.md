@@ -45,7 +45,8 @@ Temporary files (from the clipboard, downloaded, or extracted from archives)
 are removed when kloggr closes, and are not remembered in the session or the
 recent files.
 
-Each file opens in its own tab. Ctrl+1 to Ctrl+8 show the first eight tabs,
+Each file opens in its own tab; drag a tab to move it. Ctrl+1 to Ctrl+8
+show the first eight tabs,
 Ctrl+9 the last one, and Ctrl+Tab / Ctrl+Shift+Tab cycle through them.
 **View > Opened Files** lists the open files; its **Switch to File…**
 (Ctrl+Shift+O) filters them as you type (`*` and `?` are wildcards). The

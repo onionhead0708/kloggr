@@ -327,6 +327,29 @@ enum IndexEvent {
     Done(Result<Arc<LogFile>, OpenError>),
 }
 
+/// A tab being dragged to another place in the tab bar.
+#[derive(Clone)]
+struct DraggedTab {
+    index: usize,
+    label: SharedString,
+}
+
+impl Render for DraggedTab {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        div()
+            .px_2()
+            .py_1()
+            .text_sm()
+            .bg(theme.background)
+            .border_1()
+            .border_color(theme.border)
+            .rounded_md()
+            .shadow_md()
+            .child(self.label.clone())
+    }
+}
+
 /// One open file (klogg: a `CrawlerWidget` in `TabbedCrawlerWidget`).
 struct Tab {
     path: PathBuf,
@@ -1656,12 +1679,39 @@ impl Workspace {
         });
     }
 
+    /// Moves tab `from` to `to` (dragged in the tab bar); the current tab
+    /// stays current.
+    pub(crate) fn move_tab(
+        &mut self,
+        from: usize,
+        to: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let n = self.tabs.len();
+        if from == to || from >= n || to >= n {
+            return;
+        }
+        let current = self.tabs[self.active].crawler.clone();
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+        self.active = self
+            .tabs
+            .iter()
+            .position(|t| t.crawler == current)
+            .unwrap_or(0);
+        self.save_open_files(cx);
+        self.update_menus(cx);
+        self.update_title(window);
+        cx.notify();
+    }
+
     /// The tab bar, shown with two tabs or more (klogg hides it for one).
     fn render_tabs(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         if self.tabs.len() < 2 {
             return None;
         }
-        let accent = cx.theme().blue;
+        let (accent, drop_bg) = (cx.theme().blue, cx.theme().drop_target);
         let last = self.tabs.len() - 1;
         let tabs = self.tabs.iter().enumerate().map(|(index, tab)| {
             let label = div()
@@ -1699,8 +1749,18 @@ impl Workspace {
                         .menu("Rename tab", Box::new(RenameTab { index }))
                         .menu("Reset tab name", Box::new(ResetTabName { index }))
                 });
+            let dragged = DraggedTab {
+                index,
+                label: self.tab_label(tab).into(),
+            };
             GuiTab::new()
                 .child(label)
+                // klogg: tabs can be moved (`setMovable`).
+                .on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone()))
+                .drag_over::<DraggedTab>(move |style, _, _, _| style.bg(drop_bg))
+                .on_drop(cx.listener(move |this, dragged: &DraggedTab, window, cx| {
+                    this.move_tab(dragged.index, index, window, cx)
+                }))
                 .suffix(
                     Button::new(("tab-close", index))
                         .label("×")
@@ -2746,6 +2806,54 @@ mod tests {
         });
         assert_eq!(wait_indexed(&ws2, cx), 3);
         assert_eq!(ws.read_with(cx, |ws, _| ws.tabs.len()), 1);
+    }
+
+    #[gpui::test]
+    fn moving_tabs(cx: &mut TestAppContext) {
+        let fx = Fixture::new("move");
+        let files: Vec<PathBuf> = ["a.log", "b.log", "c.log"]
+            .iter()
+            .map(|n| fx.log(n, 2))
+            .collect();
+        let (ws, cx) = workspace(cx, fx.config());
+        for path in &files {
+            ws.update_in(cx, |ws, window, cx| ws.open(path.clone(), window, cx));
+            wait_indexed(&ws, cx);
+        }
+        ws.update_in(cx, |ws, window, cx| ws.activate(1, window, cx));
+        let order = |cx: &mut VisualTestContext| {
+            ws.read_with(cx, |ws, _| {
+                let names = ws
+                    .tabs
+                    .iter()
+                    .map(|t| file_name(&t.path))
+                    .collect::<Vec<_>>();
+                (names, ws.active)
+            })
+        };
+        // a.log goes last; b.log stays current.
+        ws.update_in(cx, |ws, window, cx| ws.move_tab(0, 2, window, cx));
+        assert_eq!(
+            order(cx),
+            (vec!["b.log".into(), "c.log".into(), "a.log".into()], 0)
+        );
+        ws.update_in(cx, |ws, window, cx| ws.move_tab(2, 1, window, cx));
+        assert_eq!(
+            order(cx),
+            (vec!["b.log".into(), "a.log".into(), "c.log".into()], 0)
+        );
+        // The session keeps the order; Ctrl+3 is now c.log.
+        let saved: Vec<PathBuf> = Session::load(&fx.config())
+            .open_files
+            .iter()
+            .map(|f| f.path.clone())
+            .collect();
+        assert_eq!(
+            saved,
+            [files[1].clone(), files[0].clone(), files[2].clone()]
+        );
+        cx.simulate_keystrokes("secondary-3");
+        assert_eq!(order(cx).1, 2);
     }
 
     #[gpui::test]
