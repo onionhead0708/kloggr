@@ -1610,7 +1610,13 @@ mod tests {
         crawler.update(cx, |c, cx| c.toggle_marks_for_test(1, cx));
 
         // F5 indexes the file again and drops the marks (klogg: `reload`).
-        std::fs::write(&path, "1\n2\n3\n4\n5\n").unwrap();
+        // (Appended: Windows refuses to rewrite a mapped file.)
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        std::io::Write::write_all(&mut file, b"3\n4\n").unwrap();
+        drop(file);
         cx.simulate_keystrokes("f5");
         cx.run_until_parked();
         assert_eq!(wait_indexed(&ws, cx), 5);
