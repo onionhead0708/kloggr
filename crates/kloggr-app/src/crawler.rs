@@ -365,6 +365,9 @@ impl Crawler {
                     &LogViewEvent::SearchLimit(op) => this.change_search_limits(op, cx),
                     LogViewEvent::SaveSplitterPosition => this.save_split(cx),
                     LogViewEvent::ExitView => this.exit_view(window, cx),
+                    &LogViewEvent::HoverLine(line) => {
+                        this.main.update(cx, |v, cx| v.flash_overview(line, cx))
+                    }
                     &LogViewEvent::Saving(p) => {
                         this.saving = p;
                         cx.emit(CrawlerEvent::Status);
@@ -1421,7 +1424,7 @@ impl Focusable for Crawler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{TestAppContext, VisualTestContext};
+    use gpui::{Modifiers, TestAppContext, VisualTestContext};
     use kloggr_core::Selection;
     use std::path::PathBuf;
 
@@ -2048,6 +2051,25 @@ mod tests {
         assert!(filtered_focused(cx));
         cx.simulate_keystrokes("space");
         assert!(!filtered_focused(cx));
+    }
+
+    #[gpui::test]
+    fn hovering_a_result_flashes_the_overview(cx: &mut TestAppContext) {
+        let log = TempLog::new("hover", 9);
+        let (crawler, cx) = crawler(cx, &log);
+        search(&crawler, cx, "ERROR", SearchOptions::default());
+        let (main, filtered) = crawler.read_with(cx, |c, _| (c.main.clone(), c.filtered.clone()));
+        let flashed = |cx: &mut VisualTestContext| main.read_with(cx, |v, _| v.overview_flash());
+        // The second result row is line 3.
+        let (margin, text) = filtered.read_with(cx, |v, _| v.margin_and_text_points(1.));
+        cx.simulate_mouse_move(margin, None, Modifiers::none());
+        assert_eq!(flashed(cx), Some(3));
+        cx.simulate_mouse_move(text, None, Modifiers::none());
+        assert_eq!(flashed(cx), None);
+        // Below the last result.
+        let (below, _) = filtered.read_with(cx, |v, _| v.margin_and_text_points(5.));
+        cx.simulate_mouse_move(below, None, Modifiers::none());
+        assert_eq!(flashed(cx), None);
     }
 
     #[gpui::test]

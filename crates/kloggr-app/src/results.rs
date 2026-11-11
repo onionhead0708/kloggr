@@ -56,6 +56,9 @@ impl Results {
                     &LogViewEvent::SearchLimit(op) => this.change_search_limits(op, cx),
                     LogViewEvent::SaveSplitterPosition => this.save_split(cx),
                     LogViewEvent::ExitView => this.exit_view(window, cx),
+                    &LogViewEvent::HoverLine(line) => {
+                        this.main.update(cx, |v, cx| v.flash_overview(line, cx))
+                    }
                     &LogViewEvent::Saving(p) => {
                         this.saving = p;
                         cx.emit(CrawlerEvent::Status);

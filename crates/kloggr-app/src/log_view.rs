@@ -342,6 +342,9 @@ pub enum LogViewEvent {
     SaveSplitterPosition,
     /// Space: focus the other view (klogg: `exitView`).
     ExitView,
+    /// The mouse is over this file line in the filtered view's margin, or
+    /// left it (klogg: `mouseHoveredOverLine`, `mouseLeftHoveringZone`).
+    HoverLine(Option<usize>),
 }
 
 /// The lines Save to file writes.
@@ -466,6 +469,12 @@ pub struct LogView {
     /// Row from Set selection start, for Set selection end (klogg:
     /// `selectionStart_`).
     selection_start: Option<usize>,
+    /// Filtered view: the line last reported by [`LogViewEvent::HoverLine`].
+    hovered: Option<usize>,
+    /// Main view: the line flashed on the overview bar, and the animation
+    /// step (klogg: `OverviewWidget::highlightLine`).
+    overview_flash: Option<(usize, u8)>,
+    _flash: Option<gpui::Task<()>>,
     /// Text wrap was on in the last frame (klogg: `useTextWrap_`).
     wrapping: bool,
     /// With text wrap, the screen rows of the last frame: (y, row, part of
@@ -510,6 +519,9 @@ impl LogView {
             wrap_rows: Vec::new(),
             save_cancel: None,
             selection_start: None,
+            hovered: None,
+            overview_flash: None,
+            _flash: None,
             color_labels: ColorLabels::new(),
             labels_compiled: Arc::default(),
             following: false,
@@ -603,6 +615,22 @@ impl LogView {
     #[cfg(test)]
     pub fn selection(&self) -> &Selection {
         &self.selection
+    }
+
+    /// Window points in the margin and in the text of screen row `row`.
+    #[cfg(test)]
+    pub fn margin_and_text_points(&self, row: f32) -> (Point<Pixels>, Point<Pixels>) {
+        let l = self.layout.expect("drawn");
+        let y = l.text.top() + l.line_height * (row + 0.5);
+        (
+            point(l.bullets.left() + px(2.), y),
+            point(l.text.left() + l.char_width * 2., y),
+        )
+    }
+
+    #[cfg(test)]
+    pub fn overview_flash(&self) -> Option<usize> {
+        self.overview_flash.map(|(line, _)| line)
     }
 
     #[cfg(test)]
@@ -1296,7 +1324,59 @@ impl LogView {
         cx.notify();
     }
 
+    /// klogg (`considerMouseHovering`): the filtered view reports the line
+    /// under the mouse in its margin, for the overview bar.
+    fn hover_margin(&mut self, at: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(layout) = self.layout else { return };
+        let in_margin = at.x >= layout.bullets.left()
+            && at.x < layout.text.left()
+            && at.y >= layout.text.top()
+            && at.y < layout.text.bottom();
+        // Below the last row is not over a line (`position_at` clamps).
+        let past_end = !self.wrapping && {
+            let rows = (at.y - layout.text.top()) / layout.line_height;
+            self.viewport.top() + f64::from(rows) >= self.row_count(cx) as f64
+        };
+        let line = (in_margin && !past_end)
+            .then(|| self.position_at(at, &layout, cx))
+            .flatten()
+            .and_then(|p| self.line_of(p.line, cx));
+        if line != self.hovered {
+            self.hovered = line;
+            cx.emit(LogViewEvent::HoverLine(line));
+        }
+    }
+
+    /// Main view: flashes `line` on the overview bar, or stops (klogg:
+    /// `highlightLine`, `removeHighlight`). The box shrinks in a few 30 ms
+    /// steps, as klogg's pixmaps do.
+    pub fn flash_overview(&mut self, line: Option<usize>, cx: &mut Context<Self>) {
+        self.overview_flash = line.map(|l| (l, 0));
+        self._flash = line.map(|_| {
+            cx.spawn(async move |this, cx| {
+                for _ in 0..OVERVIEW_FLASH_STEPS {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(30))
+                        .await;
+                    let alive = this.update(cx, |v, cx| {
+                        if let Some((_, step)) = &mut v.overview_flash {
+                            *step = (*step + 1).min(OVERVIEW_FLASH_STEPS);
+                        }
+                        cx.notify();
+                    });
+                    if alive.is_err() {
+                        break;
+                    }
+                }
+            })
+        });
+        cx.notify();
+    }
+
     fn on_mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.filtered && event.pressed_button.is_none() {
+            self.hover_margin(event.position, cx);
+        }
         let (Some(layout), Some(grab)) = (self.layout, self.grab.as_mut()) else {
             return;
         };
@@ -1834,7 +1914,12 @@ pub struct OverviewFrame {
     ticks: Arc<Overview>,
     /// Pixel rows of the first and last visible lines.
     view: (usize, usize),
+    /// Pixel row of the flashed line, and the animation step.
+    flash: Option<(usize, u8)>,
 }
+
+/// Steps of the overview flash (klogg: `INITIAL_TTL_VALUE` pixmaps).
+const OVERVIEW_FLASH_STEPS: u8 = 5;
 
 struct LogElement {
     view: Entity<LogView>,
@@ -2206,9 +2291,13 @@ impl Element for LogElement {
                 let top = overview::y_of_line(vp.first_line(), lines, height);
                 let shown = (vp.rows().ceil() as usize).min(lines);
                 let bottom = top + overview::y_of_line(shown, lines, height);
+                let flash = view
+                    .overview_flash
+                    .map(|(line, step)| (overview::y_of_line(line, lines, height), step));
                 Some(OverviewFrame {
                     ticks,
                     view: (top, bottom.min(height.saturating_sub(1))),
+                    flash,
                 })
             });
             Frame {
@@ -2574,6 +2663,32 @@ fn paint_overview(
             ),
             fg.opacity(0.7),
         ));
+    }
+    // klogg: a purple box around the line hovered in the filtered view,
+    // shrinking from the bar's width.
+    if let Some((row, step)) = frame.flash {
+        let color: Hsla = gpui::rgb(0x572F80).into();
+        let inset = px(1. + f32::from(step) * 1.5).min(bar.size.width / 3.);
+        let half_h = px(4. - f32::from(step).min(2.));
+        let rect = Bounds::from_corners(
+            point(bar.left() + inset, y(row) - half_h),
+            point(bar.right() - inset, y(row) + half_h + px(1.)),
+        );
+        let t = px(2.);
+        for edge in [
+            Bounds::new(rect.origin, size(rect.size.width, t)),
+            Bounds::new(
+                point(rect.left(), rect.bottom() - t),
+                size(rect.size.width, t),
+            ),
+            Bounds::new(rect.origin, size(t, rect.size.height)),
+            Bounds::new(
+                point(rect.right() - t, rect.top()),
+                size(t, rect.size.height),
+            ),
+        ] {
+            window.paint_quad(fill(edge, color));
+        }
     }
 }
 
