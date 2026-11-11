@@ -54,7 +54,8 @@ actions!(
         OpenScratchpad,
         ToggleOverview,
         ToggleLineNumbersMain,
-        ToggleLineNumbersFiltered
+        ToggleLineNumbersFiltered,
+        ToggleTextWrap
     ]
 );
 
@@ -140,6 +141,14 @@ pub fn shortcuts() -> Vec<Shortcut> {
             None,
             &[],
             OpenScratchpad,
+        ),
+        // klogg: W; in the log views, so that W can be typed elsewhere.
+        Shortcut::new(
+            "mainwindow.text_wrap",
+            "Toggle text wrap",
+            Some(crate::log_view::CONTEXT),
+            &["w"],
+            ToggleTextWrap,
         ),
         Shortcut::new(
             "mainwindow.next_tab",
@@ -334,12 +343,14 @@ impl Workspace {
                 MenuItem::action("Line Numbers in Filtered View", ToggleLineNumbersFiltered)
                     .checked(view.line_numbers_filtered),
                 MenuItem::separator(),
+                MenuItem::action("Text Wrap", ToggleTextWrap).checked(view.text_wrap),
+                // klogg: no frozen columns with text wrap.
                 MenuItem::action("Freeze Columns in Main View", ToggleFreezeMain)
                     .checked(frozen.0.enabled)
-                    .disabled(no_tab),
+                    .disabled(no_tab || view.text_wrap),
                 MenuItem::action("Freeze Columns in Filtered View", ToggleFreezeFiltered)
                     .checked(frozen.1.enabled)
-                    .disabled(no_tab),
+                    .disabled(no_tab || view.text_wrap),
                 MenuItem::separator(),
                 // klogg: View > Follow File, Reload; Stop is on its toolbar.
                 MenuItem::action("Follow File", ToggleFollow)
@@ -1137,6 +1148,9 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|_, _: &ToggleLineNumbersFiltered, window, cx| {
                 toggle_view_option(|v| &mut v.line_numbers_filtered, window, cx)
+            }))
+            .on_action(cx.listener(|_, _: &ToggleTextWrap, window, cx| {
+                toggle_view_option(|v| &mut v.text_wrap, window, cx)
             }))
             .on_action(cx.listener(|_, _: &EditHighlighters, window, cx| {
                 highlighters_dialog::open(window, cx)

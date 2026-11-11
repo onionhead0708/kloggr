@@ -8,6 +8,16 @@ Newest first. Each entry gives the date, what klogg does, what kloggr does, and 
 
 ---
 
+## 2026-11-11: Text wrap shows at most a screen of each line
+
+**klogg:** View > Text Wrap (`W`) wraps every line at the view's width; scrolling stays by whole lines and the end of the file is adjusted so the last lines fit. Frozen columns are off while wrapping.
+
+**kloggr:** the same, with one limit: a line wraps to at most one screen of rows. The rest of a longer line is not shown while wrapping; turn wrap off to scroll through it. `W` works in the log views only, so it can still be typed in the search box.
+
+**Why:** a multi-megabyte line would wrap to thousands of rows, all decoded and measured on each frame. Scrolling is by whole lines, so rows past one screen could never be reached anyway.
+
+**Code:** `Viewport::wrapped`, `LogView` prepaint (`ScreenRow`, `wrap_width`).
+
 ## 2026-11-11: Keep Results tabs; Alt+8 and Alt+9; Save as Filter in the Filters menu
 
 **klogg:** Keep Results (key `9`) makes the next search open a new tab in the bottom pane, with its own results and marks; tabs can be closed. Auto-refresh is key `8`. "Save as Filter" is in the search box's context menu.

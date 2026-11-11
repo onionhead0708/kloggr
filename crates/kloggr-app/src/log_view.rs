@@ -432,6 +432,11 @@ pub struct LogView {
     /// File lines a search covers; the others are drawn dimmed (klogg:
     /// `searchStart_`, `searchEnd_`).
     search_limits: std::ops::Range<usize>,
+    /// Text wrap was on in the last frame (klogg: `useTextWrap_`).
+    wrapping: bool,
+    /// With text wrap, the screen rows of the last frame: (y, row, part of
+    /// the wrapped line), for mouse hits.
+    wrap_rows: Vec<(Pixels, usize, usize)>,
     /// The tab's color labels (klogg: `quickHighlighters_`), and as
     /// highlighters.
     color_labels: ColorLabels,
@@ -467,6 +472,8 @@ impl LogView {
             quick_find: None,
             search_highlight: None,
             search_limits: 0..usize::MAX,
+            wrapping: false,
+            wrap_rows: Vec::new(),
             color_labels: ColorLabels::new(),
             labels_compiled: Arc::default(),
             following: false,
@@ -1042,6 +1049,18 @@ impl LogView {
 
     fn position_at(&self, at: Point<Pixels>, layout: &Layout, cx: &App) -> Option<Position> {
         let last = self.row_count(cx).checked_sub(1)?;
+        if self.wrapping && !self.wrap_rows.is_empty() {
+            let i = self
+                .wrap_rows
+                .partition_point(|(y, ..)| *y <= at.y)
+                .saturating_sub(1);
+            let (_, row, part) = self.wrap_rows[i];
+            let cols = ((at.x - layout.text.left()) / layout.char_width).max(0.0) as usize;
+            return Some(Position {
+                line: row.min(last),
+                col: part * self.viewport.cols() + cols.min(self.viewport.cols()),
+            });
+        }
         let rows = (at.y - layout.text.top()) / layout.line_height;
         let line = (self.viewport.top() + f64::from(rows)).max(0.0) as usize;
         let cols = ((at.x - layout.text.left()) / layout.char_width).max(0.0);
@@ -1438,7 +1457,12 @@ impl LogView {
                 nothing_selected,
             )
             .separator()
-            .menu_with_check("Freeze columns", frozen, Box::new(ToggleFreezeColumns))
+            .menu_with_check_and_disabled(
+                "Freeze columns",
+                frozen,
+                Box::new(ToggleFreezeColumns),
+                this.wrapping,
+            )
             .separator()
             .submenu("Color labels", window, cx, move |menu, _, _| {
                 let mut menu = menu
@@ -1655,6 +1679,7 @@ impl Element for LogElement {
                 BULLET_WIDTH + GUTTER_PAD
             };
             let highlight_matches = options.search.highlight_matches;
+            let text_wrap = options.view.text_wrap;
             let show_overview = options.view.overview;
             let gutter = Bounds::new(
                 bounds.origin,
@@ -1678,7 +1703,30 @@ impl Element for LogElement {
             );
             let rows = f64::from(text_bounds.size.height / metrics.line_height);
             let cols = (text_bounds.size.width / metrics.char_width).max(0.) as usize;
-            view.viewport.set_size(line_count, rows, cols);
+            view.wrapping = text_wrap;
+            // With text wrap, the scroll range ends where the last lines fit
+            // at the bottom (klogg: `getNbBottomWrappedVisibleLines`).
+            let mut view_rows = rows;
+            if text_wrap && let Some(log) = view.log.clone() {
+                let mut probe = view.viewport;
+                probe.set_size(line_count, rows, cols);
+                let screen_rows = rows.floor().max(1.) as usize;
+                let (mut used, mut fit) = (0, 0);
+                for row in (0..line_count).rev() {
+                    let Some(bytes) = view.line_of(row, cx).and_then(|l| log.line(l)) else {
+                        break;
+                    };
+                    used += probe.wrapped_rows(wrap_width(&log, bytes, rows, cols));
+                    if used > screen_rows && fit > 0 {
+                        break;
+                    }
+                    fit += 1;
+                }
+                view_rows = fit as f64;
+                // No horizontal scrolling.
+                view.viewport.set_left(0);
+            }
+            view.viewport.set_size(line_count, view_rows, cols);
             if view.following {
                 view.viewport.set_top(f64::MAX);
             }
@@ -1687,33 +1735,104 @@ impl Element for LogElement {
             let mut out = Vec::new();
             if let Some(log) = view.log.clone() {
                 let vp = view.viewport;
-                let visible = vp.visible_lines();
-                // (row, file line, content) of the visible rows.
-                let shown: Vec<(usize, usize, &[u8])> = if view.filtered {
-                    visible
-                        .filter_map(|row| {
-                            let line = view.line_of(row, cx)?;
-                            Some((row, line, log.line(line)?))
-                        })
-                        .collect()
+                let lh = metrics.line_height;
+                // The visible screen rows.
+                let mut shown: Vec<ScreenRow> = Vec::new();
+                if text_wrap {
+                    let mut row = vp.first_line();
+                    // The scrolled-out fraction of the first line.
+                    let frac = vp.top() - row as f64;
+                    let mut y = None;
+                    while row < line_count {
+                        let Some((line, bytes)) =
+                            view.line_of(row, cx).and_then(|l| Some((l, log.line(l)?)))
+                        else {
+                            break;
+                        };
+                        let parts = vp.wrapped_rows(wrap_width(&log, bytes, rows, cols));
+                        let y0: Pixels = *y.get_or_insert_with(|| {
+                            text_bounds.top() - lh * (frac * parts as f64) as f32
+                        });
+                        for part in 0..parts {
+                            let y = y0 + lh * part as f32;
+                            if y >= text_bounds.bottom() {
+                                break;
+                            }
+                            shown.push(ScreenRow {
+                                row,
+                                line,
+                                bytes,
+                                part,
+                                vp: vp.wrapped(part),
+                                y,
+                            });
+                        }
+                        let next = y0 + lh * parts as f32;
+                        if next >= text_bounds.bottom() {
+                            break;
+                        }
+                        y = Some(next);
+                        row += 1;
+                    }
                 } else {
-                    let first = visible.start;
-                    log.lines(visible)
-                        .enumerate()
-                        .map(|(i, bytes)| (first + i, first + i, bytes))
-                        .collect()
+                    let visible = vp.visible_lines();
+                    let y = |row: usize| text_bounds.top() + lh * (row as f64 - vp.top()) as f32;
+                    if view.filtered {
+                        for row in visible {
+                            if let Some(line) = view.line_of(row, cx)
+                                && let Some(bytes) = log.line(line)
+                            {
+                                shown.push(ScreenRow {
+                                    row,
+                                    line,
+                                    bytes,
+                                    part: 0,
+                                    vp,
+                                    y: y(row),
+                                });
+                            }
+                        }
+                    } else {
+                        let first = visible.start;
+                        for (i, bytes) in log.lines(visible).enumerate() {
+                            let row = first + i;
+                            shown.push(ScreenRow {
+                                row,
+                                line: row,
+                                bytes,
+                                part: 0,
+                                vp,
+                                y: y(row),
+                            });
+                        }
+                    }
+                }
+                view.wrap_rows = if text_wrap {
+                    shown.iter().map(|r| (r.y, r.row, r.part)).collect()
+                } else {
+                    Vec::new()
                 };
                 let filter = view.filter.as_ref().map(|f| f.read(cx));
                 let highlighters = Highlighters::active(cx);
                 let labels = view.labels_compiled.clone();
                 let colouring = !highlighters.is_empty() || !labels.is_empty();
-                for (row, line, bytes) in shown {
+                for ScreenRow {
+                    row,
+                    line,
+                    bytes,
+                    part,
+                    vp,
+                    y,
+                } in shown
+                {
                     let kind = filter.map_or_else(LineKind::default, |f| f.kind(line));
                     // klogg: lines outside the search limits are drawn in
                     // the disabled text colour, without highlighters.
                     let outside = !view.search_limits.contains(&line);
                     let (shown_text, seen) = screen_text(&log, bytes, &vp);
-                    view.viewport.grow_max_cols(seen);
+                    if !text_wrap {
+                        view.viewport.grow_max_cols(seen);
+                    }
                     let highlight = if view.selection.is_line_selected(row) {
                         vec![(0, vp.cols() + 1)]
                     } else {
@@ -1756,11 +1875,11 @@ impl Element for LogElement {
                         line_colors.and_then(|c| c.fore).map_or(fg, hsla)
                     };
                     let runs = text_runs(&shown_text, line_fg, &spans);
-                    let y =
-                        text_bounds.top() + metrics.line_height * (row as f64 - vp.top()) as f32;
+                    // A wrapped line's number and bullet are on its first row.
+                    let first_part = part == 0;
                     out.push(Row {
                         y,
-                        number: numbers
+                        number: (numbers && first_part)
                             .then(|| metrics.shape(window, (line + 1).to_string().into(), muted)),
                         text: text::grid_segments(&shown_text)
                             .into_iter()
@@ -1778,7 +1897,11 @@ impl Element for LogElement {
                             .iter()
                             .filter_map(|(from, to, c)| Some((*from, *to, hsla(c.back?))))
                             .collect(),
-                        kind,
+                        kind: if first_part {
+                            kind
+                        } else {
+                            LineKind::default()
+                        },
                     });
                 }
             }
@@ -1812,7 +1935,11 @@ impl Element for LogElement {
                 point(text_bounds.left(), bounds.bottom() - SCROLLBAR),
                 point(bounds.right() - SCROLLBAR, bounds.bottom()),
             );
-            let total_cols = vp.max_cols().max(vp.cols()).max(1) as f32;
+            let total_cols = if text_wrap {
+                vp.cols().max(1) as f32
+            } else {
+                vp.max_cols().max(vp.cols()).max(1) as f32
+            };
             let hthumb_w =
                 (htrack.size.width * (vp.cols() as f32 / total_cols).min(1.)).max(MIN_THUMB);
             let hratio = if vp.max_left() > 0 {
@@ -1838,9 +1965,8 @@ impl Element for LogElement {
                 htrack,
                 hthumb,
                 overview: overview_bounds,
-                separator: view
-                    .freeze
-                    .enabled
+                // klogg: no frozen columns with text wrap.
+                separator: (view.freeze.enabled && !text_wrap)
                     .then(|| text_bounds.left() + metrics.char_width * vp.frozen()),
             };
             view.layout = Some(layout);
@@ -2104,6 +2230,27 @@ fn screen_text(log: &LogFile, bytes: &[u8], vp: &Viewport) -> (String, usize) {
     out.extend(std::iter::repeat_n(' ', pad));
     out.push_str(&scrolled.text);
     (out, seen)
+}
+
+/// A screen row of a log view: a line, or with text wrap a part of one.
+struct ScreenRow<'a> {
+    row: usize,
+    /// The file line.
+    line: usize,
+    bytes: &'a [u8],
+    /// Which part of the wrapped line (0 without wrap).
+    part: usize,
+    /// The viewport the part is drawn with (see [`Viewport::wrapped`]).
+    vp: Viewport,
+    y: Pixels,
+}
+
+/// Columns of `bytes` that matter for wrapping: up to what fills the view
+/// (`rows` × `cols`), so that a huge line costs no more than a screen.
+fn wrap_width(log: &LogFile, bytes: &[u8], rows: f64, cols: usize) -> usize {
+    let cap = (rows.ceil() as usize + 1) * cols.max(1);
+    let w = text::window(log.encoding(), bytes, 0, cap);
+    w.total_cols.unwrap_or(cap).min(cap)
 }
 
 /// Text runs for `text` (one char per column): `fg`, except in `spans`
@@ -2577,6 +2724,61 @@ mod tests {
         assert_eq!(viewport(&view, cx).left(), 0);
         cx.simulate_keystrokes("down $");
         assert_eq!(viewport(&view, cx).left(), 200_000 - vp.cols());
+    }
+
+    #[gpui::test]
+    fn text_wrap(cx: &mut TestAppContext) {
+        let long: String = (0..200_000)
+            .map(|i| char::from(b'a' + (i % 26) as u8))
+            .collect();
+        let (view, cx) = open(cx, "wrap.log", &format!("short\n{long}\nlast\n"));
+        cx.update(|window, cx| {
+            let mut options = Preferences::get(cx).clone();
+            options.view.text_wrap = true;
+            Preferences::set(options, Some(window), cx);
+        });
+        view.update(cx, |v, cx| {
+            v.set_freeze(
+                FrozenView {
+                    enabled: true,
+                    column: 3,
+                },
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        let l = layout(&view, cx);
+        let cols = viewport(&view, cx).cols();
+        let parts = |cx: &mut VisualTestContext| {
+            view.read_with(cx, |v, _| {
+                v.wrap_rows
+                    .iter()
+                    .map(|&(_, row, part)| (row, part))
+                    .collect::<Vec<_>>()
+            })
+        };
+        // The long line fills the rest of the screen; no frozen columns.
+        let shown = parts(cx);
+        assert_eq!(shown[..3], [(0, 0), (1, 0), (1, 1)]);
+        assert!(shown[1..].iter().all(|&(row, _)| row == 1));
+        assert!(l.separator.is_none());
+
+        // A click on the third screen row is in the long line's second part.
+        let at = view.read_with(cx, |v, cx| v.position_at(cell(&l, 2., 3.), &l, cx));
+        assert_eq!(
+            at,
+            Some(Position {
+                line: 1,
+                col: cols + 3
+            })
+        );
+
+        // No horizontal scrolling; the last line can be reached.
+        cx.simulate_keystrokes("end");
+        assert_eq!(viewport(&view, cx).left(), 0);
+        cx.simulate_keystrokes("shift-g");
+        cx.run_until_parked();
+        assert_eq!(parts(cx).last(), Some(&(2, 0)));
     }
 
     #[gpui::test]

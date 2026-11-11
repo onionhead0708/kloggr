@@ -31,6 +31,8 @@ pub struct Viewport {
     max_cols: usize,
     /// Frozen columns asked for; [`frozen`](Self::frozen) is what fits.
     freeze: usize,
+    /// A row of a wrapped line: nothing past the right edge.
+    wrapped: bool,
 }
 
 impl Viewport {
@@ -98,7 +100,8 @@ impl Viewport {
     /// End (exclusive) of the file columns drawn: one more than fit, for a
     /// partly visible last column.
     pub fn window_end(&self) -> usize {
-        self.left + self.cols + 1
+        // A wrapped row's next column is the first of the next row.
+        self.left + self.cols + usize::from(!self.wrapped)
     }
 
     /// The visible parts of file columns `cols`, as screen column ranges:
@@ -187,6 +190,24 @@ impl Viewport {
             self.grow_max_cols(col + 1);
             self.set_left(col + 1 - self.cols);
         }
+    }
+
+    /// With text wrap (klogg: `useTextWrap_`): the `sub`-th screen row of a
+    /// wrapped line, as a viewport scrolled to its first column. Frozen
+    /// columns don't apply.
+    pub fn wrapped(&self, sub: usize) -> Self {
+        Self {
+            left: sub * self.cols,
+            freeze: 0,
+            max_cols: usize::MAX,
+            wrapped: true,
+            ..*self
+        }
+    }
+
+    /// Screen rows a line of `width` columns takes when wrapped.
+    pub fn wrapped_rows(&self, width: usize) -> usize {
+        width.div_ceil(self.cols.max(1)).max(1)
     }
 
     fn clamp(&mut self) {
@@ -288,5 +309,24 @@ mod tests {
         assert_eq!(v.frozen(), 75);
         v.set_size(10, 5.0, 3);
         assert_eq!(v.frozen(), 0);
+    }
+
+    #[test]
+    fn wrapping() {
+        let mut vp = Viewport::default();
+        vp.set_size(10, 5.0, 8);
+        vp.set_freeze(3);
+        vp.grow_max_cols(100);
+        vp.set_left(4);
+        let second = vp.wrapped(1);
+        assert_eq!(
+            (second.left(), second.frozen(), second.file_col(0)),
+            (8, 0, 8)
+        );
+        // The column past the edge is the next row's first: not drawn.
+        assert_eq!(second.screen_ranges(6..20), [(0, 8)]);
+        assert_eq!(vp.wrapped_rows(0), 1);
+        assert_eq!(vp.wrapped_rows(8), 1);
+        assert_eq!(vp.wrapped_rows(9), 2);
     }
 }
