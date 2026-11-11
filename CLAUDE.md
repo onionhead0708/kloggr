@@ -153,7 +153,7 @@ Features of the log views and the search that klogg has and kloggr lacks (found 
 - [x] Search limits: log view context menu Set search start, Set search end, Clear search limits; the search only scans that line range
 - [x] Search bar: Keep results toggle (`crawler.enable_keep_results`), shortcut for auto-refresh (`crawler.enable_auto_refresh`), "Save as Filter" in the search box context menu
 - [x] Text wrap (`mainwindow.text_wrap`), still windowing very long lines before shaping
-- [ ] Save to file and Save selected to file (log view context menu), streamed from the mapping on a worker thread
+- [x] Save to file and Save selected to file (log view context menu), streamed from the mapping on a worker thread
 - [ ] Split between the views: `crawler.increase_top_view_size` / `decrease_top_view_size`, "Save splitter position" as the default
 - [ ] Log view context menu completeness: Mark, Find next, Find previous, Set selection start, Set selection end; `logview.exit_view`
 - [ ] Overview bar flashes the line when hovering a filtered row (klogg overview)

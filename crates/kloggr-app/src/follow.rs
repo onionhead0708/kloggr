@@ -288,10 +288,13 @@ impl Crawler {
     }
 
     /// View > Stop (klogg: `stopLoading`): stops the search, keeping the
-    /// matches found so far, and the indexing. Returns whether indexing was
+    /// matches found so far, a Save to file, and the indexing. Returns whether indexing was
     /// stopped: the caller closes the tab, as klogg does.
     pub(crate) fn stop(&mut self, cx: &mut Context<Self>) -> bool {
         self.stop_search();
+        for view in [&self.main, &self.filtered] {
+            view.update(cx, |v, _| v.cancel_save());
+        }
         let stopped = self.reindex.take().is_some();
         cx.emit(CrawlerEvent::Status);
         cx.notify();

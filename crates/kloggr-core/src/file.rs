@@ -245,6 +245,64 @@ impl LogFile {
         })
     }
 
+    /// Writes `lines` (ascending, `count` of them) to `path` as they are in
+    /// the file, line endings included (klogg: `saveLinesToFile`, which
+    /// encodes the decoded text again). Adjacent lines are written in one
+    /// piece. The data goes to a temporary file next to `path`, renamed
+    /// once complete, so a cancelled or failed save leaves `path` as it was
+    /// (klogg: `QSaveFile`). Cancelling returns an `Interrupted` error.
+    pub fn save_lines(
+        &self,
+        path: &Path,
+        lines: impl IntoIterator<Item = usize>,
+        count: usize,
+        cancel: &AtomicBool,
+        mut on_progress: impl FnMut(u8),
+    ) -> std::io::Result<()> {
+        use std::io::Write;
+        use std::sync::atomic::Ordering;
+
+        /// Bytes written in one piece at most, so that progress moves.
+        const PIECE: usize = 8 << 20;
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        let part = path.with_file_name(format!(".{name}.kloggr-part"));
+        let result = (|| {
+            let mut out = std::io::BufWriter::new(File::create(&part)?);
+            let data = self.bytes();
+            let mut pending: Option<Range<usize>> = None;
+            let mut last_percent = None;
+            for (done, line) in lines.into_iter().enumerate() {
+                let Some(span) = self.index.line_span(line) else {
+                    break;
+                };
+                pending = match pending {
+                    Some(p) if p.end == span.start && p.len() < PIECE => Some(p.start..span.end),
+                    Some(p) => {
+                        out.write_all(&data[p])?;
+                        Some(span)
+                    }
+                    None => Some(span),
+                };
+                let percent = ((done + 1) * 100 / count.max(1)).min(100) as u8;
+                if last_percent.replace(percent) != Some(percent) {
+                    if cancel.load(Ordering::Relaxed) {
+                        return Err(std::io::ErrorKind::Interrupted.into());
+                    }
+                    on_progress(percent);
+                }
+            }
+            if let Some(p) = pending {
+                out.write_all(&data[p])?;
+            }
+            out.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+            std::fs::rename(&part, path)
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&part);
+        }
+        result
+    }
+
     /// The options the file was opened with.
     pub fn options(&self) -> OpenOptions {
         self.options
@@ -429,6 +487,39 @@ mod tests {
         assert_eq!(auto.line_text(0).as_deref(), Some("caf\u{e9}"));
         // UTF-16 lays the lines out differently.
         assert!(log.with_encoding(Some(Encoding::UTF_16LE)).is_none());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn saves_lines_as_they_are() {
+        let path = temp_file("save-src.log", b"a\r\nb\nc\nd");
+        let log = LogFile::open(&path).unwrap();
+        let out = path.with_file_name(format!("kloggr-{}-saved.log", std::process::id()));
+        let never = AtomicBool::new(false);
+        let mut progress = Vec::new();
+        log.save_lines(&out, 0..4, 4, &never, |p| progress.push(p))
+            .unwrap();
+        assert_eq!(std::fs::read(&out).unwrap(), b"a\r\nb\nc\nd");
+        assert_eq!(progress, [25, 50, 75, 100]);
+        log.save_lines(&out, [0, 2, 3], 3, &never, |_| {}).unwrap();
+        assert_eq!(std::fs::read(&out).unwrap(), b"a\r\nc\nd");
+        // Cancelled: the earlier file stays, no temporary file is left.
+        let err = log
+            .save_lines(&out, [1], 1, &AtomicBool::new(true), |_| {})
+            .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
+        assert_eq!(std::fs::read(&out).unwrap(), b"a\r\nc\nd");
+        let dir: Vec<_> = std::fs::read_dir(out.parent().unwrap())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .contains("saved.log.kloggr-part")
+            })
+            .collect();
+        assert!(dir.is_empty());
+        std::fs::remove_file(out).unwrap();
         std::fs::remove_file(path).unwrap();
     }
 

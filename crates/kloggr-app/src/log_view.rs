@@ -26,6 +26,7 @@
 //! and the visible part of the file. Clicking or dragging on it scrolls
 //! there.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{
@@ -86,6 +87,8 @@ actions!(
         SetSearchStart,
         SetSearchEnd,
         ClearSearchLimits,
+        SaveToFile,
+        SaveSelectedToFile,
     ]
 );
 
@@ -322,6 +325,17 @@ pub enum LogViewEvent {
     /// Set search start / end, Clear search limits (klogg:
     /// `changeSearchLimits`, `clearSearchLimits`).
     SearchLimit(LimitOp),
+    /// Progress of Save to file, for the status line; `None` when done.
+    Saving(Option<u8>),
+}
+
+/// The lines Save to file writes.
+enum SaveLines {
+    /// File lines.
+    Range(std::ops::Range<usize>),
+    /// Rows of the filtered view: the lines of `rows` with ranks in the
+    /// range.
+    Rows(kloggr_core::search::LineSet, std::ops::Range<usize>),
 }
 
 /// A change to the lines a search covers.
@@ -432,6 +446,8 @@ pub struct LogView {
     /// File lines a search covers; the others are drawn dimmed (klogg:
     /// `searchStart_`, `searchEnd_`).
     search_limits: std::ops::Range<usize>,
+    /// Stops a running Save to file.
+    save_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// Text wrap was on in the last frame (klogg: `useTextWrap_`).
     wrapping: bool,
     /// With text wrap, the screen rows of the last frame: (y, row, part of
@@ -474,6 +490,7 @@ impl LogView {
             search_limits: 0..usize::MAX,
             wrapping: false,
             wrap_rows: Vec::new(),
+            save_cancel: None,
             color_labels: ColorLabels::new(),
             labels_compiled: Arc::default(),
             following: false,
@@ -655,6 +672,134 @@ impl LogView {
     pub fn set_search_limits(&mut self, limits: std::ops::Range<usize>, cx: &mut Context<Self>) {
         self.search_limits = limits;
         cx.notify();
+    }
+
+    /// Save to file / Save selected to file (klogg: `saveToFile`,
+    /// `saveSelectedToFile`): the view's lines (in the filtered view, its
+    /// rows) go to a file chosen in a dialog, written on a worker thread.
+    fn save_to_file(&mut self, selected: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(log), Some(lines)) = (self.log.clone(), self.lines_to_save(selected, cx)) else {
+            return;
+        };
+        let source = log.path().to_path_buf();
+        let dir = source.parent().map(Path::to_path_buf).unwrap_or_default();
+        let stem = source
+            .file_stem()
+            .map_or_else(|| "log".into(), |s| s.to_string_lossy().into_owned());
+        let ext = source
+            .extension()
+            .map_or_else(String::new, |e| format!(".{}", e.to_string_lossy()));
+        let what = if self.filtered { "filtered" } else { "saved" };
+        let name = format!("{stem}-{what}{ext}");
+        let chosen = cx.prompt_for_new_path(&dir, Some(&name));
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(path))) = chosen.await else {
+                return;
+            };
+            this.update_in(cx, |v, window, cx| {
+                v.start_save(log, path, lines, window, cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The lines Save to file writes: the view's, or the selected ones.
+    fn lines_to_save(&self, selected: bool, cx: &App) -> Option<SaveLines> {
+        let rows = if selected {
+            let r = self.selection.lines()?;
+            *r.start()..r.end() + 1
+        } else {
+            0..self.row_count(cx)
+        };
+        Some(match &self.filter {
+            Some(filter) if self.filtered => SaveLines::Rows(filter.read(cx).rows().clone(), rows),
+            _ => SaveLines::Range(rows),
+        })
+    }
+
+    fn start_save(
+        &mut self,
+        log: Arc<LogFile>,
+        path: PathBuf,
+        lines: SaveLines,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // The file is mapped: writing over it would pull it from under the
+        // views.
+        let same = |a: &Path, b: &Path| {
+            a == b || std::fs::canonicalize(a).ok() == std::fs::canonicalize(b).ok()
+        };
+        if path.exists() && same(&path, log.path()) {
+            window.open_alert_dialog(cx, |alert, _, _| {
+                alert
+                    .title("Save to file")
+                    .description("The open file can't be saved over itself.")
+            });
+            return;
+        }
+        self.cancel_save();
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.save_cancel = Some(cancel.clone());
+        enum SaveEvent {
+            Progress(u8),
+            Done(std::io::Result<()>),
+        }
+        let (tx, rx) = async_channel::unbounded();
+        let target = path.clone();
+        crate::background::spawn_blocking(
+            "kloggr-save",
+            move || {
+                let progress = |p| {
+                    tx.send_blocking(SaveEvent::Progress(p)).ok();
+                };
+                let result = match lines {
+                    SaveLines::Range(r) => {
+                        let count = r.len();
+                        log.save_lines(&target, r, count, &cancel, progress)
+                    }
+                    SaveLines::Rows(set, r) => {
+                        let count = r.len();
+                        let lines = set.iter().skip(r.start).take(count);
+                        log.save_lines(&target, lines, count, &cancel, progress)
+                    }
+                };
+                tx.send_blocking(SaveEvent::Done(result)).ok();
+            },
+            cx,
+        );
+        cx.emit(LogViewEvent::Saving(Some(0)));
+        cx.spawn_in(window, async move |this, cx| {
+            while let Ok(event) = rx.recv().await {
+                let alive = this.update_in(cx, |v, window, cx| match event {
+                    SaveEvent::Progress(p) => cx.emit(LogViewEvent::Saving(Some(p))),
+                    SaveEvent::Done(result) => {
+                        v.save_cancel = None;
+                        cx.emit(LogViewEvent::Saving(None));
+                        if let Err(e) = result
+                            && e.kind() != std::io::ErrorKind::Interrupted
+                        {
+                            let message = format!("Cannot save {}: {e}", path.display());
+                            window.open_alert_dialog(cx, move |alert, _, _| {
+                                alert.title("Save to file").description(message.clone())
+                            });
+                        }
+                    }
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Stops a running Save to file; the target file is left as it was.
+    pub fn cancel_save(&mut self) {
+        if let Some(cancel) = self.save_cancel.take() {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     /// The file line of the selection's first or last line, for Set search
@@ -1330,6 +1475,14 @@ impl Render for LogView {
                 let line = v.selected_line(true, cx);
                 cx.emit(LogViewEvent::SearchLimit(LimitOp::End(line)));
             }))
+            .on_action(
+                cx.listener(|v, _: &SaveToFile, window, cx| v.save_to_file(false, window, cx)),
+            )
+            .on_action(
+                cx.listener(|v, _: &SaveSelectedToFile, window, cx| {
+                    v.save_to_file(true, window, cx)
+                }),
+            )
             .on_action(cx.listener(|_, _: &ClearSearchLimits, _, cx| {
                 cx.emit(LogViewEvent::SearchLimit(LimitOp::Clear));
             }))
@@ -1437,6 +1590,13 @@ impl LogView {
             .unwrap_or_default();
         menu.action_context(focus)
             .menu_with_disabled("Copy", Box::new(Copy), nothing_selected)
+            .separator()
+            .menu("Save to file…", Box::new(SaveToFile))
+            .menu_with_disabled(
+                "Save selected to file…",
+                Box::new(SaveSelectedToFile),
+                nothing_selected,
+            )
             .separator()
             .menu_with_disabled("Add to search", Box::new(AddToSearch), no_text)
             .menu_with_disabled("Exclude from search", Box::new(ExcludeFromSearch), no_text)
@@ -2724,6 +2884,27 @@ mod tests {
         assert_eq!(viewport(&view, cx).left(), 0);
         cx.simulate_keystrokes("down $");
         assert_eq!(viewport(&view, cx).left(), 200_000 - vp.cols());
+    }
+
+    #[gpui::test]
+    fn save_to_file(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx, "save.log", &numbered(5));
+        let out = std::env::temp_dir().join(format!("kloggr-view-{}-saved", std::process::id()));
+        let save = |selected: bool, cx: &mut VisualTestContext| {
+            let target = out.clone();
+            view.update_in(cx, |v, window, cx| {
+                let lines = v.lines_to_save(selected, cx).unwrap();
+                let log = v.log.clone().unwrap();
+                v.start_save(log, target, lines, window, cx);
+            });
+            cx.run_until_parked();
+            std::fs::read_to_string(&out).unwrap()
+        };
+        assert_eq!(save(false, cx), numbered(5));
+        cx.simulate_keystrokes("down shift-down");
+        assert_eq!(save(true, cx), "line 0 word_0\nline 1 word_1\n");
+        assert!(view.read_with(cx, |v, _| v.save_cancel.is_none()));
+        std::fs::remove_file(out).unwrap();
     }
 
     #[gpui::test]

@@ -287,6 +287,8 @@ pub struct Crawler {
     pub(crate) current_results: usize,
     /// The next search opens a new results tab (klogg: Keep Results).
     pub(crate) keep_results: bool,
+    /// Progress of a Save to file from either view.
+    pub(crate) saving: Option<u8>,
     /// Lines and bytes covered by the last finished search (`None`: none
     /// finished); with auto-refresh, what comes after is searched when the
     /// file grows.
@@ -340,6 +342,10 @@ impl Crawler {
                     LogViewEvent::FreezeChanged(_) => cx.emit(CrawlerEvent::FrozenChanged),
                     LogViewEvent::Search(op, text) => this.search_from_view(*op, text, window, cx),
                     &LogViewEvent::SearchLimit(op) => this.change_search_limits(op, cx),
+                    &LogViewEvent::Saving(p) => {
+                        this.saving = p;
+                        cx.emit(CrawlerEvent::Status);
+                    }
                 },
             ),
             // Color label styles may change in the highlighters dialog.
@@ -392,6 +398,7 @@ impl Crawler {
             results: vec![results],
             current_results: 0,
             keep_results: false,
+            saving: None,
             search_limits: 0..usize::MAX,
             searched: None,
             search_covers: (0, 0),

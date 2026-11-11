@@ -8,6 +8,19 @@ Newest first. Each entry gives the date, what klogg does, what kloggr does, and 
 
 ---
 
+## 2026-11-11: Save to file writes the lines as they are
+
+**klogg:** Save to file and Save selected to file decode the lines and encode them again with the display encoding, ending each with a line feed (and a carriage return outside Windows). A modal progress dialog can cancel.
+
+**kloggr:**
+- The bytes of each line are copied from the file with their own line endings: no re-encoding, nothing lost, CRLF stays CRLF. The main view saves file lines, the filtered view its rows.
+- The save dialog suggests `<name>-saved.<ext>` (`-filtered` from the filtered view) next to the file. The open file itself can't be chosen: it is mapped.
+- The lines are written on a worker thread to a temporary file that replaces the target once complete. Progress shows in the status line; Esc (View > Stop) cancels and leaves the target as it was.
+
+**Why:** a byte copy is faster and exact; re-encoding would turn undecodable bytes into U+FFFD.
+
+**Code:** `LogFile::save_lines`, `LogView::{save_to_file, start_save}`.
+
 ## 2026-11-11: Text wrap shows at most a screen of each line
 
 **klogg:** View > Text Wrap (`W`) wraps every line at the view's width; scrolling stays by whole lines and the end of the file is adjusted so the last lines fit. Frozen columns are off while wrapping.

@@ -1264,6 +1264,9 @@ fn toggle_view_option(
 /// "path — N lines — encoding", or the indexing progress.
 fn status_of(path: &Path, crawler: &Crawler) -> String {
     let shown = path.display();
+    if let Some(p) = crawler.saving {
+        return format!("{shown} — saving {p}%");
+    }
     match (crawler.reindex_percent(), &crawler.log) {
         (Some(p), _) => format!("{shown} — indexing {p}%"),
         (None, Some(log)) => {

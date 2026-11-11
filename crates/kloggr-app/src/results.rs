@@ -54,6 +54,10 @@ impl Results {
                     LogViewEvent::FreezeChanged(_) => cx.emit(CrawlerEvent::FrozenChanged),
                     LogViewEvent::Search(op, text) => this.search_from_view(*op, text, window, cx),
                     &LogViewEvent::SearchLimit(op) => this.change_search_limits(op, cx),
+                    &LogViewEvent::Saving(p) => {
+                        this.saving = p;
+                        cx.emit(CrawlerEvent::Status);
+                    }
                 },
             ),
             cx.observe(&filter, |_, _, cx| cx.notify()),
