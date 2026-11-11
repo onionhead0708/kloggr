@@ -22,10 +22,10 @@ use gpui_component::menu::{AppMenuBar, ContextMenuExt};
 use gpui_component::tab::{Tab as GuiTab, TabBar};
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme, GlobalState, Sizable, TitleBar, WindowExt};
-use kloggr_core::archive;
 use kloggr_core::file::OpenError;
 use kloggr_core::settings::{FileContext, OpenFile, Session};
 use kloggr_core::{Encoding, IndexProgress, LogFile, OpenOptions, encoding};
+use kloggr_core::{archive, download};
 
 use crate::archives;
 use crate::background;
@@ -65,7 +65,8 @@ actions!(
         OpenInEditor,
         ClearFile,
         OpenClipboard,
-        SelectOpenFile
+        SelectOpenFile,
+        OpenUrl
     ]
 );
 
@@ -124,6 +125,13 @@ pub fn shortcuts() -> Vec<Shortcut> {
             None,
             &["secondary-v"],
             OpenClipboard,
+        ),
+        Shortcut::new(
+            "mainwindow.open_from_url",
+            "Open file from URL",
+            None,
+            &[],
+            OpenUrl,
         ),
         Shortcut::new(
             "mainwindow.select_open_file",
@@ -261,6 +269,12 @@ enum ExtractEvent {
     Done(Result<Vec<PathBuf>, String>),
 }
 
+enum DownloadEvent {
+    /// Bytes received, and the size if known.
+    Progress(u64, Option<u64>),
+    Done(Result<PathBuf, download::DownloadError>),
+}
+
 enum IndexEvent {
     Progress(IndexProgress),
     Done(Result<Arc<LogFile>, OpenError>),
@@ -300,11 +314,15 @@ pub struct Workspace {
     /// Why the last file could not be opened, when no tab is left to show it.
     error: Option<String>,
     /// Enter in the rename dialog's input.
-    _rename: Option<gpui::Subscription>,
+    _prompt: Option<gpui::Subscription>,
     /// "Extracting app.log.gz… 40%", while an archive is opened.
     extracting: Option<String>,
     extract_cancel: Arc<AtomicBool>,
     _extract: Option<Task<()>>,
+    /// "Downloading https://…… 40%", while a file is downloaded.
+    downloading: Option<String>,
+    download_cancel: Arc<AtomicBool>,
+    _download: Option<Task<()>>,
     /// The open archive file picker (see `archives::pick`).
     _picker: Option<Entity<archives::ArchivePicker>>,
     /// The open file switcher (Ctrl+Shift+O).
@@ -323,6 +341,7 @@ impl Workspace {
         cx.on_app_quit(|this, cx| {
             this.save_open_files(cx);
             this.extract_cancel.store(true, Ordering::Relaxed);
+            this.download_cancel.store(true, Ordering::Relaxed);
             let _ = std::fs::remove_dir_all(Self::temp_root());
             async {}
         })
@@ -336,12 +355,15 @@ impl Workspace {
             tab_scroll: ScrollHandle::new(),
             focus,
             error: None,
-            _rename: None,
+            _prompt: None,
             extracting: None,
             extract_cancel: Arc::default(),
             _extract: None,
             _picker: None,
             _switcher: None,
+            downloading: None,
+            download_cancel: Arc::default(),
+            _download: None,
         };
         this.update_menus(cx);
         // Set names and active sets show in the menus.
@@ -383,6 +405,7 @@ impl Workspace {
             Menu::new("File").items([
                 MenuItem::action("Open…", Open),
                 MenuItem::action("Open from Clipboard", OpenClipboard),
+                MenuItem::action("Open from URL…", OpenUrl),
                 MenuItem::submenu(
                     Menu::new("Open Recent")
                         .items(recent_items)
@@ -601,6 +624,70 @@ impl Workspace {
                     .ok();
             },
         ));
+    }
+
+    /// Downloads `url` to the temporary folder, with progress in the status
+    /// line, then opens it like any file (klogg: `openRemoteFile`). Stop
+    /// (Esc) cancels it.
+    fn open_url(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(url) = download::parse_url(&url) else {
+            self.error = Some(format!("{} is not an http or https URL", url.trim()));
+            cx.notify();
+            return;
+        };
+        // A new download replaces the running one.
+        self.download_cancel.store(true, Ordering::Relaxed);
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.download_cancel = cancel.clone();
+        let dir = Self::temp_root().join("downloads");
+        let (tx, rx) = async_channel::unbounded();
+        let thread_url = url.clone();
+        background::spawn_blocking(
+            "kloggr-download",
+            move || {
+                let mut last = None;
+                let result = download::download(&thread_url, &dir, &cancel, |got, total| {
+                    // One event per percent, or per MiB without a size.
+                    let step = total.map_or(got >> 20, |t| got * 100 / t.max(1));
+                    if last.replace(step) != Some(step) {
+                        tx.send_blocking(DownloadEvent::Progress(got, total)).ok();
+                    }
+                });
+                tx.send_blocking(DownloadEvent::Done(result)).ok();
+            },
+            cx,
+        );
+        self.downloading = Some(format!("Downloading {url}…"));
+        self.error = None;
+        cx.notify();
+        self._download = Some(cx.spawn_in(window, async move |this, cx| {
+            while let Ok(event) = rx.recv().await {
+                let alive = this.update_in(cx, |this, window, cx| {
+                    match event {
+                        DownloadEvent::Progress(got, total) => {
+                            let done = match total {
+                                Some(total) => format!("{}%", got * 100 / total.max(1)),
+                                None => archives::human_size(got).to_string(),
+                            };
+                            this.downloading = Some(format!("Downloading {url}… {done}"));
+                        }
+                        DownloadEvent::Done(result) => {
+                            this.downloading = None;
+                            match result {
+                                Ok(path) => this.open(path, window, cx),
+                                Err(download::DownloadError::Cancelled) => {}
+                                // klogg: a message box with the error.
+                                Err(e) => this.error = Some(format!("Cannot download {url}: {e}")),
+                            }
+                        }
+                    }
+                    cx.notify();
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        }));
     }
 
     /// A new file name in the temporary folder: `{stem}-1{ext}`, `-2`…
@@ -1102,6 +1189,12 @@ impl Workspace {
     /// and its indexing, which closes the tab as in klogg (an interrupted
     /// load leaves no file to show).
     fn stop(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.downloading.take().is_some() {
+            self.download_cancel.store(true, Ordering::Relaxed);
+            self._download = None;
+            cx.notify();
+            return;
+        }
         let index = self.active;
         let Some(crawler) = self.crawler().cloned() else {
             return;
@@ -1119,6 +1212,9 @@ impl Workspace {
         }
         if let Some(extracting) = &self.extracting {
             return extracting.clone();
+        }
+        if let Some(downloading) = &self.downloading {
+            return downloading.clone();
         }
         self.tabs
             .get(self.active)
@@ -1147,21 +1243,66 @@ impl Workspace {
             return;
         };
         let current = self.tab_label(tab);
+        self.prompt_text(
+            "Rename tab",
+            "Tab name (empty for the file name)",
+            current,
+            "OK",
+            move |ws, name, _, cx| ws.rename_tab(index, &name, cx),
+            window,
+            cx,
+        );
+    }
+
+    /// File > Open from URL… (klogg: `openUrl`, which offers the
+    /// clipboard's text if it is a URL).
+    fn prompt_url(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let initial = cx
+            .read_from_clipboard()
+            .and_then(|c| c.text())
+            .filter(|t| download::parse_url(t).is_some())
+            .map(|t| t.trim().to_owned())
+            .unwrap_or_default();
+        self.prompt_text(
+            "Open from URL",
+            "URL to download",
+            initial,
+            "Open",
+            |ws, url, window, cx| ws.open_url(url, window, cx),
+            window,
+            cx,
+        );
+    }
+
+    /// A dialog asking for one line of text; Enter or `ok` passes it to
+    /// `done`.
+    #[allow(clippy::too_many_arguments)]
+    fn prompt_text(
+        &mut self,
+        title: &'static str,
+        label: &'static str,
+        initial: String,
+        ok: &'static str,
+        done: impl Fn(&mut Self, String, &mut Window, &mut Context<Self>) + Clone + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let input = cx.new(|cx| {
             let mut s = InputState::new(window, cx);
-            s.set_value(current, window, cx);
+            s.set_value(initial, window, cx);
             s
         });
         let this = cx.entity().downgrade();
         // Enter confirms.
-        self._rename = Some(cx.subscribe_in(
+        let on_enter = done.clone();
+        self._prompt = Some(cx.subscribe_in(
             &input,
             window,
             move |ws, input, e: &InputEvent, window, cx| {
                 if let InputEvent::PressEnter { .. } = e {
-                    let name = input.read(cx).value().to_string();
-                    ws.rename_tab(index, &name, cx);
+                    let text = input.read(cx).value().to_string();
                     window.close_dialog(cx);
+                    on_enter(ws, text, window, cx);
                 }
             },
         ));
@@ -1170,24 +1311,23 @@ impl Workspace {
             if first.replace(false) {
                 input.focus_handle(cx).focus(window, cx);
             }
-            let ok = {
-                let (this, input) = (this.clone(), input.clone());
+            let on_ok = {
+                let (this, input, done) = (this.clone(), input.clone(), done.clone());
                 move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
-                    let name = input.read(cx).value().to_string();
-                    this.update(cx, |ws, cx| ws.rename_tab(index, &name, cx))
-                        .ok();
+                    let text = input.read(cx).value().to_string();
                     window.close_dialog(cx);
+                    this.update(cx, |ws, cx| done(ws, text, window, cx)).ok();
                 }
             };
             dialog
-                .title("Rename tab")
-                .w(px(420.))
+                .title(title)
+                .w(px(480.))
                 .child(
                     div()
                         .flex()
                         .flex_col()
                         .gap_2()
-                        .child(div().text_sm().child("Tab name (empty for the file name)"))
+                        .child(div().text_sm().child(label))
                         .child(Input::new(&input)),
                 )
                 .footer(
@@ -1196,17 +1336,17 @@ impl Workspace {
                         .justify_end()
                         .gap_2()
                         .child(
-                            Button::new("rename-cancel")
+                            Button::new("prompt-cancel")
                                 .label("Cancel")
                                 .small()
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
                         .child(
-                            Button::new("rename-ok")
-                                .label("OK")
+                            Button::new("prompt-ok")
+                                .label(ok)
                                 .small()
                                 .primary()
-                                .on_click(ok),
+                                .on_click(on_ok),
                         ),
                 )
         });
@@ -1396,6 +1536,7 @@ impl Render for Workspace {
             .on_action(
                 cx.listener(|this, _: &OpenClipboard, window, cx| this.open_clipboard(window, cx)),
             )
+            .on_action(cx.listener(|this, _: &OpenUrl, window, cx| this.prompt_url(window, cx)))
             .on_action(
                 cx.listener(|this, _: &SelectOpenFile, window, cx| {
                     this.select_open_file(window, cx)
@@ -1853,7 +1994,13 @@ mod tests {
         crawler.update(cx, |c, cx| c.toggle_marks_for_test(1, cx));
 
         // F5 indexes the file again and drops the marks (klogg: `reload`).
-        std::fs::write(&path, "1\n2\n3\n4\n5\n").unwrap();
+        // (Appended: Windows refuses to rewrite a mapped file.)
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        std::io::Write::write_all(&mut file, b"3\n4\n").unwrap();
+        drop(file);
         cx.simulate_keystrokes("f5");
         cx.run_until_parked();
         assert_eq!(wait_indexed(&ws, cx), 5);
@@ -2000,6 +2147,69 @@ mod tests {
         assert!(ws.read_with(cx, |ws, cx| {
             ws.menus(cx).iter().any(|m| m.name == "Edit" && m.disabled)
         }));
+    }
+
+    /// Serves one HTTP request with `status` and `body` on a thread.
+    fn serve_once(status: &'static str, body: &'static [u8]) -> String {
+        use std::io::{BufRead, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap() > 2 {
+                line.clear();
+            }
+            let head = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(head.as_bytes()).unwrap();
+            stream.write_all(body).unwrap();
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    #[gpui::test]
+    fn open_from_url(cx: &mut TestAppContext) {
+        let fx = Fixture::new("url");
+        let (ws, cx) = workspace(cx, fx.config());
+        // The dialog offers the URL on the clipboard; Enter downloads it.
+        let url = format!(
+            "{}/logs/remote.log",
+            serve_once("200 OK", b"one\ntwo\nthree\n")
+        );
+        cx.write_to_clipboard(ClipboardItem::new_string(url));
+        cx.dispatch_action(OpenUrl);
+        cx.run_until_parked();
+        cx.simulate_keystrokes("enter");
+        assert_eq!(wait_indexed(&ws, cx), 3);
+        let path = ws.read_with(cx, |ws, _| ws.tabs[0].path.clone());
+        assert!(path.ends_with("downloads/remote.log"), "{path:?}");
+        assert!(Workspace::is_temporary(&path));
+        assert!(recent(&ws, cx).is_empty());
+
+        // Errors show in the status line.
+        let url = format!("{}/missing.log", serve_once("404 Not Found", b""));
+        ws.update_in(cx, |ws, window, cx| ws.open_url(url, window, cx));
+        for _ in 0..500 {
+            cx.run_until_parked();
+            if ws.read_with(cx, |ws, _| ws.downloading.is_none()) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let status = ws.read_with(cx, |ws, _| ws.status());
+        assert!(
+            status.contains("Cannot download") && status.contains("404"),
+            "{status}"
+        );
+        ws.update_in(cx, |ws, window, cx| {
+            ws.open_url("ftp://x/y".into(), window, cx)
+        });
+        assert!(ws.read_with(cx, |ws, _| ws.status().contains("not an http")));
+        let _ = std::fs::remove_dir_all(Workspace::temp_root());
     }
 
     #[gpui::test]

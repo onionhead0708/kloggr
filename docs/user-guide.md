@@ -30,10 +30,13 @@ its encoding, or the progress of indexing, searching and saving.
 - Give the file on the command line.
 - **File > Open from Clipboard** (Ctrl+V in a log view) opens the text on the
   clipboard as a temporary file.
+- **File > Open from URL…** downloads a file over http or https (the URL on
+  the clipboard is offered) and opens it. The status line shows the
+  progress; Esc cancels. Compressed downloads are extracted like local ones.
 
-Temporary files (from the clipboard, or extracted from archives) are removed
-when kloggr closes, and are not remembered in the session or the recent
-files.
+Temporary files (from the clipboard, downloaded, or extracted from archives)
+are removed when kloggr closes, and are not remembered in the session or the
+recent files.
 
 Each file opens in its own tab. Ctrl+1 to Ctrl+8 show the first eight tabs,
 Ctrl+9 the last one, and Ctrl+Tab / Ctrl+Shift+Tab cycle through them.

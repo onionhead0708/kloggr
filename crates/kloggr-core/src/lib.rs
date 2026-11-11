@@ -7,6 +7,7 @@
 //! - [`line_index`]: parallel, incremental, compressed index of line starts
 //!   (klogg: `LogDataWorker`, `CompressedLineStorage`)
 //! - [`text`]: display text: tab expansion, long-line windowing (klogg: `untabify`)
+//! - [`download`]: downloading a file from a URL (klogg: `Downloader`)
 //! - [`digits`]: the number typed before a view command (klogg: `DigitsBuffer`)
 //! - [`selection`]: line / range / portion selection (klogg: `Selection`)
 //! - [`viewport`]: scroll position in lines and columns
@@ -28,6 +29,7 @@ pub const REPOSITORY: &str = "https://github.com/onionhead0708/kloggr";
 pub mod archive;
 pub mod crash;
 pub mod digits;
+pub mod download;
 pub mod encoding;
 pub mod file;
 pub mod highlight;

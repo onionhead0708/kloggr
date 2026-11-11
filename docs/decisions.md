@@ -8,6 +8,16 @@ Newest first. Each entry gives the date, what klogg does, what kloggr does, and 
 
 ---
 
+## 2026-11-11: Open from URL: progress in the status line, https by default, no SSL override
+
+**klogg:** File > Open URL… asks for the URL (offering the clipboard's), downloads it with a modal progress dialog, and opens it. `QUrl::fromUserInput` turns `host/path` into `http://host/path`. Options > File has "Ignore SSL errors" for self-signed certificates.
+
+**kloggr:** the same dialog and clipboard offer. The download runs on a thread with its progress in the status line, like extracting an archive, and Stop (Esc) cancels it; the window stays usable. A URL without a scheme gets `https://`. Certificates are always checked by the system's verifier; there is no option to ignore errors. Downloads go to the temporary folder, so they are removed on quit and not kept in the session or recent files.
+
+**Why:** a modal dialog would block every tab for a long download. https is the safer guess today, and turning off certificate checks is easy to leave on by mistake; an http URL can still be typed in full.
+
+**Code:** `kloggr_core::download`, `Workspace::open_url`.
+
 ## 2026-11-11: Help menu: a kloggr user guide, no community or Qt entries
 
 **klogg:** Help has Documentation (its `DOCUMENTATION.md` built in as HTML, shown in a window), Report Issue, Join Discord, Join Telegram, Generate Dump, About Qt and About.
