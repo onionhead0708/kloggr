@@ -8,17 +8,15 @@ Newest first. Each entry gives the date, what klogg does, what kloggr does, and 
 
 ---
 
-## 2026-11-11: One bar above the tabs: menus in kloggr's title bar on Windows, none on macOS
+## 2026-11-11: No empty bar above the tabs on macOS
 
 **klogg:** Qt's native title bar on every platform, with the menu bar under it on Windows and Linux, and in the screen's menu bar on macOS.
 
-**kloggr:**
-- Windows (like Linux already): kloggr draws the title bar, with the menus on the left and its own minimize, maximize and close buttons on the right. Dragging the empty part moves the window; double-clicking it maximizes.
-- macOS: the native title bar with the file name, then the tabs. Before, an empty row was drawn there for a menu bar that only exists on the other systems. The scratchpad and documentation windows do the same.
+**kloggr:** the same on Windows and macOS. Linux draws its own title bar holding the menus (GNOME on Wayland has no server decorations). Before this, macOS drew an empty row under the native title bar, kept for a menu bar that only the other systems have. The scratchpad window also drew a second title bar under the native one on Windows and macOS.
 
-**Why:** the native title bar and a separate menu row took two bars before the tabs, and on macOS the second one was empty. GPUI and gpui-component support a drawn title bar on Windows: the window still snaps, resizes from its edges and maximizes from the button.
+**Why:** a fix, not a difference: the empty row and the repeated title looked broken.
 
-**Code:** `OWN_TITLE_BAR` and `window_base_options` in `main.rs`.
+**Code:** `OWN_TITLE_BAR` in `main.rs`, `Workspace::render`.
 
 ## 2026-11-11: Log file: kloggr's own messages, levels by name, set at startup
 

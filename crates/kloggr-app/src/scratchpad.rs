@@ -264,7 +264,7 @@ impl Render for Scratchpad {
                     .text_color(muted)
                     .children(self.status.map(SharedString::from)),
             );
-        // Linux and Windows: the title bar is ours (`OWN_TITLE_BAR`).
+        // Linux: the title bar is ours. Elsewhere the native one shows the title.
         v_flex()
             .key_context(CONTEXT)
             .size_full()

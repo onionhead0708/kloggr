@@ -1815,7 +1815,7 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let (drop_bg, muted) = (theme.drop_target, theme.muted_foreground);
+        let (border, drop_bg, muted) = (theme.border, theme.drop_target, theme.muted_foreground);
         let content = match self.crawler() {
             Some(crawler) => div().size_full().child(crawler.clone()),
             None => div()
@@ -1983,19 +1983,22 @@ impl Render for Workspace {
             )
             .on_drop(cx.listener(Self::drop_paths))
             .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(drop_bg))
-            // Linux and Windows: our title bar, with the menus and the window
-            // controls. macOS: the native title bar and the screen's menu bar,
-            // so nothing above the tabs.
-            .when(crate::OWN_TITLE_BAR, |this| {
-                this.child(
-                    TitleBar::new().child(
-                        div()
-                            .flex_1()
-                            .flex()
-                            .items_center()
-                            .children(self.menu_bar.clone()),
-                    ),
-                )
+            // Linux: our title bar, with the menus and the window controls.
+            // Windows: the native title bar, then the menus. macOS: the menus
+            // are in the screen's menu bar, so nothing above the tabs.
+            .map(|this| match self.menu_bar.clone() {
+                Some(menus) if crate::OWN_TITLE_BAR => this.child(
+                    TitleBar::new().child(div().flex_1().flex().items_center().child(menus)),
+                ),
+                Some(menus) => this.child(
+                    div()
+                        .h(px(32.))
+                        .px_1()
+                        .border_b_1()
+                        .border_color(border)
+                        .child(menus),
+                ),
+                None => this,
             })
             .children(self.render_tabs(cx))
             .child(div().flex_1().min_h_0().child(content))
