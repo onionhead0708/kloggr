@@ -3,6 +3,7 @@
 //! selected part) in place, and read-outs of it. The log views send their
 //! selection to it (klogg: Ctrl+Z, Ctrl+Shift+Z).
 
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, AppContext, Bounds, ClipboardItem, Context, Entity, Focusable, Global, InteractiveElement,
     IntoElement, KeyBinding, ParentElement, Render, SharedString, Styled, Subscription,
@@ -263,13 +264,17 @@ impl Render for Scratchpad {
                     .text_color(muted)
                     .children(self.status.map(SharedString::from)),
             );
-        // GNOME (Wayland) draws no decorations: the title bar is ours.
+        // Linux and Windows: the title bar is ours (`OWN_TITLE_BAR`).
         v_flex()
             .key_context(CONTEXT)
             .size_full()
             .bg(bg)
             .on_action(cx.listener(|this, _: &NewTab, window, cx| this.add_tab(window, cx)))
-            .child(TitleBar::new().child(div().flex_1().text_sm().child("kloggr - scratchpad")))
+            .when(crate::OWN_TITLE_BAR, |this| {
+                this.child(
+                    TitleBar::new().child(div().flex_1().text_sm().child("kloggr - scratchpad")),
+                )
+            })
             .child(body)
     }
 }
@@ -313,7 +318,7 @@ pub fn show(
                     app_id: Some(crate::APP_ID.into()),
                     ..crate::window_base_options()
                 };
-                if !cfg!(target_os = "linux") {
+                if !crate::OWN_TITLE_BAR {
                     options.titlebar = Some(TitlebarOptions {
                         title: Some("kloggr - scratchpad".into()),
                         ..Default::default()

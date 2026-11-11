@@ -8,6 +8,18 @@ Newest first. Each entry gives the date, what klogg does, what kloggr does, and 
 
 ---
 
+## 2026-11-11: One bar above the tabs: menus in kloggr's title bar on Windows, none on macOS
+
+**klogg:** Qt's native title bar on every platform, with the menu bar under it on Windows and Linux, and in the screen's menu bar on macOS.
+
+**kloggr:**
+- Windows (like Linux already): kloggr draws the title bar, with the menus on the left and its own minimize, maximize and close buttons on the right. Dragging the empty part moves the window; double-clicking it maximizes.
+- macOS: the native title bar with the file name, then the tabs. Before, an empty row was drawn there for a menu bar that only exists on the other systems. The scratchpad and documentation windows do the same.
+
+**Why:** the native title bar and a separate menu row took two bars before the tabs, and on macOS the second one was empty. GPUI and gpui-component support a drawn title bar on Windows: the window still snaps, resizes from its edges and maximizes from the button.
+
+**Code:** `OWN_TITLE_BAR` and `window_base_options` in `main.rs`.
+
 ## 2026-11-11: Log file: kloggr's own messages, levels by name, set at startup
 
 **klogg:** `-l/--log` writes `klogg_<date>_<pid>.log` in the temporary folder; `-d` adds a level each time, from warnings; Options > Advanced "Enable logging" with a verbosity number (4 = info) also writes the file and logs to the console.

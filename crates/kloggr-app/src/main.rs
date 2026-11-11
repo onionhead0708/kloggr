@@ -402,11 +402,15 @@ fn window_bounds(g: kloggr_core::settings::WindowGeometry, cx: &App) -> Option<g
     })
 }
 
-/// Window options shared by every window. Linux draws its own title bar
-/// (GNOME on Wayland has no server decorations); Windows and macOS keep the
-/// native one.
+/// Whether windows draw their own title bar. Linux needs one (GNOME on
+/// Wayland has no server decorations), and on Windows it holds the menus,
+/// so there is a single bar above the tabs. macOS keeps its native title
+/// bar: the menus are in the screen's menu bar.
+pub(crate) const OWN_TITLE_BAR: bool = !cfg!(target_os = "macos");
+
+/// Window options shared by every window (see [`OWN_TITLE_BAR`]).
 pub(crate) fn window_base_options() -> WindowOptions {
-    if cfg!(target_os = "linux") {
+    if OWN_TITLE_BAR {
         gpui_component::TitleBar::window_options()
     } else {
         WindowOptions::default()

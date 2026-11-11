@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     Action, App, AppContext, ClipboardItem, Context, Entity, EntityId, ExternalPaths, FocusHandle,
     Focusable, Global, InteractiveElement, IntoElement, Menu, MenuItem, MouseButton, ParentElement,
@@ -1814,7 +1815,7 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let (border, drop_bg, muted) = (theme.border, theme.drop_target, theme.muted_foreground);
+        let (drop_bg, muted) = (theme.drop_target, theme.muted_foreground);
         let content = match self.crawler() {
             Some(crawler) => div().size_full().child(crawler.clone()),
             None => div()
@@ -1982,26 +1983,19 @@ impl Render for Workspace {
             )
             .on_drop(cx.listener(Self::drop_paths))
             .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(drop_bg))
-            .child(if cfg!(target_os = "linux") {
-                // GNOME (Wayland) draws no decorations for GPUI windows: the
-                // title bar with the window controls is ours.
-                TitleBar::new()
-                    .child(
+            // Linux and Windows: our title bar, with the menus and the window
+            // controls. macOS: the native title bar and the screen's menu bar,
+            // so nothing above the tabs.
+            .when(crate::OWN_TITLE_BAR, |this| {
+                this.child(
+                    TitleBar::new().child(
                         div()
                             .flex_1()
                             .flex()
                             .items_center()
                             .children(self.menu_bar.clone()),
-                    )
-                    .into_any_element()
-            } else {
-                div()
-                    .h(px(32.))
-                    .px_1()
-                    .border_b_1()
-                    .border_color(border)
-                    .children(self.menu_bar.clone())
-                    .into_any_element()
+                    ),
+                )
             })
             .children(self.render_tabs(cx))
             .child(div().flex_1().min_h_0().child(content))

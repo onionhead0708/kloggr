@@ -24,7 +24,7 @@ pub struct Documentation;
 
 impl Render for Documentation {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let titlebar = cfg!(target_os = "linux")
+        let titlebar = crate::OWN_TITLE_BAR
             .then(|| TitleBar::new().child(div().text_sm().child("kloggr documentation")));
         v_flex()
             .size_full()
@@ -73,7 +73,7 @@ pub fn show_documentation(cx: &mut App) {
             app_id: Some(crate::APP_ID.into()),
             ..crate::window_base_options()
         };
-        if !cfg!(target_os = "linux") {
+        if !crate::OWN_TITLE_BAR {
             options.titlebar = Some(TitlebarOptions {
                 title: Some("kloggr documentation".into()),
                 ..Default::default()
