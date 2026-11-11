@@ -31,6 +31,47 @@ fn yes() -> bool {
     true
 }
 
+/// klogg: `PredefinedFiltersCollection_VERSION`.
+const KLOGG_FILTERS_VERSION: i64 = 1;
+
+/// Reads the filters of a klogg export (`PredefinedFiltersDialog::
+/// importFilters`, a `QSettings` INI file, usually `*.conf`). `None` if the
+/// file has no filters collection klogg would read.
+pub fn import_klogg_filters(text: &str) -> Option<Vec<PredefinedFilter>> {
+    let ini = crate::qt_ini::Ini::parse(text);
+    let group = "PredefinedFiltersCollection";
+    let version = ini.int(&format!("{group}/version"))?;
+    if version > KLOGG_FILTERS_VERSION {
+        return None;
+    }
+    Some(
+        ini.array(&format!("{group}/filters"))
+            .iter()
+            .map(|prefix| PredefinedFilter {
+                name: ini.string(&format!("{prefix}/name")).unwrap_or_default(),
+                pattern: ini.string(&format!("{prefix}/filter")).unwrap_or_default(),
+                regex: ini.bool(&format!("{prefix}/regex"), true),
+            })
+            .collect(),
+    )
+}
+
+/// Writes `filters` as klogg exports them (`exportFilters`), so klogg can
+/// import the file.
+pub fn export_klogg_filters(filters: &[PredefinedFilter]) -> String {
+    use crate::qt_ini::escape;
+    let mut out = String::from("[PredefinedFiltersCollection]\n");
+    out += &format!("version={KLOGG_FILTERS_VERSION}\n");
+    for (i, f) in filters.iter().enumerate() {
+        let n = i + 1;
+        out += &format!("filters\\{n}\\name={}\n", escape(&f.name));
+        out += &format!("filters\\{n}\\filter={}\n", escape(&f.pattern));
+        out += &format!("filters\\{n}\\regex={}\n", f.regex);
+    }
+    out += &format!("filters\\size={}\n", filters.len());
+    out
+}
+
 /// Everything in `searches.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -226,6 +267,48 @@ pub fn checked_filters(current: &str, filters: &[PredefinedFilter], mode: Mode) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn klogg_filter_files() {
+        // As klogg 24.11 writes them.
+        let klogg = "[PredefinedFiltersCollection]\n\
+                     filters\\1\\filter=ERROR|FATAL\n\
+                     filters\\1\\name=Errors\n\
+                     filters\\1\\regex=true\n\
+                     filters\\2\\filter=\"a, b\"\n\
+                     filters\\2\\name=Comma text\n\
+                     filters\\2\\regex=false\n\
+                     filters\\size=2\n\
+                     version=1\n";
+        let filters = import_klogg_filters(klogg).unwrap();
+        assert_eq!(
+            filters,
+            [
+                PredefinedFilter {
+                    name: "Errors".into(),
+                    pattern: "ERROR|FATAL".into(),
+                    regex: true
+                },
+                PredefinedFilter {
+                    name: "Comma text".into(),
+                    pattern: "a, b".into(),
+                    regex: false
+                },
+            ]
+        );
+        // Round trip, including characters Qt escapes.
+        let mut odd = filters.clone();
+        odd.push(PredefinedFilter {
+            name: "semi;colon \"quoted\" caf\u{e9}".into(),
+            pattern: r"\d+\s=\[x\]".into(),
+            regex: true,
+        });
+        assert_eq!(
+            import_klogg_filters(&export_klogg_filters(&odd)).unwrap(),
+            odd
+        );
+        assert_eq!(import_klogg_filters("[Other]\nx=1\n"), None);
+    }
 
     #[test]
     fn completions_from_history() {

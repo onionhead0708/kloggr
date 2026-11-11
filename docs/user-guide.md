@@ -158,7 +158,9 @@ over a line's margin in the filtered view flashes its place in the overview.
 ### Predefined filters
 
 **Tools > Predefined Filters…** edits filters you use often. Each has a name,
-a pattern, and whether the pattern is a regular expression. Checking filters
+a pattern, and whether the pattern is a regular expression. **Import…** and
+**Export…** read and write klogg's filter files (`.conf`); an import replaces
+the list in the dialog, and OK keeps it. Checking filters
 in the **Filters** drop-down builds the search from them; several checked
 filters are combined with "or".
 
