@@ -121,7 +121,7 @@ fn search_block(log: &LogFile, matcher: &Matcher, range: Range<usize>) -> Vec<us
     let mut found = Vec::new();
     // As shown: without ANSI colour sequences if they are hidden (klogg's
     // prefilter applies to the search too).
-    for (k, line) in log.text_lines(range).enumerate() {
+    for (k, line) in log.text_block(range).iter().enumerate() {
         let matched = if encoding == Encoding::UTF_8 {
             // Invalid sequences are left as they are: `.` doesn't match them
             // but literals around them still do.

@@ -1,4 +1,11 @@
-//! Memory-mapped log file (klogg: `FileHolder` + `LogData`).
+//! A log file and its line index (klogg: `FileHolder` + `LogData`).
+//!
+//! The file is mapped into memory to be indexed. Afterwards its bytes come
+//! from the mapping ([`Access::Map`], Linux and macOS) or from reads at an
+//! offset ([`Access::Read`], Windows): Windows refuses to truncate a file
+//! that is mapped, so a kept mapping would stop the program writing the log
+//! from truncating it (`copytruncate` rotation). Reading also never crashes
+//! on a file truncated under it, where a mapping raises SIGBUS.
 
 use std::borrow::Cow;
 use std::fs::File;
@@ -20,6 +27,130 @@ pub struct OpenOptions {
     /// Remove ANSI colour sequences from the text of lines (klogg:
     /// `hideAnsiColorSequences`, a prefilter on decoded lines).
     pub hide_ansi: bool,
+    /// How the bytes are read once the file is indexed.
+    pub access: Access,
+}
+
+/// How a [`LogFile`]'s bytes are read once it is indexed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    /// Kept mapped: lines are borrowed from the mapping.
+    Map,
+    /// Read at an offset when needed, the mapping dropped after indexing.
+    Read,
+}
+
+impl Default for Access {
+    /// [`Read`](Self::Read) on Windows (see the module docs) or with the
+    /// `KLOGGR_READ_FILES` environment variable set, else
+    /// [`Map`](Self::Map).
+    fn default() -> Self {
+        if cfg!(windows) || std::env::var_os("KLOGGR_READ_FILES").is_some() {
+            Self::Read
+        } else {
+            Self::Map
+        }
+    }
+}
+
+/// Where a snapshot's bytes come from.
+#[derive(Clone)]
+enum Source {
+    /// The file is empty (mapping 0 bytes fails on some platforms).
+    Empty,
+    /// Shared by snapshots that only differ by encoding or ANSI hiding.
+    Mapped(Arc<Mmap>),
+    /// The first `len` bytes of `file`, read when needed.
+    Read { file: Arc<File>, len: usize },
+}
+
+impl Source {
+    fn new(map: Option<Mmap>, file: File, access: Access) -> Self {
+        match (map, access) {
+            (None, _) => Self::Empty,
+            (Some(map), Access::Map) => Self::Mapped(Arc::new(map)),
+            (Some(map), Access::Read) => Self::Read {
+                file: Arc::new(file),
+                len: map.len(),
+            },
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Empty => 0,
+            Self::Mapped(map) => map.len(),
+            Self::Read { len, .. } => *len,
+        }
+    }
+
+    /// Bytes `range` (clamped) of the snapshot. Read from the file when it
+    /// isn't mapped: a file truncated since then gives fewer bytes.
+    fn get(&self, range: Range<usize>) -> Cow<'_, [u8]> {
+        let end = range.end.min(self.len());
+        let start = range.start.min(end);
+        match self {
+            Self::Empty => Cow::Borrowed(&[]),
+            Self::Mapped(map) => Cow::Borrowed(&map[start..end]),
+            Self::Read { file, .. } => {
+                let mut buf = vec![0; end - start];
+                let n = read_at_most(file, &mut buf, start as u64);
+                buf.truncate(n);
+                Cow::Owned(buf)
+            }
+        }
+    }
+}
+
+/// Reads up to `buf.len()` bytes at `offset`; returns how many were read
+/// before the end of the file or an error.
+fn read_at_most(file: &File, buf: &mut [u8], offset: u64) -> usize {
+    let mut done = 0;
+    while done < buf.len() {
+        #[cfg(unix)]
+        let n = std::os::unix::fs::FileExt::read_at(file, &mut buf[done..], offset + done as u64);
+        #[cfg(windows)]
+        let n =
+            std::os::windows::fs::FileExt::seek_read(file, &mut buf[done..], offset + done as u64);
+        match n {
+            Ok(0) => break,
+            Ok(n) => done += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
+    done
+}
+
+/// `buf[range]`, clamped: lines past a truncation read as empty.
+fn clamped(buf: &[u8], range: Range<usize>) -> &[u8] {
+    let end = range.end.min(buf.len());
+    &buf[range.start.min(end)..end]
+}
+
+/// Lines read together: one read for the whole range (see
+/// [`LogFile::text_block`]).
+pub struct TextBlock<'a> {
+    data: Cow<'a, [u8]>,
+    /// Line starts relative to `data`, then the end of the last line.
+    bounds: Vec<usize>,
+    lf: encoding::LineFeed,
+    strip: Option<Encoding>,
+}
+
+impl TextBlock<'_> {
+    /// The lines as shown and searched (see [`LogFile::text_line`]).
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = Cow<'_, [u8]>> + '_ {
+        (1..self.bounds.len().max(1)).map(move |k| {
+            let line = self
+                .lf
+                .strip_eol(clamped(&self.data, self.bounds[k - 1]..self.bounds[k]));
+            match self.strip {
+                Some(encoding) => strip_ansi(line, encoding),
+                None => Cow::Borrowed(line),
+            }
+        })
+    }
 }
 
 /// klogg's `AnsiColorSequenceRegex`: SGR (`m`) and erase-in-line (`K`)
@@ -97,17 +228,15 @@ impl FileId {
     }
 }
 
-/// A log file mapped into memory together with its line index.
+/// A log file together with its line index.
 ///
 /// A `LogFile` is a snapshot: when the file grows,
 /// [`reload_grown`](Self::reload_grown) makes a new one that shares the
-/// already-indexed part, and readers of the old one keep a valid mapping.
+/// already-indexed part, and readers of the old one keep reading theirs.
 pub struct LogFile {
     path: PathBuf,
     options: OpenOptions,
-    /// `None` for an empty file: mapping 0 bytes fails on some platforms.
-    /// Shared by snapshots that only differ by encoding.
-    map: Option<Arc<Mmap>>,
+    source: Source,
     index: LineIndex,
     encoding: Encoding,
     detected_encoding: Encoding,
@@ -118,8 +247,9 @@ pub struct LogFile {
     tail: Vec<u8>,
 }
 
-/// Maps `path` (`None` for an empty file) and returns its identity.
-fn map_file(path: &Path) -> Result<(Option<Arc<Mmap>>, FileId), OpenError> {
+/// Maps `path` (`None` for an empty file) and returns the open file and its
+/// identity.
+fn map_file(path: &Path) -> Result<(Option<Mmap>, File, FileId), OpenError> {
     let io_err = |source| OpenError::Io {
         path: path.to_path_buf(),
         source,
@@ -130,12 +260,13 @@ fn map_file(path: &Path) -> Result<(Option<Arc<Mmap>>, FileId), OpenError> {
         None
     } else {
         // SAFETY: the file may be modified by another process while mapped;
-        // reads of a truncated region raise SIGBUS. Accepted risk, same as
-        // klogg; follow mode checks for truncation (`LogFile::check`) and
-        // opens the file again before reading past a change.
-        Some(Arc::new(unsafe { Mmap::map(&file) }.map_err(io_err)?))
+        // reads of a truncated region raise SIGBUS. Accepted risk with
+        // `Access::Map`, same as klogg; follow mode checks for truncation
+        // (`LogFile::check`) and opens the file again before reading past a
+        // change.
+        Some(unsafe { Mmap::map(&file) }.map_err(io_err)?)
     };
-    Ok((map, FileId::of(&meta)))
+    Ok((map, file, FileId::of(&meta)))
 }
 
 fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
@@ -186,8 +317,8 @@ impl LogFile {
         on_progress: impl FnMut(IndexProgress),
     ) -> Result<Self, OpenError> {
         let path = path.as_ref().to_path_buf();
-        let (map, id) = map_file(&path)?;
-        let data = map.as_deref().map_or(&[][..], |m| &m[..]);
+        let (map, file, id) = map_file(&path)?;
+        let data = map.as_deref().unwrap_or_default();
         let detected_encoding =
             encoding::detect(&data[..data.len().min(encoding::DETECTION_SAMPLE)]);
         let encoding = options.encoding.unwrap_or(detected_encoding);
@@ -196,7 +327,7 @@ impl LogFile {
         Ok(Self::assemble(
             path,
             options,
-            map,
+            (map, file),
             index,
             encoding,
             detected_encoding,
@@ -207,19 +338,19 @@ impl LogFile {
     fn assemble(
         path: PathBuf,
         options: OpenOptions,
-        map: Option<Arc<Mmap>>,
+        (map, file): (Option<Mmap>, File),
         index: LineIndex,
         encoding: Encoding,
         detected_encoding: Encoding,
         id: FileId,
     ) -> Self {
-        let data = map.as_deref().map_or(&[][..], |m| &m[..]);
+        let data = map.as_deref().unwrap_or_default();
         let head = data[..data.len().min(SAMPLE)].to_vec();
         let tail = data[data.len().saturating_sub(SAMPLE)..].to_vec();
         Self {
             path,
             options,
-            map,
+            source: Source::new(map, file, options.access),
             index,
             encoding,
             detected_encoding,
@@ -247,9 +378,10 @@ impl LogFile {
     /// reindexes when the line feed changes).
     pub fn with_encoding(&self, encoding: Option<Encoding>) -> Option<Self> {
         let new = encoding.unwrap_or(self.detected_encoding);
-        let data = self.bytes();
+        // A byte-order mark is at most 3 bytes.
+        let data = self.source.get(0..4);
         if new.line_feed() != self.encoding.line_feed()
-            || new.bom_len(data) != self.encoding.bom_len(data)
+            || new.bom_len(&data) != self.encoding.bom_len(&data)
         {
             return None;
         }
@@ -259,7 +391,7 @@ impl LogFile {
                 encoding,
                 ..self.options
             },
-            map: self.map.clone(),
+            source: self.source.clone(),
             index: self.index.clone(),
             encoding: new,
             detected_encoding: self.detected_encoding,
@@ -292,7 +424,6 @@ impl LogFile {
         let part = path.with_file_name(format!(".{name}.kloggr-part"));
         let result = (|| {
             let mut out = std::io::BufWriter::new(File::create(&part)?);
-            let data = self.bytes();
             let mut pending: Option<Range<usize>> = None;
             let mut last_percent = None;
             for (done, line) in lines.into_iter().enumerate() {
@@ -302,7 +433,7 @@ impl LogFile {
                 pending = match pending {
                     Some(p) if p.end == span.start && p.len() < PIECE => Some(p.start..span.end),
                     Some(p) => {
-                        out.write_all(&data[p])?;
+                        out.write_all(&self.source.get(p))?;
                         Some(span)
                     }
                     None => Some(span),
@@ -316,7 +447,7 @@ impl LogFile {
                 }
             }
             if let Some(p) = pending {
-                out.write_all(&data[p])?;
+                out.write_all(&self.source.get(p))?;
             }
             out.into_inner().map_err(|e| e.into_error())?.sync_all()?;
             std::fs::rename(&part, path)
@@ -336,7 +467,7 @@ impl LogFile {
                 hide_ansi: hide,
                 ..self.options
             },
-            map: self.map.clone(),
+            source: self.source.clone(),
             index: self.index.clone(),
             encoding: self.encoding,
             detected_encoding: self.detected_encoding,
@@ -357,7 +488,7 @@ impl LogFile {
     pub fn check(&self) -> std::io::Result<FileChange> {
         let file = File::open(&self.path)?;
         let meta = file.metadata()?;
-        let len = self.bytes().len() as u64;
+        let len = self.source.len() as u64;
         if FileId::of(&meta) != self.id || meta.len() < len || (meta.len() == 0 && len > 0) {
             return Ok(FileChange::Replaced);
         }
@@ -387,14 +518,14 @@ impl LogFile {
         cancel: &AtomicBool,
         on_progress: impl FnMut(IndexProgress),
     ) -> Result<Self, OpenError> {
-        let (map, id) = map_file(&self.path)?;
-        let data = map.as_deref().map_or(&[][..], |m| &m[..]);
+        let (map, file, id) = map_file(&self.path)?;
+        let data = map.as_deref().unwrap_or_default();
         let mut index = self.index.clone();
         index.extend_with(data, cancel, on_progress)?;
         Ok(Self::assemble(
             self.path.clone(),
             self.options,
-            map,
+            (map, file),
             index,
             self.encoding,
             self.detected_encoding,
@@ -406,23 +537,44 @@ impl LogFile {
         &self.path
     }
 
-    pub fn bytes(&self) -> &[u8] {
-        self.map.as_deref().map_or(&[][..], |m| &m[..])
+    /// The size of this snapshot in bytes.
+    pub fn byte_len(&self) -> usize {
+        self.source.len()
     }
 
     pub fn line_count(&self) -> usize {
         self.index.line_count()
     }
 
-    /// Raw bytes of line `n` (no terminator). Decoding is the caller's job until
-    /// encoding support lands.
-    pub fn line(&self, n: usize) -> Option<&[u8]> {
-        self.index.line(self.bytes(), n)
+    /// Raw bytes of line `n` (no terminator; see
+    /// [`text_line`](Self::text_line) for the text as shown).
+    pub fn line(&self, n: usize) -> Option<Cow<'_, [u8]>> {
+        let span = self.index.line_span(n)?;
+        let lf = self.encoding.line_feed();
+        Some(match self.source.get(span) {
+            Cow::Borrowed(b) => Cow::Borrowed(lf.strip_eol(b)),
+            Cow::Owned(b) => Cow::Owned(lf.strip_eol(&b).to_vec()),
+        })
     }
 
-    /// Raw bytes of the lines in `range` (clamped), for rendering visible rows.
-    pub fn lines(&self, range: Range<usize>) -> impl ExactSizeIterator<Item = &[u8]> {
-        self.index.lines(self.bytes(), range)
+    /// The lines in `range` (clamped) as shown and searched, read together
+    /// in one piece: what searching a block of lines uses.
+    pub fn text_block(&self, range: Range<usize>) -> TextBlock<'_> {
+        let bounds = self.index.line_bounds(range);
+        let (Some(&first), Some(&last)) = (bounds.first(), bounds.last()) else {
+            return TextBlock {
+                data: Cow::Borrowed(&[]),
+                bounds: Vec::new(),
+                lf: self.encoding.line_feed(),
+                strip: None,
+            };
+        };
+        TextBlock {
+            data: self.source.get(first as usize..last as usize),
+            bounds: bounds.iter().map(|&b| (b - first) as usize).collect(),
+            lf: self.encoding.line_feed(),
+            strip: self.options.hide_ansi.then_some(self.encoding),
+        }
     }
 
     pub fn index(&self) -> &LineIndex {
@@ -444,23 +596,37 @@ impl LogFile {
     /// [`line`](Self::line).
     pub fn text_line(&self, n: usize) -> Option<Cow<'_, [u8]>> {
         let line = self.line(n)?;
-        Some(if self.options.hide_ansi {
-            strip_ansi(line, self.encoding)
-        } else {
-            Cow::Borrowed(line)
+        Some(match (self.options.hide_ansi, line) {
+            (false, line) => line,
+            (true, Cow::Borrowed(line)) => strip_ansi(line, self.encoding),
+            (true, Cow::Owned(line)) => Cow::Owned(strip_ansi(&line, self.encoding).into_owned()),
         })
     }
 
     /// [`text_line`](Self::text_line) for the lines in `range` (clamped).
+    /// Borrowed from the mapping, or each line its own copy when the file
+    /// is read: for many lines, [`text_block`](Self::text_block) reads less.
     pub fn text_lines(&self, range: Range<usize>) -> impl ExactSizeIterator<Item = Cow<'_, [u8]>> {
-        let (hide, encoding) = (self.options.hide_ansi, self.encoding);
-        self.lines(range).map(move |l| {
-            if hide {
-                strip_ansi(l, encoding)
-            } else {
-                Cow::Borrowed(l)
+        let lines: Vec<Cow<'_, [u8]>> = match &self.source {
+            Source::Mapped(map) => {
+                let (hide, encoding) = (self.options.hide_ansi, self.encoding);
+                self.index
+                    .lines(map, range)
+                    .map(|l| {
+                        if hide {
+                            strip_ansi(l, encoding)
+                        } else {
+                            Cow::Borrowed(l)
+                        }
+                    })
+                    .collect()
             }
-        })
+            _ => {
+                let block = self.text_block(range);
+                block.iter().map(|l| Cow::Owned(l.into_owned())).collect()
+            }
+        };
+        lines.into_iter()
     }
 
     /// Decoded text of line `n` (see [`text_line`](Self::text_line)).
@@ -500,7 +666,7 @@ mod tests {
         let path = temp_file("basic.log", b"first\nsecond\n");
         let log = LogFile::open(&path).unwrap();
         assert_eq!(log.line_count(), 2);
-        assert_eq!(log.line(1), Some(&b"second"[..]));
+        assert_eq!(log.line(1).as_deref(), Some(&b"second"[..]));
         std::fs::remove_file(path).unwrap();
     }
 
@@ -606,7 +772,12 @@ mod tests {
             "ansi.log",
             b"\x1b[1;31mERROR\x1b[0m x\x1b[K\nplain\n\x1b[2Jkept\n",
         );
-        let log = LogFile::open(&path).unwrap();
+        // Mapped: lines without a sequence aren't copied.
+        let options = OpenOptions {
+            access: Access::Map,
+            ..OpenOptions::default()
+        };
+        let log = LogFile::open_with(&path, options, &AtomicBool::new(false), |_| {}).unwrap();
         assert_eq!(
             log.line_text(0).unwrap(),
             "\u{1b}[1;31mERROR\u{1b}[0m x\u{1b}[K"
@@ -621,7 +792,7 @@ mod tests {
             ["ERROR x", "plain"]
         );
         // The raw bytes stay as they are.
-        assert_eq!(hidden.line(1), Some(&b"plain"[..]));
+        assert_eq!(hidden.line(1).as_deref(), Some(&b"plain"[..]));
         std::fs::remove_file(path).unwrap();
     }
 
@@ -653,10 +824,6 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
-    #[cfg_attr(
-        windows,
-        ignore = "Windows refuses to truncate a mapped file (docs/decisions.md)"
-    )]
     #[test]
     fn detects_truncation_and_rewrites() {
         let path = temp_file("truncate.log", b"aaaa\nbbbb\n");
@@ -673,6 +840,77 @@ mod tests {
         assert_eq!(log.check().unwrap(), FileChange::Replaced);
         let again = log.reopen(&AtomicBool::new(false), |_| {}).unwrap();
         assert_eq!(again.line_count(), 0);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    fn open_read(path: &Path) -> LogFile {
+        let options = OpenOptions {
+            access: Access::Read,
+            ..OpenOptions::default()
+        };
+        LogFile::open_with(path, options, &AtomicBool::new(false), |_| {}).unwrap()
+    }
+
+    #[test]
+    fn reading_gives_what_mapping_gives() {
+        let content = b"\x1b[31mred\x1b[0m\r\nplain\n\nlast";
+        let path = temp_file("read.log", content);
+        let read = open_read(&path);
+        let mapped = LogFile::open(&path).unwrap();
+        for log in [&read, &mapped] {
+            assert_eq!(log.line_count(), 4);
+            assert_eq!(log.byte_len(), content.len());
+            assert_eq!(log.line(1).as_deref(), Some(&b"plain"[..]));
+            assert_eq!(log.line(3).as_deref(), Some(&b"last"[..]));
+            assert_eq!(log.line(4), None);
+        }
+        let all = |log: &LogFile| -> Vec<Vec<u8>> {
+            log.text_block(0..10)
+                .iter()
+                .map(|l| l.into_owned())
+                .collect()
+        };
+        assert_eq!(all(&read), all(&mapped));
+        assert_eq!(
+            read.text_lines(1..3).collect::<Vec<_>>(),
+            mapped.text_lines(1..3).collect::<Vec<_>>()
+        );
+        let hidden = read.with_hide_ansi(true);
+        assert_eq!(hidden.text_line(0).as_deref(), Some(&b"red"[..]));
+        assert_eq!(all(&hidden)[0], b"red");
+        assert_eq!(
+            read.with_encoding(Some(Encoding::WINDOWS_1252))
+                .unwrap()
+                .line_count(),
+            4
+        );
+        assert!(read.text_block(9..12).iter().next().is_none());
+
+        let out = path.with_extension("saved");
+        read.save_lines(&out, [1, 3], 2, &AtomicBool::new(false), |_| {})
+            .unwrap();
+        assert_eq!(std::fs::read(&out).unwrap(), b"plain\nlast");
+        let _ = std::fs::remove_file(out);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// A snapshot that reads its file survives the file being truncated
+    /// (with a mapping, that is SIGBUS; on Windows, the truncation fails).
+    #[test]
+    fn reading_a_truncated_file() {
+        let path = temp_file("read-truncated.log", b"aaaa\nbbbb\ncccc\n");
+        let log = open_read(&path);
+        std::fs::write(&path, b"aaaa\nbb").unwrap();
+        assert_eq!(log.line(0).as_deref(), Some(&b"aaaa"[..]));
+        assert_eq!(log.line(1).as_deref(), Some(&b"bb"[..]));
+        assert_eq!(log.line(2).as_deref(), Some(&b""[..]));
+        let lines: Vec<_> = log
+            .text_block(0..3)
+            .iter()
+            .map(|l| l.into_owned())
+            .collect();
+        assert_eq!(lines, [&b"aaaa"[..], b"bb", b""]);
+        assert_eq!(log.check().unwrap(), FileChange::Replaced);
         std::fs::remove_file(path).unwrap();
     }
 

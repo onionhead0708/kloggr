@@ -16,7 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let start = Instant::now();
         let log = kloggr_core::LogFile::open(&path)?;
         let elapsed = start.elapsed();
-        let size = log.bytes().len() as f64;
+        let size = log.byte_len() as f64;
         println!(
             "{} lines, {:.1} MiB in {elapsed:.2?} ({:.0} MiB/s), index {:.1} MiB, longest line {}, {}",
             log.line_count(),
@@ -34,7 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "best_ms={best:.1} lines={} index_bytes={} size={}",
         log.line_count(),
         log.index().allocated_bytes(),
-        log.bytes().len()
+        log.byte_len()
     );
     Ok(())
 }

@@ -195,6 +195,7 @@ impl Crawler {
         let options = OpenOptions {
             encoding: self.encoding,
             hide_ansi: Preferences::get(cx).view.hide_ansi,
+            ..OpenOptions::default()
         };
         let (tx, rx) = async_channel::unbounded();
         let cancel = Arc::new(AtomicBool::new(false));
@@ -321,6 +322,7 @@ impl Crawler {
         let options = OpenOptions {
             encoding: self.encoding,
             hide_ansi: Preferences::get(cx).view.hide_ansi,
+            ..OpenOptions::default()
         };
         cx.spawn(async move |this, cx| {
             let executor = cx.background_executor().clone();
@@ -371,7 +373,7 @@ impl Crawler {
             return;
         };
         // More bytes, not only more lines: the last line may have grown.
-        if self.options.auto_refresh && !self.is_searching() && log.bytes().len() > bytes {
+        if self.options.auto_refresh && !self.is_searching() && log.byte_len() > bytes {
             self.run_from(pattern, Some(lines.saturating_sub(1)), cx);
         }
     }

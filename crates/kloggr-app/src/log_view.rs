@@ -3189,17 +3189,17 @@ mod tests {
         // Rows show the frozen columns, then the scrolled ones; short lines
         // are padded.
         let log = view.read_with(cx, |v, _| v.log.clone().unwrap());
-        let (text, _) = screen_text(&log, log.line(0).unwrap(), &vp);
+        let (text, _) = screen_text(&log, &log.line(0).unwrap(), &vp);
         assert!(text.starts_with(&long[..10]));
         assert_eq!(&text[10..20], &long[10 + vp.left()..20 + vp.left()]);
-        let (text, _) = screen_text(&log, log.line(1).unwrap(), &vp);
+        let (text, _) = screen_text(&log, &log.line(1).unwrap(), &vp);
         assert_eq!(text, "short     ");
         // A wide character cut by the separator is left out of the frozen
         // part.
         let path = temp_log("frozen-wide", "abcdefghi日本\n");
         let wide = LogFile::open(&path).unwrap();
         std::fs::remove_file(path).unwrap();
-        let (text, seen) = screen_text(&wide, wide.line(0).unwrap(), &vp);
+        let (text, seen) = screen_text(&wide, &wide.line(0).unwrap(), &vp);
         assert!(text.starts_with("abcdefghi "), "{text:?}");
         assert_eq!(seen, 13);
 

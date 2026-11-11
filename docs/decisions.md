@@ -8,6 +8,16 @@ Newest first. Each entry gives the date, what klogg does, what kloggr does, and 
 
 ---
 
+## 2026-11-11: Windows reads files instead of keeping them mapped
+
+**klogg:** `FileHolder` keeps the file open for reading; Qt maps or reads it as needed.
+
+**kloggr:** the file is mapped to be indexed (also when appended data is indexed), and the mapping is dropped right after. On Windows, the lines are then read at an offset from a handle opened with full sharing (`Access::Read`); Linux and macOS keep the mapping (`Access::Map`), and `KLOGGR_READ_FILES=1` switches them to reading too. A file truncated under a reading snapshot gives short or empty lines until it is indexed again, never a crash.
+
+**Why:** Windows refuses to truncate a file while any process has it mapped, so a kept mapping made the program writing the log fail to truncate it (`copytruncate` rotation), and kloggr's own Clear File and tests failed the same way. Reading costs some speed, measured on Linux with 256 MiB in the page cache: search 7–32% slower, quick find about 40%, a screen of lines 8 µs instead of 5. That is why the other platforms keep the mapping, where it can't block anyone; there a truncated file can still raise SIGBUS (the risk klogg accepts too).
+
+**Code:** `kloggr_core::file::{Access, Source, TextBlock}`.
+
 ## 2026-11-11: Full Screen toggles, with F11, in the View menu
 
 **klogg:** `mainwindow.fullscreen`, `mainwindow.max_window` and `mainwindow.min_window` are shortcuts without default keys or menu items; they call `showFullScreen`, `showMaximized` and `showMinimized`, so full screen can't be left with the same key. Window geometry is saved with the session (`saveGeometry`).
@@ -74,7 +84,7 @@ Newest first. Each entry gives the date, what klogg does, what kloggr does, and 
 
 **kloggr:** the same menu item, key and question. Before truncating, the tab stops its search, quick find and Save to file, and drops every snapshot of the file; it truncates once no thread holds the mapping (waiting up to 5 seconds), then opens the empty file. Marks and results are dropped, as on any reload. If the file can't be emptied, an error says why.
 
-**Why:** reading a mapping past the end of a truncated file raises SIGBUS and kills the app on Linux and macOS, and Windows refuses to truncate a mapped file at all.
+**Why:** reading a mapping past the end of a truncated file raises SIGBUS and kills the app on Linux and macOS. (On Windows the file isn't kept mapped; see "Windows reads files instead of keeping them mapped".)
 
 **Code:** `Crawler::clear_file`, `Workspace::clear_file`.
 

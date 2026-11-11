@@ -863,7 +863,7 @@ impl Crawler {
         let Some(log) = self.log.clone() else {
             return;
         };
-        self.search_covers = (log.line_count(), log.bytes().len());
+        self.search_covers = (log.line_count(), log.byte_len());
         self.searching = true;
         self.info = SearchInfo {
             text: "Search in progress…".into(),
@@ -2122,10 +2122,6 @@ mod tests {
         assert_eq!(text, "ERROR: a");
     }
 
-    #[cfg_attr(
-        windows,
-        ignore = "Windows refuses to truncate a mapped file (docs/decisions.md)"
-    )]
     #[gpui::test]
     fn truncation_drops_marks_and_results(cx: &mut TestAppContext) {
         let log = TempLog::new("truncate", 9);
