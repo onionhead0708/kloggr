@@ -12,6 +12,8 @@ Start kloggr from the desktop menu, or from a terminal with the file to open:
 kloggr /var/log/syslog
 ```
 
+On macOS, files can also be opened from Finder with **Open With > kloggr**.
+
 Several files can be given. If kloggr is already running, the files open in
 its last active window instead, and the new launch exits; `kloggr -m`
 (`--multi`) starts a separate kloggr. `kloggr --help` lists the options.

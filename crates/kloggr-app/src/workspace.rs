@@ -367,16 +367,17 @@ impl MainWindows {
     }
 }
 
-/// Files given to a later kloggr launch: they open in the main window
-/// active last, which comes to the front (klogg:
-/// `KloggApp::loadFileNonInteractive`). Without a main window, one opens.
-pub fn open_from_another_launch(files: Vec<PathBuf>, config_dir: PathBuf, cx: &mut App) {
+/// Files given to a later kloggr launch, or opened from macOS's Finder:
+/// they open in the main window active last, which comes to the front
+/// (klogg: `KloggApp::loadFileNonInteractive`). Without a main window, one
+/// opens.
+pub fn open_from_another_launch(files: Vec<PathBuf>, config_dir: Option<PathBuf>, cx: &mut App) {
     let target = cx
         .try_global::<MainWindows>()
         .and_then(|w| w.last_active.as_ref()?.upgrade())
         .or_else(|| MainWindows::live(cx).into_iter().next());
     let Some(ws) = target else {
-        crate::open_main_window(Some(config_dir), None, files, cx);
+        crate::open_main_window(config_dir, None, files, cx);
         return;
     };
     let handle = ws.read(cx).window;
@@ -2712,7 +2713,7 @@ mod tests {
         let fx = Fixture::new("launch");
         let (a, b) = (fx.log("a.log", 2), fx.log("b.log", 3));
         let (ws, cx) = workspace(cx, fx.config());
-        let config = fx.config();
+        let config = Some(fx.config());
         // From a task, outside any window's update (as `main` does).
         cx.cx
             .update(|cx| open_from_another_launch(vec![a.clone()], config.clone(), cx));

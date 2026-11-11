@@ -62,69 +62,86 @@ fn main() {
     }
     let paths = args.files;
 
-    gpui_platform::application()
+    // macOS: files opened from Finder (Open With, double-click) arrive as
+    // file:// URLs, at launch or while running.
+    let (opened_tx, opened_rx) = async_channel::unbounded::<Vec<String>>();
+    let app = gpui_platform::application()
         // SVG icons used by gpui-component (menu check marks, chevrons).
-        .with_assets(gpui_kit_assets::Assets)
-        .run(move |cx: &mut App| {
-            gpui_component::init(cx);
-            cx.on_action(|_: &Quit, cx| cx.quit());
-            let config_dir = kloggr_core::settings::config_dir();
-            // Options first: they bind the shortcuts.
-            preferences::Preferences::init(config_dir.clone(), cx);
-            cx.bind_keys(scratchpad::key_bindings());
-            preferences::Preferences::apply_style(None, cx);
-            highlighters::Highlighters::init(config_dir.clone(), cx);
-            saved_searches::SavedSearches::init(config_dir.clone(), cx);
-            // klogg: the last session's windows, then the file given in
-            // the first one.
-            let mut windows = if preferences::Preferences::get(cx).general.load_last_session {
-                config_dir
-                    .as_deref()
-                    .map(|dir| kloggr_core::settings::Session::load(dir).all_windows())
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            if windows.is_empty() {
-                windows.push(Default::default());
+        .with_assets(gpui_kit_assets::Assets);
+    app.on_open_urls(move |urls| {
+        opened_tx.try_send(urls).ok();
+    });
+    app.run(move |cx: &mut App| {
+        gpui_component::init(cx);
+        cx.on_action(|_: &Quit, cx| cx.quit());
+        let config_dir = kloggr_core::settings::config_dir();
+        // Options first: they bind the shortcuts.
+        preferences::Preferences::init(config_dir.clone(), cx);
+        cx.bind_keys(scratchpad::key_bindings());
+        preferences::Preferences::apply_style(None, cx);
+        highlighters::Highlighters::init(config_dir.clone(), cx);
+        saved_searches::SavedSearches::init(config_dir.clone(), cx);
+        // klogg: the last session's windows, then the file given in
+        // the first one.
+        let mut windows = if preferences::Preferences::get(cx).general.load_last_session {
+            config_dir
+                .as_deref()
+                .map(|dir| kloggr_core::settings::Session::load(dir).all_windows())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        if windows.is_empty() {
+            windows.push(Default::default());
+        }
+        let mut paths = paths;
+        let mut first = None;
+        for files in windows {
+            let paths = std::mem::take(&mut paths);
+            let handle = open_main_window(config_dir.clone(), Some(files), paths, cx);
+            first = first.or(handle);
+        }
+        if single && let Some(dir) = config_dir.clone() {
+            receive_files(dir, cx);
+        }
+        let finder_dir = config_dir.clone();
+        cx.spawn(async move |cx| {
+            while let Ok(urls) = opened_rx.recv().await {
+                let files = urls
+                    .iter()
+                    .filter_map(|u| kloggr_core::instance::path_from_file_url(u))
+                    .collect();
+                let dir = finder_dir.clone();
+                cx.update(|cx| workspace::open_from_another_launch(files, dir, cx));
             }
-            let mut paths = paths;
-            let mut first = None;
-            for files in windows {
-                let paths = std::mem::take(&mut paths);
-                let handle = open_main_window(config_dir.clone(), Some(files), paths, cx);
-                first = first.or(handle);
-            }
-            if single && let Some(dir) = config_dir.clone() {
-                receive_files(dir, cx);
-            }
-            let main_window = first.expect("failed to open window");
-            if let Some(dir) = config_dir.clone() {
-                main_window
-                    .update(cx, |_, window, cx| {
-                        window.defer(cx, move |window, cx| {
-                            crash_report::show_pending(&dir, window, cx)
-                        })
+        })
+        .detach();
+        let main_window = first.expect("failed to open window");
+        if let Some(dir) = config_dir.clone() {
+            main_window
+                .update(cx, |_, window, cx| {
+                    window.defer(cx, move |window, cx| {
+                        crash_report::show_pending(&dir, window, cx)
                     })
-                    .ok();
+                })
+                .ok();
+        }
+        if let Some(dir) = config_dir {
+            update_check::start(dir, main_window, cx);
+        }
+        // The scratchpad and documentation windows don't keep the app
+        // open (klogg's are children of the main window).
+        cx.on_window_closed(|cx, _| {
+            let windows = cx.windows();
+            if windows.iter().all(|w| {
+                scratchpad::is_scratchpad_window(*w, cx) || help::is_documentation_window(*w, cx)
+            }) {
+                cx.quit();
             }
-            if let Some(dir) = config_dir {
-                update_check::start(dir, main_window, cx);
-            }
-            // The scratchpad and documentation windows don't keep the app
-            // open (klogg's are children of the main window).
-            cx.on_window_closed(|cx, _| {
-                let windows = cx.windows();
-                if windows.iter().all(|w| {
-                    scratchpad::is_scratchpad_window(*w, cx)
-                        || help::is_documentation_window(*w, cx)
-                }) {
-                    cx.quit();
-                }
-            })
-            .detach();
-            cx.activate(true);
-        });
+        })
+        .detach();
+        cx.activate(true);
+    });
 }
 
 /// The command line (klogg: `CliParameters`).
@@ -200,7 +217,7 @@ fn receive_files(config_dir: PathBuf, cx: &mut App) {
     cx.spawn(async move |cx| {
         while let Ok(files) = rx.recv().await {
             let dir = config_dir.clone();
-            cx.update(|cx| workspace::open_from_another_launch(files, dir, cx));
+            cx.update(|cx| workspace::open_from_another_launch(files, Some(dir), cx));
         }
     })
     .detach();

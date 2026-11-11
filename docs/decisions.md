@@ -8,6 +8,16 @@ Newest first. Each entry gives the date, what klogg does, what kloggr does, and 
 
 ---
 
+## 2026-11-11: macOS Open With also offers kloggr for compressed logs
+
+**klogg:** its `Info.plist` declares `public.text` as a Viewer document type, so Finder offers klogg in Open With for text files; files arrive through `QFileOpenEvent`.
+
+**kloggr:** `public.text`, `public.plain-text` and `public.log`, plus gzip, bzip2, xz, zip, 7z and tar archives, all with rank Alternate (offered, never the default app). The files arrive as `file://` URLs through GPUI's `on_open_urls`, at launch or while running, and open in the last active window like files from a second launch.
+
+**Why:** kloggr opens compressed logs and archives itself, so Open With should offer it for them too. Alternate keeps kloggr from taking over any file type.
+
+**Code:** `scripts/package-macos.sh`, `on_open_urls` in `main.rs`, `kloggr_core::instance::path_from_file_url`.
+
 ## 2026-11-11: Windows reads files instead of keeping them mapped
 
 **klogg:** `FileHolder` keeps the file open for reading; Qt maps or reads it as needed.

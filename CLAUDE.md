@@ -169,7 +169,7 @@ Menus, window management and platform integration still missing, plus open items
 - [x] Single instance: a second launch passes its files to the running window
 - [x] Window size and position remembered in the session; Fullscreen, Minimize, Maximize shortcuts
 - [x] Windows: truncated mapped files (read by blocks instead of mapping, re-enable the skipped tests)
-- [ ] macOS: open files from Finder (*Open With*): GPUI open-URL events and document types in `Info.plist`
+- [x] macOS: open files from Finder (*Open With*): GPUI open-URL events and document types in `Info.plist`
 - [ ] Benchmarks: the 10 GB runs, and the short-line search speed-up noted in `docs/benchmarks.md`
 
 ## Conventions

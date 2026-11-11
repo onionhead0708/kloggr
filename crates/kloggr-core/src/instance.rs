@@ -121,6 +121,21 @@ impl Server {
     }
 }
 
+/// The path of a `file://` URL, as macOS passes files opened from Finder
+/// (`application:openURLs:`). `None` for other URLs.
+pub fn path_from_file_url(url: &str) -> Option<PathBuf> {
+    let rest = url.strip_prefix("file://")?;
+    let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+    if !rest.starts_with('/') {
+        return None;
+    }
+    let path = rest.split(['?', '#']).next().unwrap_or(rest);
+    let decoded = percent_encoding::percent_decode_str(path)
+        .decode_utf8()
+        .ok()?;
+    Some(PathBuf::from(decoded.into_owned()))
+}
+
 fn read_instance_file(config_dir: &Path) -> Option<(u16, String)> {
     let text = std::fs::read_to_string(config_dir.join(FILE)).ok()?;
     let mut parts = text.split_whitespace();
@@ -243,6 +258,20 @@ mod tests {
         write_private(&dir.0.join(FILE), &format!("{port} {}\n", server.token)).unwrap();
         server.stop();
         assert!(!dir.0.join(FILE).exists());
+    }
+
+    #[test]
+    fn file_urls() {
+        assert_eq!(
+            path_from_file_url("file:///Users/me/My%20Logs/app.log"),
+            Some(PathBuf::from("/Users/me/My Logs/app.log"))
+        );
+        assert_eq!(
+            path_from_file_url("file://localhost/var/log/caf%C3%A9.log"),
+            Some(PathBuf::from("/var/log/café.log"))
+        );
+        assert_eq!(path_from_file_url("https://example.com/a.log"), None);
+        assert_eq!(path_from_file_url("file://server/share/a.log"), None);
     }
 
     #[test]
