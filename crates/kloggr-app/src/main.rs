@@ -40,10 +40,27 @@ fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
-    let path = std::env::args_os().nth(1).map(PathBuf::from);
+    let args = match Args::parse(std::env::args_os().skip(1)) {
+        Ok(args) => args,
+        Err(message) => {
+            println!("{message}");
+            return;
+        }
+    };
+    // klogg: a second kloggr hands its files to the first, unless
+    // -m/--multi.
+    let single = !args.multi;
+    if let Some(dir) = kloggr_core::settings::config_dir().filter(|_| single) {
+        match kloggr_core::instance::send_to_running(&dir, &args.files) {
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(e) => tracing::warn!("cannot reach the running kloggr: {e}"),
+        }
+    }
     if let Some(dir) = kloggr_core::settings::config_dir() {
         kloggr_core::crash::install_hook(dir);
     }
+    let paths = args.files;
 
     gpui_platform::application()
         // SVG icons used by gpui-component (menu check marks, chevrons).
@@ -71,11 +88,15 @@ fn main() {
             if windows.is_empty() {
                 windows.push(Default::default());
             }
-            let mut path = path;
+            let mut paths = paths;
             let mut first = None;
             for files in windows {
-                let handle = open_main_window(config_dir.clone(), Some(files), path.take(), cx);
+                let paths = std::mem::take(&mut paths);
+                let handle = open_main_window(config_dir.clone(), Some(files), paths, cx);
                 first = first.or(handle);
+            }
+            if single && let Some(dir) = config_dir.clone() {
+                receive_files(dir, cx);
             }
             let main_window = first.expect("failed to open window");
             if let Some(dir) = config_dir.clone() {
@@ -106,12 +127,91 @@ fn main() {
         });
 }
 
-/// Opens a main window: a workspace with `files` from the session, and
-/// `path` (klogg: `MainWindow`, File > New Window).
+/// The command line (klogg: `CliParameters`).
+#[derive(Debug, Default, PartialEq)]
+struct Args {
+    files: Vec<PathBuf>,
+    /// -m, --multi: don't hand the files to a running kloggr.
+    multi: bool,
+}
+
+impl Args {
+    const HELP: &str = "Usage: kloggr [options] [files…]
+
+A fast log viewer for very large files.
+
+Options:
+  -m, --multi    allow several kloggr to run, instead of opening the files
+                 in the one already running
+  -h, --help     print this help and exit
+  -v, --version  print the version and exit";
+
+    /// The arguments, or the text to print and exit with.
+    fn parse(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Self, String> {
+        let mut out = Self::default();
+        let mut only_files = false;
+        for arg in args {
+            match arg.to_str() {
+                _ if only_files => out.files.push(arg.into()),
+                Some("--") => only_files = true,
+                Some("-m" | "--multi") => out.multi = true,
+                Some("-h" | "--help") => return Err(Self::HELP.to_owned()),
+                Some("-v" | "--version") => {
+                    return Err(format!("kloggr {}", env!("CARGO_PKG_VERSION")));
+                }
+                // Older macOS passes a process serial number to apps
+                // started from Finder.
+                Some(a) if a.starts_with("-psn_") => {}
+                Some(a) if a.starts_with('-') && a.len() > 1 => {
+                    return Err(format!("Unknown option {a}\n\n{}", Self::HELP));
+                }
+                _ => out.files.push(arg.into()),
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Files sent by later launches open in the last active window (klogg:
+/// `MessageReceiver`, `loadFileNonInteractive`).
+fn receive_files(config_dir: PathBuf, cx: &mut App) {
+    let server = match kloggr_core::instance::Server::start(&config_dir) {
+        Ok(server) => std::sync::Arc::new(server),
+        Err(e) => {
+            tracing::warn!("other launches won't find this kloggr: {e}");
+            return;
+        }
+    };
+    let (tx, rx) = async_channel::unbounded();
+    let serving = server.clone();
+    std::thread::Builder::new()
+        .name("kloggr-instance".into())
+        .spawn(move || {
+            serving.serve(|files| {
+                tx.send_blocking(files).ok();
+            })
+        })
+        .expect("failed to spawn a thread");
+    cx.on_app_quit(move |_| {
+        server.stop();
+        async {}
+    })
+    .detach();
+    cx.spawn(async move |cx| {
+        while let Ok(files) = rx.recv().await {
+            let dir = config_dir.clone();
+            cx.update(|cx| workspace::open_from_another_launch(files, dir, cx));
+        }
+    })
+    .detach();
+}
+
+/// Opens a main window: a workspace with `files` from the session, then
+/// `paths` (klogg: `MainWindow`, File > New Window).
 pub(crate) fn open_main_window(
     config_dir: Option<PathBuf>,
     files: Option<kloggr_core::settings::WindowFiles>,
-    path: Option<PathBuf>,
+    paths: Vec<PathBuf>,
     cx: &mut App,
 ) -> Option<gpui::AnyWindowHandle> {
     let options = WindowOptions {
@@ -124,7 +224,7 @@ pub(crate) fn open_main_window(
             if let Some(files) = files {
                 workspace.restore(files, window, cx);
             }
-            if let Some(path) = path {
+            for path in paths {
                 workspace.open(path, window, cx);
             }
             workspace
@@ -144,5 +244,32 @@ pub(crate) fn window_base_options() -> WindowOptions {
         gpui_component::TitleBar::window_options()
     } else {
         WindowOptions::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Args, String> {
+        Args::parse(args.iter().map(std::ffi::OsString::from))
+    }
+
+    #[test]
+    fn command_line() {
+        assert_eq!(parse(&[]), Ok(Args::default()));
+        assert_eq!(
+            parse(&["a.log", "-m", "/var/log/b.log"]),
+            Ok(Args {
+                files: vec!["a.log".into(), "/var/log/b.log".into()],
+                multi: true,
+            })
+        );
+        assert_eq!(parse(&["--", "-m"]).unwrap().files, [PathBuf::from("-m")]);
+        assert_eq!(parse(&["-"]).unwrap().files, [PathBuf::from("-")]);
+        assert_eq!(parse(&["-psn_0_1234"]), Ok(Args::default()));
+        assert!(parse(&["--help"]).unwrap_err().starts_with("Usage: kloggr"));
+        assert!(parse(&["-v"]).unwrap_err().starts_with("kloggr 0."));
+        assert!(parse(&["-x"]).unwrap_err().starts_with("Unknown option -x"));
     }
 }

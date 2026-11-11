@@ -322,6 +322,8 @@ impl Drop for Tab {
 #[derive(Default)]
 struct MainWindows {
     list: Vec<WeakEntity<Workspace>>,
+    /// The main window active last, where files from other launches open.
+    last_active: Option<WeakEntity<Workspace>>,
     quitting: bool,
 }
 
@@ -335,9 +337,35 @@ impl MainWindows {
     }
 }
 
+/// Files given to a later kloggr launch: they open in the main window
+/// active last, which comes to the front (klogg:
+/// `KloggApp::loadFileNonInteractive`). Without a main window, one opens.
+pub fn open_from_another_launch(files: Vec<PathBuf>, config_dir: PathBuf, cx: &mut App) {
+    let target = cx
+        .try_global::<MainWindows>()
+        .and_then(|w| w.last_active.as_ref()?.upgrade())
+        .or_else(|| MainWindows::live(cx).into_iter().next());
+    let Some(ws) = target else {
+        crate::open_main_window(Some(config_dir), None, files, cx);
+        return;
+    };
+    let handle = ws.read(cx).window;
+    handle
+        .update(cx, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                for file in files {
+                    ws.open(file, window, cx);
+                }
+            });
+            window.activate_window();
+        })
+        .ok();
+}
+
 pub struct Workspace {
     /// This workspace's entity, to find it among the main windows.
     id: EntityId,
+    window: gpui::AnyWindowHandle,
     tabs: Vec<Tab>,
     active: usize,
     /// In-window menu bar; `None` on macOS, which uses the native one.
@@ -381,6 +409,8 @@ impl Workspace {
         // the active window's.
         cx.observe_window_activation(window, |this, window, cx| {
             if window.is_window_active() {
+                let me = cx.entity().downgrade();
+                cx.default_global::<MainWindows>().last_active = Some(me);
                 this.reload_session(cx);
                 this.update_menus(cx);
             }
@@ -398,6 +428,7 @@ impl Workspace {
         .detach();
         let mut this = Self {
             id: cx.entity_id(),
+            window: window.window_handle(),
             tabs: Vec::new(),
             active: 0,
             menu_bar: (!cfg!(target_os = "macos")).then(|| AppMenuBar::new(cx)),
@@ -1772,7 +1803,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &NewWindow, _, cx| {
                 let config_dir = this.config_dir.clone();
                 cx.defer(move |cx| {
-                    crate::open_main_window(config_dir, None, None, cx);
+                    crate::open_main_window(config_dir, None, Vec::new(), cx);
                 });
             }))
             .on_action(
@@ -2583,7 +2614,10 @@ mod tests {
         cx.dispatch_action(RemoveFromFavorites);
         cx.run_until_parked();
         cx.simulate_keystrokes("enter");
-        assert_eq!(Session::load(&fx.config()).favorites, std::slice::from_ref(&b));
+        assert_eq!(
+            Session::load(&fx.config()).favorites,
+            std::slice::from_ref(&b)
+        );
 
         // A favorite that disappeared: asked, then removed.
         ws.update_in(cx, |ws, window, cx| ws.activate(0, window, cx));
@@ -2595,6 +2629,29 @@ mod tests {
         cx.run_until_parked();
         assert!(Session::load(&fx.config()).favorites.is_empty());
         assert!(ws.read_with(cx, |ws, _| ws.session.favorites.is_empty()));
+    }
+
+    #[gpui::test]
+    fn files_from_another_launch(cx: &mut TestAppContext) {
+        let fx = Fixture::new("launch");
+        let (a, b) = (fx.log("a.log", 2), fx.log("b.log", 3));
+        let (ws, cx) = workspace(cx, fx.config());
+        let config = fx.config();
+        // From a task, outside any window's update (as `main` does).
+        cx.cx
+            .update(|cx| open_from_another_launch(vec![a.clone()], config.clone(), cx));
+        assert_eq!(wait_indexed(&ws, cx), 2);
+
+        // Into the window active last.
+        cx.dispatch_action(NewWindow);
+        cx.run_until_parked();
+        let ws2 = cx.update(|_, cx| MainWindows::live(cx)[1].clone());
+        cx.cx.update(|cx| {
+            cx.default_global::<MainWindows>().last_active = Some(ws2.downgrade());
+            open_from_another_launch(vec![b.clone()], config.clone(), cx);
+        });
+        assert_eq!(wait_indexed(&ws2, cx), 3);
+        assert_eq!(ws.read_with(cx, |ws, _| ws.tabs.len()), 1);
     }
 
     #[gpui::test]

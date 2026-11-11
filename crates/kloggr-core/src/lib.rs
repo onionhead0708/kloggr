@@ -19,6 +19,7 @@
 //! - [`search`]: patterns, matchers and parallel search (klogg: `src/regex`,
 //!   `LogFilteredDataWorker`)
 //!
+//! - [`instance`]: one kloggr at a time (klogg: `SingleApplication`)
 //! - [`watch`]: file change notifications (klogg: `filewatch/`)
 //! - [`highlight`]: highlighters, highlighter sets and color labels (klogg:
 //!   `HighlighterSet`, `ColorLabelsManager`)
@@ -33,6 +34,7 @@ pub mod download;
 pub mod encoding;
 pub mod file;
 pub mod highlight;
+pub mod instance;
 pub mod line_index;
 pub mod options;
 pub mod scratch;

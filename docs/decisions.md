@@ -8,6 +8,16 @@ Newest first. Each entry gives the date, what klogg does, what kloggr does, and 
 
 ---
 
+## 2026-11-11: Single instance over loopback TCP with a token; fewer command-line options
+
+**klogg:** `SingleApplication` (a local socket named after the user) makes a second launch send its files to the first, which opens them in its active window; `-m/--multi` allows several instances. The command line also has `-s/--load-session`, `-n/--new-session`, `-l/--log`, `-f/--follow`, `-d/--debug` and window size options.
+
+**kloggr:** the first kloggr listens on a loopback TCP port and writes the port and a random 128-bit token to `instance` in the config folder (mode 0600 on Unix). A later launch sends the token and its files (made absolute) and exits; the files open in the last active main window, which comes to the front. A wrong token is ignored; a stale file from a crash just fails to connect, and the new kloggr takes over. The command line has `-m/--multi`, `-h/--help`, `-v/--version` and files.
+
+**Why:** std has no local sockets on Windows, and loopback TCP with a token works the same on every platform without a new dependency; the token keeps other local users from making kloggr open files. The other klogg options can come back when someone needs them (`RUST_LOG` already replaces `--debug`).
+
+**Code:** `kloggr_core::instance`, `Args` and `receive_files` in `main.rs`, `workspace::open_from_another_launch`.
+
 ## 2026-11-11: Favorites: no toolbar star, temporary files can't be added
 
 **klogg:** a Favorites menu (Add to Favorites, Remove from Favorites…, then the files sorted by name) and a star button on the toolbar that adds or removes the current file. Favorites are kept with the session settings.

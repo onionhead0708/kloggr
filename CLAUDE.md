@@ -166,7 +166,7 @@ Menus, window management and platform integration still missing, plus open items
 - [x] Help menu: About, Documentation, Report Issue
 - [x] File menu: Open from Clipboard, Open from URL, New Window, Opened Files switcher (`mainwindow.select_open_file`)
 - [x] Favorites: add, remove and open favorite files (klogg favorites menu and toolbar button)
-- [ ] Single instance: a second launch passes its files to the running window
+- [x] Single instance: a second launch passes its files to the running window
 - [ ] Window size and position remembered in the session; Fullscreen, Minimize, Maximize shortcuts
 - [ ] Windows: truncated mapped files (read by blocks instead of mapping, re-enable the skipped tests)
 - [ ] macOS: open files from Finder (*Open With*): GPUI open-URL events and document types in `Info.plist`

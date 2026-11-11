@@ -12,6 +12,10 @@ Start kloggr from the desktop menu, or from a terminal with the file to open:
 kloggr /var/log/syslog
 ```
 
+Several files can be given. If kloggr is already running, the files open in
+its last active window instead, and the new launch exits; `kloggr -m`
+(`--multi`) starts a separate kloggr. `kloggr --help` lists the options.
+
 By default kloggr reopens the files that were open when it was last closed,
 with their marks, search and view settings.
 
