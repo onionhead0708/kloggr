@@ -78,7 +78,8 @@ whether kloggr extracts them, and whether it asks first.
 kloggr detects the encoding of a file (UTF-8, UTF-16, and the common legacy
 encodings). If the guess is wrong, pick the encoding from the **Encoding**
 menu; **Auto** goes back to the detected one. The choice is remembered for
-the file.
+the file. **Options > File > Encoding of new files** sets the encoding
+of files opened for the first time instead of detecting it.
 
 ## Searching
 

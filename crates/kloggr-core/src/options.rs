@@ -163,6 +163,9 @@ pub struct File {
     pub poll: bool,
     /// klogg: `filewatch.pollingIntervalMs`.
     pub poll_interval_ms: u32,
+    /// The encoding of files opened for the first time, by name; `None`:
+    /// detected (klogg: `defaultView.encodingMib`, "Auto").
+    pub default_encoding: Option<String>,
 }
 
 /// Polling intervals allowed, in milliseconds (klogg: `PollIntervalMin`,
@@ -179,6 +182,7 @@ impl Default for File {
             native_watch: true,
             poll: cfg!(windows),
             poll_interval_ms: 2000,
+            default_encoding: None,
         }
     }
 }
@@ -221,6 +225,7 @@ impl Options {
             boolean: s.boolean,
             auto_refresh: s.auto_refresh,
             follow: self.general.follow_on_load,
+            encoding: self.file.default_encoding.clone(),
             ..FileContext::default()
         }
     }

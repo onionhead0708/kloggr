@@ -2879,6 +2879,45 @@ mod tests {
     }
 
     #[gpui::test]
+    fn default_encoding_for_new_files(cx: &mut TestAppContext) {
+        let fx = Fixture::new("default-encoding");
+        let path = fx.dir.join("latin.log");
+        std::fs::write(&path, "caf\u{e9}\n").unwrap();
+        let (ws, cx) = workspace(cx, fx.config());
+        cx.update(|_, cx| {
+            let mut o = Preferences::get(cx).clone();
+            o.file.default_encoding = Some("windows-1252".into());
+            Preferences::set(o, None, cx);
+        });
+        ws.update_in(cx, |ws, window, cx| ws.open(path.clone(), window, cx));
+        assert_eq!(wait_indexed(&ws, cx), 1);
+        let status = ws.read_with(cx, |ws, _| ws.status());
+        assert!(status.contains("displayed as windows-1252"), "{status}");
+        let text = ws.read_with(cx, |ws, cx| {
+            ws.crawler()
+                .unwrap()
+                .read(cx)
+                .log()
+                .unwrap()
+                .line_text(0)
+                .unwrap()
+                .into_owned()
+        });
+        assert_eq!(text, "caf\u{c3}\u{a9}", "UTF-8 bytes read as Windows-1252");
+
+        // Auto again: new files are detected.
+        cx.update(|_, cx| {
+            let mut o = Preferences::get(cx).clone();
+            o.file.default_encoding = None;
+            Preferences::set(o, None, cx);
+        });
+        let other = fx.log("new.log", 1);
+        ws.update_in(cx, |ws, window, cx| ws.open(other.clone(), window, cx));
+        wait_indexed(&ws, cx);
+        assert!(ws.read_with(cx, |ws, _| ws.status().contains("detected as")));
+    }
+
+    #[gpui::test]
     fn encoding_menu(cx: &mut TestAppContext) {
         let fx = Fixture::new("encoding");
         let path = fx.dir.join("utf8.log");
