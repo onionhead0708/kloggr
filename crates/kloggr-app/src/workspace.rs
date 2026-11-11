@@ -40,6 +40,7 @@ use crate::highlighters_dialog;
 use crate::options_dialog;
 use crate::preferences::Preferences;
 use crate::shortcuts::Shortcut;
+use crate::switcher;
 use crate::{log_view, quick_find};
 
 actions!(
@@ -63,7 +64,8 @@ actions!(
         OpenContainingFolder,
         OpenInEditor,
         ClearFile,
-        OpenClipboard
+        OpenClipboard,
+        SelectOpenFile
     ]
 );
 
@@ -122,6 +124,13 @@ pub fn shortcuts() -> Vec<Shortcut> {
             None,
             &["secondary-v"],
             OpenClipboard,
+        ),
+        Shortcut::new(
+            "mainwindow.select_open_file",
+            "Switch to file",
+            None,
+            &["secondary-shift-o"],
+            SelectOpenFile,
         ),
         Shortcut::new(
             "mainwindow.close_file",
@@ -298,6 +307,8 @@ pub struct Workspace {
     _extract: Option<Task<()>>,
     /// The open archive file picker (see `archives::pick`).
     _picker: Option<Entity<archives::ArchivePicker>>,
+    /// The open file switcher (Ctrl+Shift+O).
+    _switcher: Option<Entity<switcher::FileSwitcher>>,
 }
 
 impl Workspace {
@@ -330,6 +341,7 @@ impl Workspace {
             extract_cancel: Arc::default(),
             _extract: None,
             _picker: None,
+            _switcher: None,
         };
         this.update_menus(cx);
         // Set names and active sets show in the menus.
@@ -421,6 +433,8 @@ impl Workspace {
                     .disabled(no_tab),
                 MenuItem::action("Reload", Reload).disabled(no_tab),
                 MenuItem::action("Stop", Stop).disabled(no_tab),
+                MenuItem::separator(),
+                MenuItem::submenu(self.opened_files_menu()),
             ]),
             self.encoding_menu(cx),
             Menu::new("Tools").items([
@@ -440,6 +454,21 @@ impl Workspace {
                 MenuItem::action("About kloggr", help::About),
             ]),
         ]
+    }
+
+    /// klogg: View > Opened Files: the switcher, then a tab per file.
+    fn opened_files_menu(&self) -> Menu {
+        let mut items = vec![
+            MenuItem::action("Switch to File…", SelectOpenFile),
+            MenuItem::separator(),
+        ];
+        items.extend(self.tabs.iter().enumerate().map(|(index, tab)| {
+            MenuItem::action(tab.path.display().to_string(), ActivateTab { index })
+                .checked(index == self.active)
+        }));
+        Menu::new("Opened Files")
+            .items(items)
+            .disabled(self.tabs.is_empty())
     }
 
     /// klogg: the Encoding menu (`EncodingMenu::generate`): Auto, then the
@@ -554,6 +583,24 @@ impl Workspace {
                 cx.notify();
             }
         }
+    }
+
+    /// View > Opened Files > Switch to File… (klogg: `selectOpenedFile`).
+    fn select_open_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tabs.is_empty() {
+            return;
+        }
+        let files = self.tabs.iter().map(|t| t.path.clone()).collect();
+        let this = cx.entity().downgrade();
+        self._switcher = Some(switcher::open(
+            files,
+            window,
+            cx,
+            move |index, window, cx| {
+                this.update(cx, |ws, cx| ws.activate(index, window, cx))
+                    .ok();
+            },
+        ));
     }
 
     /// A new file name in the temporary folder: `{stem}-1{ext}`, `-2`…
@@ -895,6 +942,7 @@ impl Workspace {
             window.focus(&self.focus, cx);
             self.save_open_files(cx);
             self.update_title(window);
+            self.update_menus(cx);
             cx.notify();
             return;
         }
@@ -1348,6 +1396,11 @@ impl Render for Workspace {
             .on_action(
                 cx.listener(|this, _: &OpenClipboard, window, cx| this.open_clipboard(window, cx)),
             )
+            .on_action(
+                cx.listener(|this, _: &SelectOpenFile, window, cx| {
+                    this.select_open_file(window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &OpenContainingFolder, _, cx| {
                 if let Some(tab) = this.tabs.get(this.active) {
                     cx.reveal_path(&tab.path);
@@ -1513,7 +1566,21 @@ mod tests {
             cx.bind_keys(crate::follow::key_bindings());
             cx.bind_keys(key_bindings());
         });
-        cx.add_window_view(|window, cx| Workspace::new(Some(config), window, cx))
+        // Dialogs need gpui-component's Root around the window.
+        let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let window = cx.add_window({
+            let slot = slot.clone();
+            move |window, cx| {
+                let ws = cx.new(|cx| Workspace::new(Some(config), window, cx));
+                *slot.borrow_mut() = Some(ws.clone());
+                gpui_component::Root::new(ws, window, cx)
+            }
+        });
+        let ws = slot.borrow().clone().expect("built");
+        (
+            ws,
+            VisualTestContext::from_window(window.into(), cx).into_mut(),
+        )
     }
 
     /// Indexing runs on a real thread: let it finish, then run the UI tasks.
@@ -1624,7 +1691,20 @@ mod tests {
 
         cx.dispatch_action(ClearRecent);
         assert!(recent(&ws, cx).is_empty());
-        assert!(!menu_labels(cx).iter().any(|l| l.contains("a.log")));
+        // Open Recent is empty and disabled (Opened Files still lists a.log).
+        let open_recent = ws.read_with(cx, |ws, cx| {
+            ws.menus(cx)[0].items.iter().find_map(|i| match i {
+                MenuItem::Submenu(m) if m.name == "Open Recent" => {
+                    Some((m.disabled, m.items.len()))
+                }
+                _ => None,
+            })
+        });
+        assert_eq!(
+            open_recent,
+            Some((true, 2)),
+            "only the separator and Clear List"
+        );
     }
 
     #[gpui::test]
@@ -1869,6 +1949,57 @@ mod tests {
         // Not remembered: the file is gone after quitting.
         assert!(recent(&ws, cx).is_empty());
         let _ = std::fs::remove_dir_all(Workspace::temp_root());
+    }
+
+    #[gpui::test]
+    fn switch_to_open_file(cx: &mut TestAppContext) {
+        let fx = Fixture::new("switch");
+        let a = fx.log("app.log", 2);
+        let b = fx.log("db.log", 2);
+        let c = fx.log("web.log", 2);
+        let (ws, cx) = workspace(cx, fx.config());
+        for path in [&a, &b, &c] {
+            ws.update_in(cx, |ws, window, cx| ws.open(path.clone(), window, cx));
+            wait_indexed(&ws, cx);
+        }
+        let active = |cx: &mut VisualTestContext| ws.read_with(cx, |ws, _| ws.active);
+        assert_eq!(active(cx), 2);
+        // View > Opened Files lists the tabs, the current one checked.
+        let opened = |cx: &mut VisualTestContext| {
+            ws.read_with(cx, |ws, _| ws.opened_files_menu())
+                .items
+                .into_iter()
+                .filter_map(|i| match i {
+                    MenuItem::Action { name, checked, .. } => Some((name.to_string(), checked)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(opened(cx)[3], (c.display().to_string(), true));
+
+        // Ctrl+Shift+O, a filter, then Enter.
+        cx.simulate_keystrokes("ctrl-shift-o");
+        let switcher = ws.read_with(cx, |ws, _| ws._switcher.clone().unwrap());
+        cx.simulate_input("ap*log");
+        assert_eq!(switcher.read_with(cx, |s, _| s.shown.clone()), vec![0]);
+        cx.simulate_keystrokes("enter");
+        assert_eq!(active(cx), 0);
+        assert!(opened(cx)[1].1);
+
+        // Down moves the selection; the list is filtered anew each time.
+        cx.simulate_keystrokes("ctrl-shift-o");
+        let switcher = ws.read_with(cx, |ws, _| ws._switcher.clone().unwrap());
+        cx.simulate_input(".log");
+        cx.simulate_keystrokes("down down down enter");
+        assert_eq!(switcher.read_with(cx, |s, _| s.selected), 2);
+        assert_eq!(active(cx), 2);
+
+        // Without a tab the menu is disabled.
+        cx.dispatch_action(CloseAllTabs);
+        assert!(ws.read_with(cx, |ws, _| ws.opened_files_menu().disabled));
+        assert!(ws.read_with(cx, |ws, cx| {
+            ws.menus(cx).iter().any(|m| m.name == "Edit" && m.disabled)
+        }));
     }
 
     #[gpui::test]

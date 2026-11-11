@@ -22,6 +22,7 @@ mod results;
 mod saved_searches;
 mod scratchpad;
 mod shortcuts;
+mod switcher;
 mod update_check;
 mod workspace;
 

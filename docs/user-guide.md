@@ -36,7 +36,9 @@ when kloggr closes, and are not remembered in the session or the recent
 files.
 
 Each file opens in its own tab. Ctrl+1 to Ctrl+8 show the first eight tabs,
-Ctrl+9 the last one, and Ctrl+Tab / Ctrl+Shift+Tab cycle through them. The
+Ctrl+9 the last one, and Ctrl+Tab / Ctrl+Shift+Tab cycle through them.
+**View > Opened Files** lists the open files; its **Switch to File…**
+(Ctrl+Shift+O) filters them as you type (`*` and `?` are wildcards). The
 tab's context menu renames the tab, copies the file's path, opens its folder
 and closes tabs.
 
