@@ -90,6 +90,9 @@ actions!(
         SaveToFile,
         SaveSelectedToFile,
         SaveSplitterPosition,
+        SetSelectionStart,
+        SetSelectionEnd,
+        ExitView,
     ]
 );
 
@@ -206,6 +209,13 @@ pub fn shortcuts() -> Vec<Shortcut> {
             CopyWithLineNumbers,
         ),
         Shortcut::new("logview.mark", "Mark selected lines", c, &["m"], Mark),
+        Shortcut::new(
+            "logview.exit_view",
+            "Release focus from view",
+            c,
+            &["space"],
+            ExitView,
+        ),
         Shortcut::new(
             "logview.next_mark",
             "Jump to next mark",
@@ -330,6 +340,8 @@ pub enum LogViewEvent {
     Saving(Option<u8>),
     /// Save splitter position (klogg: `saveDefaultSplitterSizes`).
     SaveSplitterPosition,
+    /// Space: focus the other view (klogg: `exitView`).
+    ExitView,
 }
 
 /// The lines Save to file writes.
@@ -451,6 +463,9 @@ pub struct LogView {
     search_limits: std::ops::Range<usize>,
     /// Stops a running Save to file.
     save_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Row from Set selection start, for Set selection end (klogg:
+    /// `selectionStart_`).
+    selection_start: Option<usize>,
     /// Text wrap was on in the last frame (klogg: `useTextWrap_`).
     wrapping: bool,
     /// With text wrap, the screen rows of the last frame: (y, row, part of
@@ -494,6 +509,7 @@ impl LogView {
             wrapping: false,
             wrap_rows: Vec::new(),
             save_cancel: None,
+            selection_start: None,
             color_labels: ColorLabels::new(),
             labels_compiled: Arc::default(),
             following: false,
@@ -1486,6 +1502,20 @@ impl Render for LogView {
                     v.save_to_file(true, window, cx)
                 }),
             )
+            .on_action(cx.listener(|v, _: &SetSelectionStart, _, _| {
+                // klogg: `setSelectionStart`, the selected line.
+                v.selection_start = (v.selection != Selection::None).then_some(v.cursor);
+            }))
+            .on_action(cx.listener(|v, _: &SetSelectionEnd, _, cx| {
+                // klogg: `setSelectionEnd` selects from the start to here.
+                if let Some(start) = v.selection_start.take()
+                    && v.selection != Selection::None
+                {
+                    let end = v.cursor;
+                    v.select(Selection::range(start, end), cx);
+                }
+            }))
+            .on_action(cx.listener(|_, _: &ExitView, _, cx| cx.emit(LogViewEvent::ExitView)))
             .on_action(cx.listener(|_, _: &SaveSplitterPosition, _, cx| {
                 cx.emit(LogViewEvent::SaveSplitterPosition)
             }))
@@ -1583,6 +1613,7 @@ impl LogView {
         let (focus, nothing_selected) = (this.focus.clone(), this.selection == Selection::None);
         let frozen = this.freeze.enabled;
         let limited = this.search_limits != (0..usize::MAX);
+        let selection_started = this.selection_start.is_some();
         let styles = Highlighters::color_label_styles(cx);
         let sets: Vec<(String, String, bool)> = cx
             .try_global::<Highlighters>()
@@ -1594,24 +1625,16 @@ impl LogView {
                     .collect()
             })
             .unwrap_or_default();
+        // klogg's order (`AbstractLogView::createMenu`).
         menu.action_context(focus)
-            .menu_with_disabled("Copy", Box::new(Copy), nothing_selected)
+            .menu_with_disabled("Mark", Box::new(Mark), nothing_selected)
             .separator()
-            .menu("Save to file…", Box::new(SaveToFile))
+            .menu_with_disabled("Copy", Box::new(Copy), nothing_selected)
             .menu_with_disabled(
-                "Save selected to file…",
-                Box::new(SaveSelectedToFile),
+                "Copy with line numbers",
+                Box::new(CopyWithLineNumbers),
                 nothing_selected,
             )
-            .separator()
-            .menu_with_disabled("Add to search", Box::new(AddToSearch), no_text)
-            .menu_with_disabled("Exclude from search", Box::new(ExcludeFromSearch), no_text)
-            .menu_with_disabled("Replace search", Box::new(ReplaceSearch), no_text)
-            .separator()
-            .menu("Set search start", Box::new(SetSearchStart))
-            .menu("Set search end", Box::new(SetSearchEnd))
-            .menu_with_disabled("Clear search limits", Box::new(ClearSearchLimits), !limited)
-            .separator()
             .menu_with_disabled(
                 "Send to scratchpad",
                 Box::new(SendToScratchpad),
@@ -1620,6 +1643,43 @@ impl LogView {
             .menu_with_disabled(
                 "Replace scratchpad",
                 Box::new(ReplaceScratchpad),
+                nothing_selected,
+            )
+            .separator()
+            .menu_with_disabled(
+                "Find next",
+                Box::new(crate::quick_find::FindSelectionNext),
+                no_text,
+            )
+            .menu_with_disabled(
+                "Find previous",
+                Box::new(crate::quick_find::FindSelectionPrevious),
+                no_text,
+            )
+            .separator()
+            .menu_with_disabled("Replace search", Box::new(ReplaceSearch), no_text)
+            .menu_with_disabled("Add to search", Box::new(AddToSearch), no_text)
+            .menu_with_disabled("Exclude from search", Box::new(ExcludeFromSearch), no_text)
+            .separator()
+            .menu("Set search start", Box::new(SetSearchStart))
+            .menu("Set search end", Box::new(SetSearchEnd))
+            .menu_with_disabled("Clear search limits", Box::new(ClearSearchLimits), !limited)
+            .separator()
+            .menu_with_disabled(
+                "Set selection start",
+                Box::new(SetSelectionStart),
+                nothing_selected,
+            )
+            .menu_with_disabled(
+                "Set selection end",
+                Box::new(SetSelectionEnd),
+                nothing_selected || !selection_started,
+            )
+            .separator()
+            .menu("Save to file…", Box::new(SaveToFile))
+            .menu_with_disabled(
+                "Save selected to file…",
+                Box::new(SaveSelectedToFile),
                 nothing_selected,
             )
             .separator()

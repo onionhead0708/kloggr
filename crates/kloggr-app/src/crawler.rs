@@ -364,6 +364,7 @@ impl Crawler {
                     LogViewEvent::Search(op, text) => this.search_from_view(*op, text, window, cx),
                     &LogViewEvent::SearchLimit(op) => this.change_search_limits(op, cx),
                     LogViewEvent::SaveSplitterPosition => this.save_split(cx),
+                    LogViewEvent::ExitView => this.exit_view(window, cx),
                     &LogViewEvent::Saving(p) => {
                         this.saving = p;
                         cx.emit(CrawlerEvent::Status);
@@ -529,6 +530,16 @@ impl Crawler {
         self.split.update(cx, |s, cx| {
             s.resize_panel(0, top + px(10. * steps), window, cx)
         });
+    }
+
+    /// Space in a view (klogg: `exitView`): the other view gets the focus.
+    pub(crate) fn exit_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let other = if self.filtered.focus_handle(cx).contains_focused(window, cx) {
+            self.main.focus_handle(cx)
+        } else {
+            self.filtered.focus_handle(cx)
+        };
+        window.focus(&other, cx);
     }
 
     /// Save splitter position (klogg: `saveSplitterSizes`): new tabs get
@@ -2007,6 +2018,36 @@ mod tests {
         // Remembered per file in the session.
         let height = crawler.read_with(cx, |c, cx| c.context(cx).filtered_height);
         assert_eq!(height, Some(after[1] as u32));
+    }
+
+    #[gpui::test]
+    fn selection_start_end_and_exit_view(cx: &mut TestAppContext) {
+        let log = TempLog::new("selstart", 9);
+        let (crawler, cx) = crawler(cx, &log);
+        let main = crawler.read_with(cx, |c, _| c.main.clone());
+        // Set selection start on line 2, Set selection end on line 6.
+        cx.simulate_keystrokes("2 g");
+        cx.dispatch_action(log_view::SetSelectionStart);
+        cx.simulate_keystrokes("6 g");
+        cx.dispatch_action(log_view::SetSelectionEnd);
+        assert_eq!(
+            selection(&main, cx),
+            Selection::Range {
+                start: 1,
+                end: 5,
+                anchor: 1
+            }
+        );
+
+        // Space moves the focus to the other view and back.
+        let filtered_focused = |cx: &mut VisualTestContext| {
+            let view = crawler.read_with(cx, |c, _| c.filtered.clone());
+            cx.update(|window, cx| view.focus_handle(cx).is_focused(window))
+        };
+        cx.simulate_keystrokes("space");
+        assert!(filtered_focused(cx));
+        cx.simulate_keystrokes("space");
+        assert!(!filtered_focused(cx));
     }
 
     #[gpui::test]
