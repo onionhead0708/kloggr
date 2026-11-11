@@ -188,7 +188,9 @@ The keys follow *vi* and *less*. All shortcuts can be changed in
 | F5 | reload the file |
 | Esc | stop the search, or the loading |
 
-Shift + mouse wheel scrolls horizontally.
+Shift + mouse wheel scrolls horizontally. Ctrl + mouse wheel (Cmd on macOS)
+makes the font bigger or smaller, one point per notch; the size is kept in
+**Options > View**.
 
 ## Live files
 
