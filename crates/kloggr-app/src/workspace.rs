@@ -32,6 +32,7 @@ use crate::background;
 use crate::crawler::{
     Crawler, CrawlerEvent, EditPredefinedFilters, ToggleFreezeFiltered, ToggleFreezeMain,
 };
+use crate::follow::{Reload, Stop, ToggleFollow};
 use crate::highlighters::{EditHighlighters, Highlighters, NoHighlighters, ToggleHighlighterSet};
 use crate::highlighters_dialog;
 use crate::options_dialog;
@@ -289,6 +290,7 @@ impl Workspace {
     fn menus(&self, cx: &App) -> Vec<Menu> {
         let view = &Preferences::get(cx).view;
         let no_tab = self.crawler().is_none();
+        let following = self.crawler().is_some_and(|c| c.read(cx).is_following());
         let frozen = self
             .crawler()
             .map(|c| c.read(cx).frozen_columns(cx))
@@ -330,6 +332,13 @@ impl Workspace {
                 MenuItem::action("Freeze Columns in Filtered View", ToggleFreezeFiltered)
                     .checked(frozen.1.enabled)
                     .disabled(no_tab),
+                MenuItem::separator(),
+                // klogg: View > Follow File, Reload; Stop is on its toolbar.
+                MenuItem::action("Follow File", ToggleFollow)
+                    .checked(following)
+                    .disabled(no_tab),
+                MenuItem::action("Reload", Reload).disabled(no_tab),
+                MenuItem::action("Stop", Stop).disabled(no_tab),
             ]),
             Menu::new("Tools").items([
                 MenuItem::action("Options…", ShowOptions),
@@ -546,24 +555,33 @@ impl Workspace {
             crawler
         });
         let events = cx.subscribe(&crawler, |this, crawler, event: &CrawlerEvent, cx| {
-            if let CrawlerEvent::FrozenChanged = event {
-                // klogg: `saveFrozenColumns`.
-                if let Some(tab) = this.tabs.iter().find(|t| t.crawler == crawler) {
-                    let (main, filtered) = crawler.read(cx).frozen_columns(cx);
-                    this.session.set_frozen_columns(&tab.path, main, filtered);
-                    this.save_session();
+            match event {
+                CrawlerEvent::FrozenChanged => {
+                    // klogg: `saveFrozenColumns`.
+                    if let Some(tab) = this.tabs.iter().find(|t| t.crawler == crawler) {
+                        let (main, filtered) = crawler.read(cx).frozen_columns(cx);
+                        this.session.set_frozen_columns(&tab.path, main, filtered);
+                        this.save_session();
+                    }
+                    this.update_menus(cx);
+                    return;
                 }
-                this.update_menus(cx);
-                return;
+                CrawlerEvent::Status => {
+                    if this.crawler() == Some(&crawler) {
+                        this.update_menus(cx);
+                    }
+                }
+                CrawlerEvent::NewData => {
+                    let active = this.crawler().cloned();
+                    if let Some(tab) = this.tabs.iter_mut().find(|t| t.crawler == crawler)
+                        && active.as_ref() != Some(&crawler)
+                    {
+                        tab.new_data = true;
+                    }
+                }
             }
             if let Some(tab) = this.tabs.iter_mut().find(|t| t.crawler == crawler) {
-                tab.status = status_of(&tab.path, crawler.read(cx).log.as_deref());
-            }
-            let active = this.crawler().cloned();
-            if let Some(tab) = this.tabs.iter_mut().find(|t| t.crawler == crawler)
-                && active.as_ref() != Some(&crawler)
-            {
-                tab.new_data = true;
+                tab.status = status_of(&tab.path, crawler.read(cx));
             }
             cx.notify();
         });
@@ -607,9 +625,9 @@ impl Workspace {
                                 "indexed {shown}"
                             );
                             let tab = &mut this.tabs[index];
-                            tab.status = status_of(&tab.path, Some(&log));
                             let path = tab.path.clone();
                             tab.crawler.update(cx, |c, cx| c.set_log(Some(log), cx));
+                            tab.status = status_of(&path, tab.crawler.read(cx));
                             this.add_recent(&path, cx);
                         }
                         IndexEvent::Done(Err(OpenError::Cancelled(_))) => {}
@@ -628,7 +646,7 @@ impl Workspace {
             }
         });
         self.tabs.push(Tab {
-            status: status_of(&path, None),
+            status: format!("{} — indexing…", path.display()),
             path,
             crawler,
             new_data: false,
@@ -823,6 +841,29 @@ impl Workspace {
     fn drop_paths(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
         for path in paths.paths().iter().filter(|p| p.is_file()) {
             self.open(path.clone(), window, cx);
+        }
+    }
+
+    /// View > Reload (klogg: `MainWindow::reload`): indexes the current
+    /// file again. Ignored while it is first indexed.
+    fn reload(&mut self, cx: &mut Context<Self>) {
+        if let Some(crawler) = self.crawler().cloned() {
+            crawler.update(cx, |c, cx| c.reindex(cx));
+        }
+    }
+
+    /// View > Stop (klogg: `stopLoading`): stops the current tab's search,
+    /// and its indexing, which closes the tab as in klogg (an interrupted
+    /// load leaves no file to show).
+    fn stop(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let index = self.active;
+        let Some(crawler) = self.crawler().cloned() else {
+            return;
+        };
+        let first_load = crawler.read(cx).log.is_none();
+        let stopped = crawler.update(cx, |c, cx| c.stop(cx));
+        if first_load || stopped {
+            self.close_tab(index, window, cx);
         }
     }
 
@@ -1107,6 +1148,8 @@ impl Render for Workspace {
                     cx.reveal_path(&tab.path);
                 }
             }))
+            .on_action(cx.listener(|this, _: &Reload, _, cx| this.reload(cx)))
+            .on_action(cx.listener(|this, _: &Stop, window, cx| this.stop(window, cx)))
             .on_action(cx.listener(|this, _: &LastTab, window, cx| {
                 let last = this.tabs.len().saturating_sub(1);
                 this.activate(last, window, cx)
@@ -1158,12 +1201,13 @@ fn toggle_view_option(
     Preferences::set(options, Some(window), cx);
 }
 
-/// "path — N lines — encoding".
-fn status_of(path: &Path, log: Option<&LogFile>) -> String {
+/// "path — N lines — encoding", or the indexing progress.
+fn status_of(path: &Path, crawler: &Crawler) -> String {
     let shown = path.display();
-    match log {
-        Some(log) => format!("{shown} — {} lines — {}", log.line_count(), log.encoding()),
-        None => format!("{shown} — indexing…"),
+    match (crawler.reindex_percent(), &crawler.log) {
+        (Some(p), _) => format!("{shown} — indexing {p}%"),
+        (None, Some(log)) => format!("{shown} — {} lines — {}", log.line_count(), log.encoding()),
+        (None, None) => format!("{shown} — indexing…"),
     }
 }
 
@@ -1230,6 +1274,7 @@ mod tests {
             gpui_component::init(cx);
             cx.bind_keys(crate::log_view::key_bindings());
             cx.bind_keys(crate::crawler::key_bindings());
+            cx.bind_keys(crate::follow::key_bindings());
             cx.bind_keys(key_bindings());
         });
         cx.add_window_view(|window, cx| Workspace::new(Some(config), window, cx))
@@ -1253,6 +1298,17 @@ mod tests {
 
     fn recent(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> Vec<PathBuf> {
         ws.read_with(cx, |ws, _| ws.session.recent_files.files().to_vec())
+    }
+
+    fn menu_labels_of(ws: &Workspace, cx: &App) -> Vec<String> {
+        ws.menus(cx)
+            .into_iter()
+            .flat_map(|m| m.items)
+            .filter_map(|i| match i {
+                MenuItem::Action { name, .. } => Some(name.to_string()),
+                _ => None,
+            })
+            .collect()
     }
 
     fn menu_labels(cx: &mut VisualTestContext) -> Vec<String> {
@@ -1468,6 +1524,45 @@ mod tests {
         }
         assert_eq!(tab_names(&ws, cx).0, ["a.log"]);
         assert!(ws.read_with(cx, |ws, _| ws.status().contains("missing.log")));
+    }
+
+    #[gpui::test]
+    fn reload_and_stop(cx: &mut TestAppContext) {
+        let fx = Fixture::new("reload");
+        let path = fx.log("a.log", 3);
+        let (ws, cx) = workspace(cx, fx.config());
+        ws.update_in(cx, |ws, window, cx| ws.open(path.clone(), window, cx));
+        assert_eq!(wait_indexed(&ws, cx), 3);
+        let crawler = ws.read_with(cx, |ws, _| ws.crawler().unwrap().clone());
+        crawler.update(cx, |c, cx| c.toggle_marks_for_test(1, cx));
+
+        // F5 indexes the file again and drops the marks (klogg: `reload`).
+        std::fs::write(&path, "1\n2\n3\n4\n5\n").unwrap();
+        cx.simulate_keystrokes("f5");
+        cx.run_until_parked();
+        assert_eq!(wait_indexed(&ws, cx), 5);
+        assert!(ws.read_with(cx, |ws, _| ws.status().contains("5 lines")));
+        assert!(crawler.read_with(cx, |c, cx| c.filter().read(cx).marks().is_empty()));
+        assert!(ws.read_with(cx, |ws, cx| {
+            menu_labels_of(ws, cx).contains(&"Reload".to_owned())
+        }));
+
+        // Esc stops a search and keeps the tab.
+        crawler.update_in(cx, |c, window, cx| {
+            c.set_search_text("1", window, cx);
+            c.start_search(cx);
+            assert!(c.is_searching());
+        });
+        cx.simulate_keystrokes("escape");
+        assert!(crawler.read_with(cx, |c, _| !c.is_searching()));
+        assert_eq!(ws.read_with(cx, |ws, _| ws.tabs.len()), 1);
+
+        // The status line shows the progress of a reindex; stopping it
+        // closes the tab, as in klogg.
+        crawler.update(cx, |c, cx| c.reindex(cx));
+        assert!(ws.read_with(cx, |ws, _| ws.status().contains("indexing 0%")));
+        cx.simulate_keystrokes("escape");
+        assert_eq!(ws.read_with(cx, |ws, _| ws.tabs.len()), 0);
     }
 
     #[gpui::test]

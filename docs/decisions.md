@@ -8,6 +8,20 @@ Newest first. Each entry gives the date, what klogg does, what kloggr does, and 
 
 ---
 
+## 2026-11-11: Reload keeps showing the file until it is indexed again
+
+**klogg:** View > Reload (F5) clears the search results and the marks, empties the views and indexes the file again. Stop (Esc, toolbar only) interrupts the search and the indexing; an interrupted load closes the tab. A file replaced on disk is indexed again with its progress in the status bar.
+
+**kloggr:**
+- Reload and a replaced file go through the same full reindex. The views keep the old snapshot until the new one is ready, then the marks and results are dropped (auto-refresh runs the search again, as for a replaced file).
+- The status line shows "indexing N%" during the reindex.
+- Stop is also in the View menu. Stopping the indexing closes the tab, as in klogg; stopping only a search keeps the matches found so far.
+- Reload is also bound to Ctrl+R (Cmd+R on macOS): `QKeySequence::Refresh` has both on X11 and macOS.
+
+**Why:** an empty view during the reindex shows nothing useful, and keeping the old snapshot until the swap avoids a blank flash for a small file.
+
+**Code:** `Crawler::{reindex, stop}` in `follow.rs`, `Workspace::{reload, stop}`.
+
 ## 2026-11-10: Archives: type from content, a file list, nothing temporary remembered
 
 **klogg:** finds an archive's type from its MIME type (content and name) and asks "Extract archive to temp folder?". It decompresses gzip, bzip2 and xz/lzma to a temporary file, and extracts zip, 7z and tar, also compressed, to a temporary folder. Then it opens a file dialog on that folder to choose files. Extracted files go into recent files and the session like any other.

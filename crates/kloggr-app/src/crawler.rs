@@ -227,6 +227,9 @@ pub enum CrawlerEvent {
     NewData,
     /// The frozen columns of a view changed: remember them for the file.
     FrozenChanged,
+    /// Indexing progress or follow mode changed: update the status line and
+    /// the menus.
+    Status,
 }
 
 impl gpui::EventEmitter<CrawlerEvent> for Crawler {}
@@ -252,6 +255,8 @@ pub struct Crawler {
     /// Follow mode, in both views (klogg: "Follow File").
     pub(crate) following: bool,
     pub(crate) watch: Watch,
+    /// The file is being indexed again (View > Reload, or it was replaced).
+    pub(crate) reindex: Option<follow::Reindex>,
     /// Lines and bytes covered by the last finished search (`None`: none
     /// finished); with auto-refresh, what comes after is searched when the
     /// file grows.
@@ -372,6 +377,7 @@ impl Crawler {
             go_to,
             following: false,
             watch: Watch::default(),
+            reindex: None,
             searched: None,
             search_covers: (0, 0),
             updating: false,
@@ -387,6 +393,7 @@ impl Crawler {
     /// search was run before, it runs again on the new file.
     pub fn set_log(&mut self, log: Option<Arc<LogFile>>, cx: &mut Context<Self>) {
         self.stop_search();
+        self.reindex = None;
         self.filter.update(cx, |f, cx| {
             *f = FilteredLines::new();
             cx.notify();
@@ -480,6 +487,15 @@ impl Crawler {
 
     pub fn is_searching(&self) -> bool {
         self.searching
+    }
+
+    /// Progress of a running reindex (View > Reload, or a replaced file).
+    pub fn reindex_percent(&self) -> Option<u8> {
+        self.reindex.as_ref().map(|r| r.percent)
+    }
+
+    pub fn is_following(&self) -> bool {
+        self.following
     }
 
     #[cfg(test)]

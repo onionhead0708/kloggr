@@ -10,13 +10,19 @@
 //!   and search results are dropped (klogg does the same); with auto-refresh
 //!   on, the search runs again.
 //!
+//! View > Reload (F5) indexes the file again the same way (klogg:
+//! `CrawlerWidget::reload`), and View > Stop (Esc) cancels a search or the
+//! indexing (klogg: `stopLoading`). Indexing shows its progress in the status
+//! line.
+//!
 //! In follow mode both views stay at the bottom. Scrolling up or jumping
 //! elsewhere leaves it; Shift+G or scrolling down at the bottom comes back.
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui::{Context, Task, actions};
+use kloggr_core::file::OpenError;
 use kloggr_core::search::FilteredLines;
 use kloggr_core::{FileChange, LogFile, Watcher};
 
@@ -24,17 +30,34 @@ use crate::background;
 use crate::crawler::{self, Crawler, CrawlerEvent, SearchInfo};
 use crate::shortcuts::Shortcut;
 
-actions!(follow, [ToggleFollow]);
+actions!(follow, [ToggleFollow, Reload, Stop]);
 
-/// klogg: `MainWindowFollowFile`, F and F10.
+/// klogg: `MainWindowFollowFile` (F and F10), `MainWindowReload`
+/// (`QKeySequence::Refresh`) and `MainWindowStop` (`QKeySequence::Cancel`).
 pub fn shortcuts() -> Vec<Shortcut> {
-    vec![Shortcut::new(
-        "mainwindow.follow_file",
-        "Follow file",
-        Some(crawler::CONTEXT),
-        &["f", "f10"],
-        ToggleFollow,
-    )]
+    vec![
+        Shortcut::new(
+            "mainwindow.follow_file",
+            "Follow file",
+            Some(crawler::CONTEXT),
+            &["f", "f10"],
+            ToggleFollow,
+        ),
+        Shortcut::new(
+            "mainwindow.reload",
+            "Reload file",
+            None,
+            &["f5", "secondary-r"],
+            Reload,
+        ),
+        Shortcut::new(
+            "mainwindow.stop",
+            "Stop file loading",
+            None,
+            &["escape"],
+            Stop,
+        ),
+    ]
 }
 
 #[cfg(test)]
@@ -51,30 +74,48 @@ pub struct Watch {
     _task: Option<Task<()>>,
 }
 
-/// A newer snapshot of the file.
-enum Reload {
-    Grew(Arc<LogFile>),
-    Replaced(Arc<LogFile>),
+/// The file is indexed again from the start (klogg: `FullReindexOperation`).
+pub(crate) struct Reindex {
+    /// Progress shown in the status line.
+    pub(crate) percent: u8,
+    cancel: Arc<AtomicBool>,
+    _task: Task<()>,
 }
 
-/// Checks the file and makes the new snapshot (on a worker thread).
-fn reload(log: &LogFile) -> Option<Reload> {
-    let never = AtomicBool::new(false);
-    let result = match log.check() {
-        Ok(FileChange::Unchanged) => return None,
+impl Drop for Reindex {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+enum ReindexEvent {
+    Progress(u8),
+    Done(Result<Arc<LogFile>, OpenError>),
+}
+
+/// What changed on disk.
+enum Change {
+    /// A newer snapshot with the appended data.
+    Grew(Arc<LogFile>),
+    /// The file must be indexed again.
+    Replaced,
+}
+
+/// Checks the file and, if it grew, makes the new snapshot (on a worker
+/// thread).
+fn reload(log: &LogFile) -> Option<Change> {
+    match log.check() {
+        Ok(FileChange::Unchanged) => None,
         // Gone, e.g. between the two steps of a rotation: the next event
         // will tell.
-        Err(_) => return None,
+        Err(_) => None,
         Ok(FileChange::Grew) => log
-            .reload_grown(&never, |_| {})
-            .map(|l| Reload::Grew(Arc::new(l))),
-        Ok(FileChange::Replaced) => log
-            .reopen(&never, |_| {})
-            .map(|l| Reload::Replaced(Arc::new(l))),
-    };
-    result
-        .inspect_err(|e| tracing::warn!("cannot reload {}: {e}", log.path().display()))
-        .ok()
+            .reload_grown(&AtomicBool::new(false), |_| {})
+            .inspect_err(|e| tracing::warn!("cannot reload {}: {e}", log.path().display()))
+            .ok()
+            .map(|l| Change::Grew(Arc::new(l))),
+        Ok(FileChange::Replaced) => Some(Change::Replaced),
+    }
 }
 
 impl Crawler {
@@ -102,8 +143,14 @@ impl Crawler {
             while rx.recv().await.is_ok() {
                 // One check covers a burst of events.
                 while rx.try_recv().is_ok() {}
-                let Ok(Some(log)) = this.read_with(cx, |c, _| c.log.clone()) else {
+                let Ok((log, reindexing)) =
+                    this.read_with(cx, |c, _| (c.log.clone(), c.reindex.is_some()))
+                else {
                     break;
+                };
+                // A running reindex checks again when it is done.
+                let Some(log) = log.filter(|_| !reindexing) else {
+                    continue;
                 };
                 let executor = cx.background_executor().clone();
                 let result =
@@ -122,10 +169,10 @@ impl Crawler {
         }));
     }
 
-    fn apply_reload(&mut self, reload: Reload, cx: &mut Context<Self>) {
-        cx.emit(CrawlerEvent::NewData);
-        match reload {
-            Reload::Grew(log) => {
+    fn apply_reload(&mut self, change: Change, cx: &mut Context<Self>) {
+        match change {
+            Change::Grew(log) => {
+                cx.emit(CrawlerEvent::NewData);
                 self.log = Some(log.clone());
                 for view in [&self.main, &self.filtered] {
                     let log = log.clone();
@@ -133,31 +180,115 @@ impl Crawler {
                 }
                 self.refresh_search(cx);
             }
-            Reload::Replaced(log) => {
-                // klogg (`fileChangedHandler`): drop the marks and the search
-                // results; auto-refresh runs the search again.
-                self.stop_search();
-                self.filter.update(cx, |f, cx| {
-                    *f = FilteredLines::new();
-                    cx.notify();
+            Change::Replaced => self.reindex(cx),
+        }
+        cx.notify();
+    }
+
+    /// Indexes the file again from the start, with progress in the status
+    /// line (View > Reload, or the file was replaced). The views keep the
+    /// old snapshot until it is done.
+    pub(crate) fn reindex(&mut self, cx: &mut Context<Self>) {
+        let Some(log) = self.log.clone() else { return };
+        let (tx, rx) = async_channel::unbounded();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let thread_cancel = cancel.clone();
+        background::spawn_blocking(
+            "kloggr-reindex",
+            move || {
+                let mut last = None;
+                let result = log.reopen(&thread_cancel, |p| {
+                    // One event per percent: progress comes per block.
+                    if last.replace(p.percent()) != Some(p.percent()) {
+                        tx.send_blocking(ReindexEvent::Progress(p.percent())).ok();
+                    }
                 });
-                self.log = Some(log.clone());
-                self.current_line = 0;
-                self.searched = None;
-                for view in [&self.main, &self.filtered] {
-                    let log = log.clone();
-                    view.update(cx, |v, cx| v.set_log(Some(log), cx));
+                tx.send_blocking(ReindexEvent::Done(result.map(Arc::new)))
+                    .ok();
+            },
+            cx,
+        );
+        let task = cx.spawn(async move |this, cx| {
+            while let Ok(event) = rx.recv().await {
+                if this
+                    .update(cx, |c, cx| c.on_reindex_event(event, cx))
+                    .is_err()
+                {
+                    break;
                 }
-                let following = self.following;
-                self.set_follow(following, cx);
-                self.info = SearchInfo::default();
-                match self.last_pattern.clone() {
-                    Some(pattern) if self.options.auto_refresh => self.run(pattern, cx),
-                    _ => self.last_pattern = None,
+            }
+        });
+        // Replacing a running reindex cancels it.
+        self.reindex = Some(Reindex {
+            percent: 0,
+            cancel,
+            _task: task,
+        });
+        cx.emit(CrawlerEvent::Status);
+        cx.notify();
+    }
+
+    fn on_reindex_event(&mut self, event: ReindexEvent, cx: &mut Context<Self>) {
+        match event {
+            ReindexEvent::Progress(p) => {
+                if let Some(r) = &mut self.reindex {
+                    r.percent = p;
+                }
+            }
+            ReindexEvent::Done(result) => {
+                self.reindex = None;
+                match result {
+                    Ok(log) => {
+                        self.apply_replaced(log, cx);
+                        cx.emit(CrawlerEvent::NewData);
+                    }
+                    Err(OpenError::Cancelled(_)) => {}
+                    Err(e) => tracing::warn!("cannot reload: {e}"),
+                }
+                // The file may have changed again while it was indexed.
+                if let Some(changed) = &self.watch.changed {
+                    changed.try_send(()).ok();
                 }
             }
         }
+        cx.emit(CrawlerEvent::Status);
         cx.notify();
+    }
+
+    /// Shows a new snapshot of a replaced file. klogg (`fileChangedHandler`,
+    /// `reload`): the marks and the search results are dropped;
+    /// auto-refresh runs the search again.
+    fn apply_replaced(&mut self, log: Arc<LogFile>, cx: &mut Context<Self>) {
+        self.stop_search();
+        self.filter.update(cx, |f, cx| {
+            *f = FilteredLines::new();
+            cx.notify();
+        });
+        self.log = Some(log.clone());
+        self.current_line = 0;
+        self.searched = None;
+        for view in [&self.main, &self.filtered] {
+            let log = log.clone();
+            view.update(cx, |v, cx| v.set_log(Some(log), cx));
+        }
+        let following = self.following;
+        self.set_follow(following, cx);
+        self.info = SearchInfo::default();
+        match self.last_pattern.clone() {
+            Some(pattern) if self.options.auto_refresh => self.run(pattern, cx),
+            _ => self.last_pattern = None,
+        }
+    }
+
+    /// View > Stop (klogg: `stopLoading`): stops the search, keeping the
+    /// matches found so far, and the indexing. Returns whether indexing was
+    /// stopped: the caller closes the tab, as klogg does.
+    pub(crate) fn stop(&mut self, cx: &mut Context<Self>) -> bool {
+        self.stop_search();
+        let stopped = self.reindex.take().is_some();
+        cx.emit(CrawlerEvent::Status);
+        cx.notify();
+        stopped
     }
 
     /// With auto-refresh on, searches the lines added since the last search
@@ -177,6 +308,9 @@ impl Crawler {
 
     /// Turns follow mode on or off in both views (klogg: `followSet`).
     pub(crate) fn set_follow(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.following != on {
+            cx.emit(CrawlerEvent::Status);
+        }
         self.following = on;
         for view in [&self.main, &self.filtered] {
             view.update(cx, |v, cx| v.set_following(on, cx));
