@@ -176,5 +176,28 @@ once per sample, shows it most.
 | search, regex | 5.57 s | 1.80 GiB/s |
 | search, short lines | 10.75 s | 0.93 GiB/s |
 
-Search scales linearly from 1 GiB. The klogg comparison at 10 GiB is still to do:
-klogg wasn't installed when these ran.
+Search scales linearly from 1 GiB.
+
+### Indexing vs klogg, 10 GiB
+
+`KLOGG=~/dev/klogg/build_root/output/klogg PROFILES="typical short utf16" RUNS=2
+scripts/bench-vs-klogg.sh 10240` (klogg 24.11 built from source, RelWithDebInfo).
+Best of 2. The long-line file is left out: klogg needs about 2.5 minutes per GiB on it.
+
+| file | kloggr | klogg | speedup | kloggr index | klogg index |
+|---|---|---|---|---|---|
+| typical, 10 GiB | 9.02 s (1.11 GiB/s) | 10.08 s (0.99 GiB/s) | 1.1× | 123.0 MiB | 96.4 MiB |
+| short, 10 GiB | 16.45 s (0.61 GiB/s) | 26.91 s (0.37 GiB/s) | 1.6× | 603.1 MiB | 742.3 MiB |
+| utf16, 10 GiB | 8.53 s (1.17 GiB/s) | 7.25 s (1.38 GiB/s) | 0.8× | 74.0 MiB | 70.6 MiB |
+
+Unlike the 1 GiB runs (3× faster), these are mostly disk-bound: a 10 GiB file
+doesn't stay in the page cache of a 14 GB machine, so both tools wait for the
+NVMe drive, and the CPU work where kloggr is ahead matters less. kloggr's times
+are also slower than criterion's (5.3 s for typical), which repeats each run with
+whatever the previous one left cached.
+
+To investigate: on the UTF-16 file klogg wins. It reads the file sequentially in
+blocks, so the kernel's read-ahead keeps the drive busy; kloggr maps the file and
+its threads fault pages in at several places at once. Advising the kernel
+(`madvise(MADV_SEQUENTIAL)`/`MADV_WILLNEED` on the chunk ahead) or reading
+batches with `read` while indexing may close the gap when the file isn't cached.

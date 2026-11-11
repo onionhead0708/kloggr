@@ -170,7 +170,7 @@ Menus, window management and platform integration still missing, plus open items
 - [x] Window size and position remembered in the session; Fullscreen, Minimize, Maximize shortcuts
 - [x] Windows: truncated mapped files (read by blocks instead of mapping, re-enable the skipped tests)
 - [x] macOS: open files from Finder (*Open With*): GPUI open-URL events and document types in `Info.plist`
-- [x] Benchmarks: the 10 GB runs (kloggr only; klogg at 10 GB still to do) and the short-line search speed-up (`docs/benchmarks.md`)
+- [x] Benchmarks: the 10 GB runs, also against klogg, and the short-line search speed-up (`docs/benchmarks.md`)
 
 ## Conventions
 
