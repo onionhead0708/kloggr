@@ -28,6 +28,7 @@ use kloggr_core::{FileChange, LogFile, OpenOptions, Watcher};
 
 use crate::background;
 use crate::crawler::{self, Crawler, CrawlerEvent, SearchInfo};
+use crate::preferences::Preferences;
 use crate::shortcuts::Shortcut;
 
 actions!(follow, [ToggleFollow, Reload, Stop]);
@@ -193,6 +194,7 @@ impl Crawler {
         let path = log.path().to_path_buf();
         let options = OpenOptions {
             encoding: self.encoding,
+            hide_ansi: Preferences::get(cx).view.hide_ansi,
         };
         let (tx, rx) = async_channel::unbounded();
         let cancel = Arc::new(AtomicBool::new(false));

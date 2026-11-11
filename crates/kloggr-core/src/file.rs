@@ -17,6 +17,27 @@ use crate::line_index::{Cancelled, IndexProgress, LineIndex};
 pub struct OpenOptions {
     /// Use this encoding instead of the detected one (klogg: forced encoding).
     pub encoding: Option<Encoding>,
+    /// Remove ANSI colour sequences from the text of lines (klogg:
+    /// `hideAnsiColorSequences`, a prefilter on decoded lines).
+    pub hide_ansi: bool,
+}
+
+/// klogg's `AnsiColorSequenceRegex`: SGR (`m`) and erase-in-line (`K`)
+/// sequences.
+static ANSI: std::sync::LazyLock<regex::bytes::Regex> = std::sync::LazyLock::new(|| {
+    regex::bytes::Regex::new(r"\x1B\[([0-9]{1,4}((;|:)[0-9]{1,3})*)?[mK]").expect("valid")
+});
+
+/// `line` without ANSI colour sequences. Only ASCII-compatible encodings:
+/// in UTF-16 the escape is two bytes, and lines are left as they are.
+fn strip_ansi(line: &[u8], encoding: Encoding) -> Cow<'_, [u8]> {
+    if encoding.line_feed().width != 1 || !line.contains(&0x1B) {
+        return Cow::Borrowed(line);
+    }
+    match ANSI.replace_all(line, &b""[..]) {
+        Cow::Borrowed(_) => Cow::Borrowed(line),
+        Cow::Owned(v) => Cow::Owned(v),
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -234,7 +255,10 @@ impl LogFile {
         }
         Some(Self {
             path: self.path.clone(),
-            options: OpenOptions { encoding },
+            options: OpenOptions {
+                encoding,
+                ..self.options
+            },
             map: self.map.clone(),
             index: self.index.clone(),
             encoding: new,
@@ -301,6 +325,25 @@ impl LogFile {
             let _ = std::fs::remove_file(&part);
         }
         result
+    }
+
+    /// The same snapshot with ANSI colour sequences hidden or shown (see
+    /// [`OpenOptions::hide_ansi`]); nothing is indexed again.
+    pub fn with_hide_ansi(&self, hide: bool) -> Self {
+        Self {
+            path: self.path.clone(),
+            options: OpenOptions {
+                hide_ansi: hide,
+                ..self.options
+            },
+            map: self.map.clone(),
+            index: self.index.clone(),
+            encoding: self.encoding,
+            detected_encoding: self.detected_encoding,
+            id: self.id,
+            head: self.head.clone(),
+            tail: self.tail.clone(),
+        }
     }
 
     /// The options the file was opened with.
@@ -396,15 +439,48 @@ impl LogFile {
         self.detected_encoding
     }
 
-    /// Decoded text of line `n`. Invalid sequences become U+FFFD.
+    /// The bytes of line `n` as shown and searched: without ANSI colour
+    /// sequences if [`OpenOptions::hide_ansi`] is set, else as
+    /// [`line`](Self::line).
+    pub fn text_line(&self, n: usize) -> Option<Cow<'_, [u8]>> {
+        let line = self.line(n)?;
+        Some(if self.options.hide_ansi {
+            strip_ansi(line, self.encoding)
+        } else {
+            Cow::Borrowed(line)
+        })
+    }
+
+    /// [`text_line`](Self::text_line) for the lines in `range` (clamped).
+    pub fn text_lines(&self, range: Range<usize>) -> impl ExactSizeIterator<Item = Cow<'_, [u8]>> {
+        let (hide, encoding) = (self.options.hide_ansi, self.encoding);
+        self.lines(range).map(move |l| {
+            if hide {
+                strip_ansi(l, encoding)
+            } else {
+                Cow::Borrowed(l)
+            }
+        })
+    }
+
+    /// Decoded text of line `n` (see [`text_line`](Self::text_line)).
+    /// Invalid sequences become U+FFFD.
     pub fn line_text(&self, n: usize) -> Option<Cow<'_, str>> {
-        self.line(n).map(|l| self.encoding.decode(l))
+        self.text_line(n).map(|l| decode_cow(self.encoding, l))
     }
 
     /// Decoded text of the lines in `range` (clamped).
     pub fn lines_text(&self, range: Range<usize>) -> impl ExactSizeIterator<Item = Cow<'_, str>> {
         let encoding = self.encoding;
-        self.lines(range).map(move |l| encoding.decode(l))
+        self.text_lines(range).map(move |l| decode_cow(encoding, l))
+    }
+}
+
+/// Decodes bytes that may be owned (stripped of ANSI sequences).
+fn decode_cow(encoding: Encoding, bytes: Cow<'_, [u8]>) -> Cow<'_, str> {
+    match bytes {
+        Cow::Borrowed(b) => encoding.decode(b),
+        Cow::Owned(b) => Cow::Owned(encoding.decode(&b).into_owned()),
     }
 }
 
@@ -467,6 +543,7 @@ mod tests {
         let path = temp_file("latin1.log", b"caf\xe9\n");
         let opts = OpenOptions {
             encoding: Encoding::for_label("latin1"),
+            ..OpenOptions::default()
         };
         let log = LogFile::open_with(&path, opts, &AtomicBool::new(false), |_| {}).unwrap();
         assert_eq!(log.line_text(0).as_deref(), Some("caf\u{e9}"));
@@ -520,6 +597,31 @@ mod tests {
             .collect();
         assert!(dir.is_empty());
         std::fs::remove_file(out).unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn hides_ansi_colour_sequences() {
+        let path = temp_file(
+            "ansi.log",
+            b"\x1b[1;31mERROR\x1b[0m x\x1b[K\nplain\n\x1b[2Jkept\n",
+        );
+        let log = LogFile::open(&path).unwrap();
+        assert_eq!(
+            log.line_text(0).unwrap(),
+            "\u{1b}[1;31mERROR\u{1b}[0m x\u{1b}[K"
+        );
+        let hidden = log.with_hide_ansi(true);
+        assert_eq!(hidden.line_text(0).unwrap(), "ERROR x");
+        assert!(matches!(hidden.text_line(1), Some(Cow::Borrowed(b"plain"))));
+        // Only colour and erase-in-line sequences, as in klogg.
+        assert_eq!(hidden.line_text(2).unwrap(), "\u{1b}[2Jkept");
+        assert_eq!(
+            hidden.lines_text(0..2).collect::<Vec<_>>(),
+            ["ERROR x", "plain"]
+        );
+        // The raw bytes stay as they are.
+        assert_eq!(hidden.line(1), Some(&b"plain"[..]));
         std::fs::remove_file(path).unwrap();
     }
 

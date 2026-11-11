@@ -8,6 +8,19 @@ Newest first. Each entry gives the date, what klogg does, what kloggr does, and 
 
 ---
 
+## 2026-11-11: Hidden ANSI colour sequences: not in UTF-16, kept by Save to file
+
+**klogg:** Options > "Hide ANSI color sequences" removes `ESC [ … m` and `ESC [ … K` from every decoded line (a prefilter), so they are neither shown nor searched. Save to file writes the decoded lines, so without them.
+
+**kloggr:**
+- Same option (View tab) and the same pattern; lines are shown, searched, copied and quick-found without the sequences.
+- Only ASCII-compatible encodings: in UTF-16 files the sequences stay.
+- Save to file copies the file's bytes (see the Save to file entry), so the sequences stay in the saved file.
+
+**Why:** the stripping works on the raw bytes, before decoding, which keeps the fast UTF-8 search path; in UTF-16 the escape is two bytes and such logs are rare. Save to file is an exact copy by design.
+
+**Code:** `LogFile::{text_line, text_lines, with_hide_ansi}`, `Crawler::set_hide_ansi`.
+
 ## 2026-11-11: The split is the filtered view's height
 
 **klogg:** the splitter sizes of both views are saved by "Save splitter position" (`splitterSizes`) and with each file in the session; `+` and `-` move the splitter by 10 pixels.

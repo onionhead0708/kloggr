@@ -598,6 +598,7 @@ impl Workspace {
         let context = context.unwrap_or_else(|| Preferences::get(cx).new_file_context());
         let options = OpenOptions {
             encoding: context.encoding.as_deref().and_then(Encoding::for_label),
+            hide_ansi: Preferences::get(cx).view.hide_ansi,
         };
         let crawler = cx.new(|cx| {
             let mut crawler = Crawler::new(window, cx);

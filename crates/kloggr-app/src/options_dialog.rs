@@ -530,6 +530,13 @@ impl OptionsEditor {
                 |o, v| o.view.line_numbers_filtered = v,
                 cx,
             ))
+            .child(self.check(
+                "hide-ansi",
+                "Hide ANSI colour sequences",
+                o.view.hide_ansi,
+                |o, v| o.view.hide_ansi = v,
+                cx,
+            ))
     }
 
     fn render_file(&self, cx: &mut Context<Self>) -> impl IntoElement {

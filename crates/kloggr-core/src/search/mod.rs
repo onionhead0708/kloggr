@@ -119,13 +119,15 @@ fn search_block(log: &LogFile, matcher: &Matcher, range: Range<usize>) -> Vec<us
     let encoding = log.encoding();
     let first = range.start;
     let mut found = Vec::new();
-    for (k, line) in log.lines(range).enumerate() {
+    // As shown: without ANSI colour sequences if they are hidden (klogg's
+    // prefilter applies to the search too).
+    for (k, line) in log.text_lines(range).enumerate() {
         let matched = if encoding == Encoding::UTF_8 {
             // Invalid sequences are left as they are: `.` doesn't match them
             // but literals around them still do.
-            matcher.is_match(line)
+            matcher.is_match(&line)
         } else {
-            matcher.is_match(encoding.decode(line).as_bytes())
+            matcher.is_match(encoding.decode(&line).as_bytes())
         };
         if matched {
             found.push(first + k);
@@ -267,6 +269,7 @@ mod tests {
         let f = TempFile::new("latin1", &latin1);
         let options = OpenOptions {
             encoding: Some(Encoding::WINDOWS_1252),
+            ..OpenOptions::default()
         };
         let log = LogFile::open_with(&f.0, options, &AtomicBool::new(false), |_| {}).unwrap();
         assert_eq!(run(&log, Pattern::plain("ÉTÉ")), [1]);
@@ -283,5 +286,14 @@ mod tests {
         assert_eq!(run(&log, p), [0, 1]);
         let p = Pattern::regex(r#""open" xor "id=2""#).boolean();
         assert_eq!(run(&log, p), [0]);
+    }
+
+    #[test]
+    fn hidden_ansi_sequences_are_not_searched() {
+        let f = TempFile::new("ansi", b"\x1b[31mERROR\x1b[0m one\nERROR two\n");
+        let log = LogFile::open(&f.0).unwrap();
+        let anchored = Pattern::regex("^ERROR o");
+        assert!(run(&log, anchored.clone()).is_empty());
+        assert_eq!(run(&log.with_hide_ansi(true), anchored), [0]);
     }
 }

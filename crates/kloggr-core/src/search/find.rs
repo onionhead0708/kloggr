@@ -88,8 +88,9 @@ fn find_in_block(
     match rows {
         // Decode the block's line offsets once, as `search` does.
         Rows::All => {
-            let lines: Vec<&[u8]> = log.lines(block).collect();
-            let test = |(k, bytes): (usize, &&[u8])| hit(first + k, first + k, bytes);
+            let lines: Vec<_> = log.text_lines(block).collect();
+            let test =
+                |(k, bytes): (usize, &std::borrow::Cow<'_, [u8]>)| hit(first + k, first + k, bytes);
             if backward {
                 lines.iter().enumerate().rev().find_map(test)
             } else {
@@ -99,7 +100,7 @@ fn find_in_block(
         Rows::Lines(_) => {
             let test = |row: usize| {
                 let line = rows.line_of(row)?;
-                hit(row, line, log.line(line)?)
+                hit(row, line, &log.text_line(line)?)
             };
             if backward {
                 block.rev().find_map(test)

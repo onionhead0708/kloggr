@@ -376,6 +376,10 @@ impl Crawler {
             ),
             // Color label styles may change in the highlighters dialog.
             cx.observe_global::<Highlighters>(|this, cx| this.show_color_labels(cx)),
+            cx.observe_global::<Preferences>(|this, cx| {
+                let hide = Preferences::get(cx).view.hide_ansi;
+                this.set_hide_ansi(hide, cx)
+            }),
             cx.on_focus_in(&main_focus, window, |this, _, _| this.target = Target::Main),
             cx.subscribe_in(
                 &go_to.input,
@@ -511,6 +515,25 @@ impl Crawler {
         for view in [&self.main, &self.filtered] {
             let limits = self.search_limits.clone();
             view.update(cx, |v, cx| v.set_search_limits(limits, cx));
+        }
+        cx.notify();
+    }
+
+    /// Options > Hide ANSI colour sequences (klogg: `setPrefilter`): the
+    /// lines are shown and searched without them; the search runs again.
+    pub(crate) fn set_hide_ansi(&mut self, hide: bool, cx: &mut Context<Self>) {
+        let Some(log) = self.log.clone() else { return };
+        if log.options().hide_ansi == hide {
+            return;
+        }
+        let log = Arc::new(log.with_hide_ansi(hide));
+        self.log = Some(log.clone());
+        for view in [&self.main, &self.filtered] {
+            let log = log.clone();
+            view.update(cx, |v, cx| v.update_log(log, cx));
+        }
+        if let Some(pattern) = self.last_pattern.clone() {
+            self.run(pattern, cx);
         }
         cx.notify();
     }
@@ -2070,6 +2093,27 @@ mod tests {
         let (below, _) = filtered.read_with(cx, |v, _| v.margin_and_text_points(5.));
         cx.simulate_mouse_move(below, None, Modifiers::none());
         assert_eq!(flashed(cx), None);
+    }
+
+    #[gpui::test]
+    fn hiding_ansi_sequences(cx: &mut TestAppContext) {
+        let log = TempLog::new("ansi", 1);
+        std::fs::write(&log.0, "\x1b[31mERROR\x1b[0m: a\nERROR: b\n").unwrap();
+        let (crawler, cx) = crawler(cx, &log);
+        let regex = SearchOptions::default();
+        assert_eq!(search(&crawler, cx, "^ERROR:", regex), [1]);
+        // Options > Hide ANSI colour sequences: shown and searched without.
+        cx.update(|window, cx| {
+            let mut options = Preferences::get(cx).clone();
+            options.view.hide_ansi = true;
+            Preferences::set(options, Some(window), cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(matches(&crawler, cx), [0, 1]);
+        let text = crawler.read_with(cx, |c, _| {
+            c.log().unwrap().line_text(0).unwrap().into_owned()
+        });
+        assert_eq!(text, "ERROR: a");
     }
 
     #[gpui::test]

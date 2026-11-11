@@ -146,7 +146,7 @@ check new shortcuts in the real app too (see the color-label entry in `docs/deci
 - [x] Version check against GitHub releases (`kloggr-core::version_check`, app `update_check`), crash/panic reporting (`kloggr-core::crash`, report shown at the next start with a GitHub issue link)
 - [x] Copying large selections: size from the line index, ask above 64 MiB and copy on a worker thread, refuse above 1 GiB (`docs/decisions.md`)
 
-### Phase 5: viewing and search parity with klogg
+### Phase 5: viewing and search parity with klogg ✅
 Features of the log views and the search that klogg has and kloggr lacks (found by comparing menus, context menus and `shortcuts.h` on 2026-11-10).
 - [x] Reload and Stop: `mainwindow.reload` (F5) reloads the file, `mainwindow.stop` cancels indexing or a search; progress shown when a replaced file is reindexed
 - [x] Encoding choice: View > Encoding menu overriding the detected encoding, remembered per file in the session
@@ -157,7 +157,7 @@ Features of the log views and the search that klogg has and kloggr lacks (found 
 - [x] Split between the views: `crawler.increase_top_view_size` / `decrease_top_view_size`, "Save splitter position" as the default
 - [x] Log view context menu completeness: Mark, Find next, Find previous, Set selection start, Set selection end; `logview.exit_view`
 - [x] Overview bar flashes the line when hovering a filtered row (klogg overview)
-- [ ] Option to hide ANSI colour escape sequences
+- [x] Option to hide ANSI colour escape sequences (Options > View)
 
 ### Phase 6: application, window and platform
 Menus, window management and platform integration still missing, plus open items from earlier phases.

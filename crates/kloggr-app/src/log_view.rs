@@ -2026,10 +2026,10 @@ impl Element for LogElement {
                 let screen_rows = rows.floor().max(1.) as usize;
                 let (mut used, mut fit) = (0, 0);
                 for row in (0..line_count).rev() {
-                    let Some(bytes) = view.line_of(row, cx).and_then(|l| log.line(l)) else {
+                    let Some(bytes) = view.line_of(row, cx).and_then(|l| log.text_line(l)) else {
                         break;
                     };
-                    used += probe.wrapped_rows(wrap_width(&log, bytes, rows, cols));
+                    used += probe.wrapped_rows(wrap_width(&log, &bytes, rows, cols));
                     if used > screen_rows && fit > 0 {
                         break;
                     }
@@ -2057,12 +2057,13 @@ impl Element for LogElement {
                     let frac = vp.top() - row as f64;
                     let mut y = None;
                     while row < line_count {
-                        let Some((line, bytes)) =
-                            view.line_of(row, cx).and_then(|l| Some((l, log.line(l)?)))
+                        let Some((line, bytes)) = view
+                            .line_of(row, cx)
+                            .and_then(|l| Some((l, log.text_line(l)?)))
                         else {
                             break;
                         };
-                        let parts = vp.wrapped_rows(wrap_width(&log, bytes, rows, cols));
+                        let parts = vp.wrapped_rows(wrap_width(&log, &bytes, rows, cols));
                         let y0: Pixels = *y.get_or_insert_with(|| {
                             text_bounds.top() - lh * (frac * parts as f64) as f32
                         });
@@ -2074,7 +2075,7 @@ impl Element for LogElement {
                             shown.push(ScreenRow {
                                 row,
                                 line,
-                                bytes,
+                                bytes: bytes.clone(),
                                 part,
                                 vp: vp.wrapped(part),
                                 y,
@@ -2093,7 +2094,7 @@ impl Element for LogElement {
                     if view.filtered {
                         for row in visible {
                             if let Some(line) = view.line_of(row, cx)
-                                && let Some(bytes) = log.line(line)
+                                && let Some(bytes) = log.text_line(line)
                             {
                                 shown.push(ScreenRow {
                                     row,
@@ -2107,7 +2108,7 @@ impl Element for LogElement {
                         }
                     } else {
                         let first = visible.start;
-                        for (i, bytes) in log.lines(visible).enumerate() {
+                        for (i, bytes) in log.text_lines(visible).enumerate() {
                             let row = first + i;
                             shown.push(ScreenRow {
                                 row,
@@ -2142,7 +2143,7 @@ impl Element for LogElement {
                     // klogg: lines outside the search limits are drawn in
                     // the disabled text colour, without highlighters.
                     let outside = !view.search_limits.contains(&line);
-                    let (shown_text, seen) = screen_text(&log, bytes, &vp);
+                    let (shown_text, seen) = screen_text(&log, &bytes, &vp);
                     if !text_wrap {
                         view.viewport.grow_max_cols(seen);
                     }
@@ -2554,7 +2555,8 @@ struct ScreenRow<'a> {
     row: usize,
     /// The file line.
     line: usize,
-    bytes: &'a [u8],
+    /// As shown (see [`LogFile::text_line`]).
+    bytes: std::borrow::Cow<'a, [u8]>,
     /// Which part of the wrapped line (0 without wrap).
     part: usize,
     /// The viewport the part is drawn with (see [`Viewport::wrapped`]).

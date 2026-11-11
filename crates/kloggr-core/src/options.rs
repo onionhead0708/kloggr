@@ -119,6 +119,8 @@ pub struct View {
     /// Height of the filtered view in a new tab, in pixels (klogg: "Save
     /// splitter position", `splitterSizes`).
     pub filtered_height: f32,
+    /// klogg: `view.hideAnsiColorSequences`.
+    pub hide_ansi: bool,
 }
 
 impl Default for View {
@@ -132,6 +134,7 @@ impl Default for View {
             line_numbers_filtered: true,
             text_wrap: false,
             filtered_height: 260.,
+            hide_ansi: false,
         }
     }
 }
