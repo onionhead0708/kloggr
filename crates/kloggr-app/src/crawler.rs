@@ -17,6 +17,7 @@ use gpui_component::button::{Button, ButtonVariants, Toggle};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{DropdownMenu, PopupMenu};
 use gpui_component::resizable::{resizable_panel, v_resizable};
+use gpui_component::tab::{Tab, TabBar};
 use gpui_component::{ActiveTheme, IconName, Sizable};
 use kloggr_core::search::{self, FilteredLines, Matcher, Pattern, SearchProgress, Visibility};
 use kloggr_core::settings::{FileContext, FrozenView};
@@ -28,6 +29,7 @@ use crate::go_to_line::{self, GoToLine};
 use crate::highlighters::Highlighters;
 use crate::log_view::{self, LabelOp, LimitOp, LogView, LogViewEvent, SearchOp};
 use crate::quick_find::{self, QuickFind, Target};
+use crate::results::Results;
 use crate::saved_searches::{self, SavedSearches};
 use crate::shortcuts::Shortcut;
 use kloggr_core::highlight::ColorLabels;
@@ -47,6 +49,8 @@ actions!(
         ToggleRegex,
         ToggleInverse,
         ToggleBoolean,
+        ToggleAutoRefresh,
+        ToggleKeepResults,
         ToggleFreezeMain,
         ToggleFreezeFiltered,
         ClearSearchHistory,
@@ -149,6 +153,21 @@ pub fn shortcuts() -> Vec<Shortcut> {
             view,
             &["alt-7"],
             ToggleBoolean,
+        ),
+        // klogg's bare 8 and 9, as Alt+8 and Alt+9 like 1–7.
+        Shortcut::new(
+            "crawler.enable_auto_refresh",
+            "Toggle auto-refresh",
+            view,
+            &["alt-8"],
+            ToggleAutoRefresh,
+        ),
+        Shortcut::new(
+            "crawler.enable_keep_results",
+            "Toggle keep search results",
+            view,
+            &["alt-9"],
+            ToggleKeepResults,
         ),
         Shortcut::new(
             "mainwindow.freeze_main",
@@ -262,6 +281,12 @@ pub struct Crawler {
     pub(crate) search_limits: std::ops::Range<usize>,
     /// Encoding chosen in the Encoding menu; `None`: the detected one.
     pub(crate) encoding: Option<Encoding>,
+    /// Tabs of search results; `filter` and `filtered` are the current
+    /// one's (klogg: Keep Results).
+    pub(crate) results: Vec<Results>,
+    pub(crate) current_results: usize,
+    /// The next search opens a new results tab (klogg: Keep Results).
+    pub(crate) keep_results: bool,
     /// Lines and bytes covered by the last finished search (`None`: none
     /// finished); with auto-refresh, what comes after is searched when the
     /// file grows.
@@ -298,11 +323,11 @@ impl Crawler {
         let qf = QuickFind::new(window, cx);
         let go_to = GoToLine::new(window, cx);
         let main_focus = main.focus_handle(cx);
-        let filtered_focus = filtered.focus_handle(cx);
+        let results = Results::new(filter.clone(), filtered.clone(), window, cx);
         let subscriptions = vec![
-            cx.subscribe_in(&input, window, |this, _, event: &InputEvent, _, cx| {
+            cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
                 if let InputEvent::PressEnter { .. } = event {
-                    this.start_search(cx);
+                    this.start_search(window, cx);
                 }
             }),
             cx.subscribe_in(
@@ -317,31 +342,9 @@ impl Crawler {
                     &LogViewEvent::SearchLimit(op) => this.change_search_limits(op, cx),
                 },
             ),
-            cx.subscribe_in(
-                &filtered,
-                window,
-                |this, _, event: &LogViewEvent, window, cx| match event {
-                    &LogViewEvent::LineSelected(line) => {
-                        // klogg: `jumpToMatchingLine`, which also stops
-                        // following.
-                        this.current_line = line;
-                        this.set_follow(false, cx);
-                        this.main.update(cx, |v, cx| v.show_line(line, cx));
-                    }
-                    &LogViewEvent::FollowChanged(on) => this.set_follow(on, cx),
-                    LogViewEvent::ColorLabel(op, text) => this.color_label(*op, text, cx),
-                    LogViewEvent::FreezeChanged(_) => cx.emit(CrawlerEvent::FrozenChanged),
-                    LogViewEvent::Search(op, text) => this.search_from_view(*op, text, window, cx),
-                    &LogViewEvent::SearchLimit(op) => this.change_search_limits(op, cx),
-                },
-            ),
-            cx.observe(&filter, |_, _, cx| cx.notify()),
             // Color label styles may change in the highlighters dialog.
             cx.observe_global::<Highlighters>(|this, cx| this.show_color_labels(cx)),
             cx.on_focus_in(&main_focus, window, |this, _, _| this.target = Target::Main),
-            cx.on_focus_in(&filtered_focus, window, |this, _, _| {
-                this.target = Target::Filtered
-            }),
             cx.subscribe_in(
                 &go_to.input,
                 window,
@@ -386,6 +389,9 @@ impl Crawler {
             watch: Watch::default(),
             reindex: None,
             encoding: None,
+            results: vec![results],
+            current_results: 0,
+            keep_results: false,
             search_limits: 0..usize::MAX,
             searched: None,
             search_covers: (0, 0),
@@ -403,6 +409,7 @@ impl Crawler {
     pub fn set_log(&mut self, log: Option<Arc<LogFile>>, cx: &mut Context<Self>) {
         self.stop_search();
         self.reindex = None;
+        self.drop_kept_results();
         self.set_search_limits(0..usize::MAX, cx);
         self.filter.update(cx, |f, cx| {
             *f = FilteredLines::new();
@@ -608,12 +615,16 @@ impl Crawler {
 
     /// Searches for the text in the search box (klogg: `startNewSearch`,
     /// `replaceCurrentSearch`).
-    pub fn start_search(&mut self, cx: &mut Context<Self>) {
+    pub fn start_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.input.read(cx).value().to_string();
         if text.is_empty() {
             self.clear_search(cx);
             return;
         }
+        if std::mem::take(&mut self.keep_results) && self.log.is_some() {
+            self.new_results(window, cx);
+        }
+        self.results[self.current_results].title = format!("Find \"{text}\"");
         // klogg: `savedSearches_->addRecent`.
         SavedSearches::update(cx, |s| s.add_recent(&text));
         self.run(self.options.pattern(&text), cx);
@@ -671,7 +682,7 @@ impl Crawler {
     /// Applies a color label change from either view (klogg:
     /// `addColorLabelToSelection`, `clearColorLabels`), then shows the
     /// labels in both views (klogg: `updateColorLabels`).
-    fn color_label(&mut self, op: LabelOp, text: &str, cx: &mut Context<Self>) {
+    pub(crate) fn color_label(&mut self, op: LabelOp, text: &str, cx: &mut Context<Self>) {
         let labels = &mut self.color_labels;
         match op {
             LabelOp::Set(label) => labels.set(label, text),
@@ -688,7 +699,7 @@ impl Crawler {
         self.show_color_labels(cx);
     }
 
-    fn show_color_labels(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn show_color_labels(&mut self, cx: &mut Context<Self>) {
         let styles = Highlighters::color_label_styles(cx);
         let compiled = Arc::new(self.color_labels.compile(&styles));
         for view in [&self.main, &self.filtered] {
@@ -697,7 +708,11 @@ impl Crawler {
         }
     }
 
-    fn set_search_highlight(&mut self, matcher: Option<Arc<Matcher>>, cx: &mut Context<Self>) {
+    pub(crate) fn set_search_highlight(
+        &mut self,
+        matcher: Option<Arc<Matcher>>,
+        cx: &mut Context<Self>,
+    ) {
         for view in [&self.main, &self.filtered] {
             let matcher = matcher.clone();
             view.update(cx, |v, cx| v.set_search_highlight(matcher, cx));
@@ -867,7 +882,7 @@ impl Crawler {
     }
 
     /// klogg: `addToSearch`, `excludeFromSearch`, `replaceSearch`.
-    fn search_from_view(
+    pub(crate) fn search_from_view(
         &mut self,
         op: SearchOp,
         text: &str,
@@ -998,7 +1013,7 @@ impl Crawler {
                 .label("Search")
                 .small()
                 .primary()
-                .on_click(cx.listener(|this, _, _, cx| this.start_search(cx)))
+                .on_click(cx.listener(|this, _, window, cx| this.start_search(window, cx)))
         };
         div()
             .flex()
@@ -1063,12 +1078,24 @@ impl Crawler {
                 option(
                     "auto-refresh",
                     "⟳",
-                    "Auto-refresh: search new lines",
+                    "Auto-refresh: search new lines (Alt+8)",
                     o.auto_refresh,
                 )
                 .on_click(cx.listener(|this, on: &bool, _, cx| {
                     this.toggle(|o| o.auto_refresh = *on, cx);
                     this.refresh_search(cx);
+                })),
+            )
+            .child(
+                option(
+                    "keep-results",
+                    "Keep",
+                    "Keep these results and show the next search in a new tab (Alt+9)",
+                    self.keep_results,
+                )
+                .on_click(cx.listener(|this, on: &bool, _, cx| {
+                    this.keep_results = *on;
+                    cx.notify();
                 })),
             )
             .child(action_button)
@@ -1080,6 +1107,38 @@ impl Crawler {
                     .small()
                     .on_click(cx.listener(|this, on: &bool, _, cx| this.set_follow(*on, cx))),
             )
+    }
+}
+
+impl Crawler {
+    /// The tabs of kept results; hidden while there is one (klogg:
+    /// `setTabBarAutoHide`).
+    fn render_results_tabs(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        if self.results.len() < 2 {
+            return None;
+        }
+        let tabs = self.results.iter().enumerate().map(|(index, r)| {
+            Tab::new()
+                .label(r.title.clone())
+                .suffix(
+                    Button::new(("results-close", index))
+                        .label("×")
+                        .xsmall()
+                        .ghost()
+                        .on_click(cx.listener(move |this, _, _, cx| this.close_results(index, cx))),
+                )
+                .on_mouse_down(
+                    gpui::MouseButton::Middle,
+                    cx.listener(move |this, _, _, cx| this.close_results(index, cx)),
+                )
+        });
+        Some(
+            TabBar::new("results")
+                .small()
+                .selected_index(self.current_results)
+                .children(tabs)
+                .on_click(cx.listener(|this, index: &usize, _, cx| this.show_results(*index, cx))),
+        )
     }
 }
 
@@ -1116,6 +1175,7 @@ impl Render for Crawler {
             .border_color(border)
             .child(self.render_search_bar(cx))
             .children(info)
+            .children(self.render_results_tabs(cx))
             .child(div().flex_1().min_h_0().child(self.filtered.clone()));
         div()
             .id("crawler")
@@ -1156,6 +1216,14 @@ impl Render for Crawler {
             .on_action(cx.listener(|this, _: &ToggleBoolean, _, cx| {
                 this.toggle(|o| o.boolean = !o.boolean, cx)
             }))
+            .on_action(cx.listener(|this, _: &ToggleAutoRefresh, _, cx| {
+                this.toggle(|o| o.auto_refresh = !o.auto_refresh, cx);
+                this.refresh_search(cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleKeepResults, _, cx| {
+                this.keep_results = !this.keep_results;
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &quick_find::Open, window, cx| {
                 this.open_quick_find(Direction::Forward, window, cx)
             }))
@@ -1195,7 +1263,7 @@ impl Render for Crawler {
             }))
             .on_action(cx.listener(|this, a: &UseSearch, window, cx| {
                 this.set_search_pattern(a.text.clone(), window, cx);
-                this.start_search(cx);
+                this.start_search(window, cx);
             }))
             .on_action(cx.listener(|this, a: &TogglePredefinedFilter, window, cx| {
                 this.toggle_filter(a.index, window, cx)
@@ -1329,7 +1397,7 @@ mod tests {
         crawler.update_in(cx, |c, window, cx| {
             c.options = options;
             c.set_search_text(text, window, cx);
-            c.start_search(cx);
+            c.start_search(window, cx);
         });
         cx.run_until_parked();
         matches(crawler, cx)
@@ -1778,6 +1846,63 @@ mod tests {
     }
 
     #[gpui::test]
+    fn keep_results_opens_a_tab_per_search(cx: &mut TestAppContext) {
+        let log = TempLog::new("keep", 9);
+        let (crawler, cx) = crawler(cx, &log);
+        let tabs = |cx: &mut VisualTestContext| {
+            crawler.read_with(cx, |c, _| {
+                let titles: Vec<String> = c.results.iter().map(|r| r.title.clone()).collect();
+                (titles, c.current_results)
+            })
+        };
+        assert_eq!(
+            search(&crawler, cx, "ERROR", SearchOptions::default()),
+            [0, 3, 6]
+        );
+        crawler.update(cx, |c, cx| c.toggle_marks_for_test(1, cx));
+
+        // Alt+9, then a search: a new tab, with its own matches and marks.
+        cx.simulate_keystrokes("alt-9");
+        assert!(crawler.read_with(cx, |c, _| c.keep_results));
+        assert_eq!(
+            search(&crawler, cx, "a.b", SearchOptions::default()),
+            [2, 5, 8]
+        );
+        assert_eq!(
+            tabs(cx),
+            (vec!["Find \"ERROR\"".into(), "Find \"a.b\"".into()], 1)
+        );
+        assert!(crawler.read_with(cx, |c, cx| c.filter().read(cx).marks().is_empty()));
+        // Keep Results applies to one search.
+        assert!(crawler.read_with(cx, |c, _| !c.keep_results));
+        assert_eq!(
+            search(&crawler, cx, "line 1", SearchOptions::default()),
+            [1]
+        );
+        assert_eq!(tabs(cx).0.len(), 2);
+
+        // Back to the first tab: its results, marks and pattern.
+        crawler.update(cx, |c, cx| c.show_results(0, cx));
+        assert_eq!(matches(&crawler, cx), [0, 3, 6]);
+        let (marks, pattern) = crawler.read_with(cx, |c, cx| {
+            let marks: Vec<usize> = c.filter().read(cx).marks().iter().collect();
+            (marks, c.last_pattern.as_ref().map(|p| p.text.clone()))
+        });
+        assert_eq!((marks, pattern.as_deref()), (vec![1], Some("ERROR")));
+
+        // Closing the current tab shows the next one; the last one stays.
+        crawler.update(cx, |c, cx| c.close_results(0, cx));
+        assert_eq!(tabs(cx), (vec!["Find \"line 1\"".into()], 0));
+        assert_eq!(matches(&crawler, cx), [1]);
+        crawler.update(cx, |c, cx| c.close_results(0, cx));
+        assert_eq!(tabs(cx).0.len(), 1);
+
+        // Alt+8 toggles auto-refresh.
+        cx.simulate_keystrokes("alt-8");
+        assert!(crawler.read_with(cx, |c, _| c.options().auto_refresh));
+    }
+
+    #[gpui::test]
     fn truncation_drops_marks_and_results(cx: &mut TestAppContext) {
         let log = TempLog::new("truncate", 9);
         let (crawler, cx) = crawler(cx, &log);
@@ -1921,7 +2046,7 @@ mod tests {
         });
 
         // Searches go into the history; picking one runs it.
-        crawler.update(cx, |c, cx| c.start_search(cx));
+        crawler.update_in(cx, |c, window, cx| c.start_search(window, cx));
         cx.run_until_parked();
         assert_eq!(cx.update(|_, cx| SavedSearches::get(cx).history), [r"a\.b"]);
         cx.dispatch_action(UseSearch {

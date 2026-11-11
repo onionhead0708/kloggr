@@ -264,6 +264,7 @@ impl Crawler {
     /// auto-refresh runs the search again.
     fn apply_replaced(&mut self, log: Arc<LogFile>, cx: &mut Context<Self>) {
         self.stop_search();
+        self.drop_kept_results();
         self.filter.update(cx, |f, cx| {
             *f = FilteredLines::new();
             cx.notify();

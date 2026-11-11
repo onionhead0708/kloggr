@@ -8,6 +8,20 @@ Newest first. Each entry gives the date, what klogg does, what kloggr does, and 
 
 ---
 
+## 2026-11-11: Keep Results tabs; Alt+8 and Alt+9; Save as Filter in the Filters menu
+
+**klogg:** Keep Results (key `9`) makes the next search open a new tab in the bottom pane, with its own results and marks; tabs can be closed. Auto-refresh is key `8`. "Save as Filter" is in the search box's context menu.
+
+**kloggr:**
+- Keep Results works the same; switching tabs stops the running search. The last tab can't be closed.
+- When the file is reloaded, replaced or another file is shown, only the current tab is kept: the others' line numbers no longer match the file.
+- Auto-refresh and Keep Results are Alt+8 and Alt+9, like Alt+1…Alt+7 (see the digits entry below).
+- "Save search as filter…" is in the Filters drop-down, next to the filters, and the history items are in the history drop-down: gpui-component's input has no custom context menu.
+
+**Why:** consistency with the other search option keys, and stale results after a reload would point at the wrong lines.
+
+**Code:** `crate::results`, `Crawler::start_search`.
+
 ## 2026-11-11: Search limits survive appended data
 
 **klogg:** Set search start / end set the limits at the selected line; lines outside are drawn in the disabled colour. Every finished load clears the limits, also when the file only grew.

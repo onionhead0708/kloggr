@@ -151,7 +151,7 @@ Features of the log views and the search that klogg has and kloggr lacks (found 
 - [x] Reload and Stop: `mainwindow.reload` (F5) reloads the file, `mainwindow.stop` cancels indexing or a search; progress shown when a replaced file is reindexed
 - [x] Encoding choice: View > Encoding menu overriding the detected encoding, remembered per file in the session
 - [x] Search limits: log view context menu Set search start, Set search end, Clear search limits; the search only scans that line range
-- [ ] Search bar: Keep results toggle (`crawler.enable_keep_results`), shortcut for auto-refresh (`crawler.enable_auto_refresh`), "Save as Filter" in the search box context menu
+- [x] Search bar: Keep results toggle (`crawler.enable_keep_results`), shortcut for auto-refresh (`crawler.enable_auto_refresh`), "Save as Filter" in the search box context menu
 - [ ] Text wrap (`mainwindow.text_wrap`), still windowing very long lines before shaping
 - [ ] Save to file and Save selected to file (log view context menu), streamed from the mapping on a worker thread
 - [ ] Split between the views: `crawler.increase_top_view_size` / `decrease_top_view_size`, "Save splitter position" as the default

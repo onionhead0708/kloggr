@@ -17,6 +17,7 @@ mod log_view;
 mod options_dialog;
 mod preferences;
 mod quick_find;
+mod results;
 mod saved_searches;
 mod scratchpad;
 mod shortcuts;

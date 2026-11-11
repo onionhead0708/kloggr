@@ -676,7 +676,7 @@ mod tests {
         let (c, _f, cx) = setup(cx, "filtered");
         c.update_in(cx, |c, window, cx| {
             c.set_search_text_for_test("ERROR", window, cx);
-            c.start_search(cx);
+            c.start_search(window, cx);
         });
         cx.run_until_parked();
         let filtered_focus = c.read_with(cx, |c, cx| c.filtered.focus_handle(cx));

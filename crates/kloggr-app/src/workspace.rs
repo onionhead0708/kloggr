@@ -1605,7 +1605,7 @@ mod tests {
         // Esc stops a search and keeps the tab.
         crawler.update_in(cx, |c, window, cx| {
             c.set_search_text("1", window, cx);
-            c.start_search(cx);
+            c.start_search(window, cx);
             assert!(c.is_searching());
         });
         cx.simulate_keystrokes("escape");
