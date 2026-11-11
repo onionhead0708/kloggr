@@ -139,6 +139,15 @@ pub struct TextBlock<'a> {
 }
 
 impl TextBlock<'_> {
+    /// The block's bytes and each line's start in them, then the end of
+    /// the last line; `None` when lines are shown without their ANSI
+    /// sequences, so their text differs from the bytes.
+    pub fn raw(&self) -> Option<(&[u8], &[usize])> {
+        self.strip
+            .is_none()
+            .then(|| (&self.data[..], &self.bounds[..]))
+    }
+
     /// The lines as shown and searched (see [`LogFile::text_line`]).
     pub fn iter(&self) -> impl ExactSizeIterator<Item = Cow<'_, [u8]>> + '_ {
         (1..self.bounds.len().max(1)).map(move |k| {
