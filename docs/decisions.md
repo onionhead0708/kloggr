@@ -38,13 +38,13 @@ Newest first. Each entry gives the date, what klogg does, what kloggr does, and 
 
 **Code:** `geometry_of` in `workspace.rs`, `window_bounds` in `main.rs`, `WindowGeometry`.
 
-## 2026-11-11: Single instance over loopback TCP with a token; fewer command-line options
+## 2026-11-11: Single instance over loopback TCP with a token
 
 **klogg:** `SingleApplication` (a local socket named after the user) makes a second launch send its files to the first, which opens them in its active window; `-m/--multi` allows several instances. The command line also has `-s/--load-session`, `-n/--new-session`, `-l/--log`, `-f/--follow`, `-d/--debug` and window size options.
 
-**kloggr:** the first kloggr listens on a loopback TCP port and writes the port and a random 128-bit token to `instance` in the config folder (mode 0600 on Unix). A later launch sends the token and its files (made absolute) and exits; the files open in the last active main window, which comes to the front. A wrong token is ignored; a stale file from a crash just fails to connect, and the new kloggr takes over. The command line has `-m/--multi`, `-h/--help`, `-v/--version` and files.
+**kloggr:** the first kloggr listens on a loopback TCP port and writes the port and a random 128-bit token to `instance` in the config folder (mode 0600 on Unix). A later launch sends the token and its files (made absolute) and exits; the files open in the last active main window, which comes to the front. A wrong token is ignored; a stale file from a crash just fails to connect, and the new kloggr takes over. The command line has klogg's `-m/--multi`, `-f/--follow`, `-s/--load-session`, `-n/--new-session`, `-h/--help`, `-v/--version` and files, with klogg's rule that files given start a new session (2026-11-11, Phase 7); `-l/--log` and `-d/--debug` are covered by the log file entry.
 
-**Why:** std has no local sockets on Windows, and loopback TCP with a token works the same on every platform without a new dependency; the token keeps other local users from making kloggr open files. The other klogg options can come back when someone needs them (`RUST_LOG` already replaces `--debug`).
+**Why:** std has no local sockets on Windows, and loopback TCP with a token works the same on every platform without a new dependency; the token keeps other local users from making kloggr open files.
 
 **Code:** `kloggr_core::instance`, `Args` and `receive_files` in `main.rs`, `workspace::open_from_another_launch`.
 

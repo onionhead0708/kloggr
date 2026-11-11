@@ -60,6 +60,11 @@ fn main() {
     if let Some(dir) = kloggr_core::settings::config_dir() {
         kloggr_core::crash::install_hook(dir);
     }
+    let cli = Args {
+        files: Vec::new(),
+        ..args.clone()
+    };
+    let follow = cli.follow;
     let paths = args.files;
 
     // macOS: files opened from Finder (Open With, double-click) arrive as
@@ -81,9 +86,11 @@ fn main() {
         preferences::Preferences::apply_style(None, cx);
         highlighters::Highlighters::init(config_dir.clone(), cx);
         saved_searches::SavedSearches::init(config_dir.clone(), cx);
-        // klogg: the last session's windows, then the file given in
-        // the first one.
-        let mut windows = if preferences::Preferences::get(cx).general.load_last_session {
+        // klogg: the last session's windows, then the files given in
+        // the first one. Files given start a new session (unless -s).
+        let load_last = preferences::Preferences::get(cx).general.load_last_session;
+        let reopen = cli.reopen_session(!paths.is_empty(), load_last);
+        let mut windows = if reopen {
             config_dir
                 .as_deref()
                 .map(|dir| kloggr_core::settings::Session::load(dir).all_windows())
@@ -98,7 +105,7 @@ fn main() {
         let mut first = None;
         for files in windows {
             let paths = std::mem::take(&mut paths);
-            let handle = open_main_window(config_dir.clone(), Some(files), paths, cx);
+            let handle = open_main_window(config_dir.clone(), Some(files), paths, follow, cx);
             first = first.or(handle);
         }
         if single && let Some(dir) = config_dir.clone() {
@@ -145,11 +152,17 @@ fn main() {
 }
 
 /// The command line (klogg: `CliParameters`).
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 struct Args {
     files: Vec<PathBuf>,
     /// -m, --multi: don't hand the files to a running kloggr.
     multi: bool,
+    /// -f, --follow: follow the files given.
+    follow: bool,
+    /// -s, --load-session: reopen the last session even with files given.
+    load_session: bool,
+    /// -n, --new-session: don't reopen the last session.
+    new_session: bool,
 }
 
 impl Args {
@@ -158,34 +171,63 @@ impl Args {
 A fast log viewer for very large files.
 
 Options:
-  -m, --multi    allow several kloggr to run, instead of opening the files
-                 in the one already running
-  -h, --help     print this help and exit
-  -v, --version  print the version and exit";
+  -f, --follow       follow the files given
+  -s, --load-session reopen the last session (the default without files)
+  -n, --new-session  don't reopen the last session (the default with files)
+  -m, --multi        allow several kloggr to run, instead of opening the files
+                     in the one already running
+  -h, --help         print this help and exit
+  -v, --version      print the version and exit";
 
-    /// The arguments, or the text to print and exit with.
+    /// The arguments, or the text to print and exit with. Short options
+    /// can be combined (`-fm`).
     fn parse(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Self, String> {
         let mut out = Self::default();
         let mut only_files = false;
         for arg in args {
-            match arg.to_str() {
-                _ if only_files => out.files.push(arg.into()),
-                Some("--") => only_files = true,
-                Some("-m" | "--multi") => out.multi = true,
-                Some("-h" | "--help") => return Err(Self::HELP.to_owned()),
-                Some("-v" | "--version") => {
-                    return Err(format!("kloggr {}", env!("CARGO_PKG_VERSION")));
+            let text = arg.to_str();
+            let flags: Vec<String> = match text {
+                _ if only_files => {
+                    out.files.push(arg.into());
+                    continue;
+                }
+                Some("--") => {
+                    only_files = true;
+                    continue;
                 }
                 // Older macOS passes a process serial number to apps
                 // started from Finder.
-                Some(a) if a.starts_with("-psn_") => {}
+                Some(a) if a.starts_with("-psn_") => continue,
+                Some(a) if a.starts_with("--") => vec![a.to_owned()],
                 Some(a) if a.starts_with('-') && a.len() > 1 => {
-                    return Err(format!("Unknown option {a}\n\n{}", Self::HELP));
+                    a[1..].chars().map(|c| format!("-{c}")).collect()
                 }
-                _ => out.files.push(arg.into()),
+                _ => {
+                    out.files.push(arg.into());
+                    continue;
+                }
+            };
+            for flag in flags {
+                match flag.as_str() {
+                    "-m" | "--multi" => out.multi = true,
+                    "-f" | "--follow" => out.follow = true,
+                    "-s" | "--load-session" => out.load_session = true,
+                    "-n" | "--new-session" => out.new_session = true,
+                    "-h" | "--help" => return Err(Self::HELP.to_owned()),
+                    "-v" | "--version" => {
+                        return Err(format!("kloggr {}", env!("CARGO_PKG_VERSION")));
+                    }
+                    other => return Err(format!("Unknown option {other}\n\n{}", Self::HELP)),
+                }
             }
         }
         Ok(out)
+    }
+
+    /// Whether to reopen the last session (klogg: `load_session ||
+    /// (filenames.empty() && !new_session && loadLastSession)`).
+    fn reopen_session(&self, files_given: bool, load_last_session: bool) -> bool {
+        self.load_session || (!files_given && !self.new_session && load_last_session)
     }
 }
 
@@ -229,6 +271,7 @@ pub(crate) fn open_main_window(
     config_dir: Option<PathBuf>,
     files: Option<kloggr_core::settings::WindowFiles>,
     paths: Vec<PathBuf>,
+    follow: bool,
     cx: &mut App,
 ) -> Option<gpui::AnyWindowHandle> {
     let options = WindowOptions {
@@ -246,7 +289,7 @@ pub(crate) fn open_main_window(
                 workspace.restore(files, window, cx);
             }
             for path in paths {
-                workspace.open(path, window, cx);
+                workspace.open_following(path, follow, window, cx);
             }
             workspace
         });
@@ -352,7 +395,26 @@ mod tests {
             Ok(Args {
                 files: vec!["a.log".into(), "/var/log/b.log".into()],
                 multi: true,
+                ..Args::default()
             })
+        );
+        // Combined short options, and the session rule (klogg's).
+        let args = parse(&["-fn", "--load-session", "x.log"]).unwrap();
+        assert!(args.follow && args.new_session && args.load_session && !args.multi);
+        assert!(args.reopen_session(true, false), "-s reopens it anyway");
+        let none = Args::default();
+        assert!(none.reopen_session(false, true));
+        assert!(
+            !none.reopen_session(true, true),
+            "files start a new session"
+        );
+        assert!(!none.reopen_session(false, false), "the option is off");
+        let n = parse(&["-n"]).unwrap();
+        assert!(!n.reopen_session(false, true));
+        assert!(
+            parse(&["-fx"])
+                .unwrap_err()
+                .starts_with("Unknown option -x")
         );
         assert_eq!(parse(&["--", "-m"]).unwrap().files, [PathBuf::from("-m")]);
         assert_eq!(parse(&["-"]).unwrap().files, [PathBuf::from("-")]);

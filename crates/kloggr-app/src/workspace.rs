@@ -400,7 +400,7 @@ pub fn open_from_another_launch(files: Vec<PathBuf>, config_dir: Option<PathBuf>
         .and_then(|w| w.last_active.as_ref()?.upgrade())
         .or_else(|| MainWindows::live(cx).into_iter().next());
     let Some(ws) = target else {
-        crate::open_main_window(config_dir, None, files, cx);
+        crate::open_main_window(config_dir, None, files, false, cx);
         return;
     };
     let handle = ws.read(cx).window;
@@ -770,6 +770,26 @@ impl Workspace {
                 });
             });
         }
+    }
+
+    /// Opens `path`, and follows it if `follow` (the command line's `-f`,
+    /// klogg: `loadInitialFile` with `followFile`).
+    pub fn open_following(
+        &mut self,
+        path: PathBuf,
+        follow: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let options = &Preferences::get(cx).file;
+        let archive = options.extract_archives && archive::kind(&path).is_ok_and(|k| !k.is_plain());
+        if !follow || archive {
+            self.open(path, window, cx);
+            return;
+        }
+        let mut context = Preferences::get(cx).new_file_context();
+        context.follow = true;
+        self.open_with(path, Some(context), window, cx);
     }
 
     /// Where files taken out of archives go; removed when kloggr quits
@@ -1916,7 +1936,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &NewWindow, _, cx| {
                 let config_dir = this.config_dir.clone();
                 cx.defer(move |cx| {
-                    crate::open_main_window(config_dir, None, Vec::new(), cx);
+                    crate::open_main_window(config_dir, None, Vec::new(), false, cx);
                 });
             }))
             .on_action(
@@ -2854,6 +2874,28 @@ mod tests {
         );
         cx.simulate_keystrokes("secondary-3");
         assert_eq!(order(cx).1, 2);
+    }
+
+    #[gpui::test]
+    fn follow_from_the_command_line(cx: &mut TestAppContext) {
+        let fx = Fixture::new("follow-cli");
+        let (a, b) = (fx.log("a.log", 3), fx.log("b.log", 3));
+        let (ws, cx) = workspace(cx, fx.config());
+        ws.update_in(cx, |ws, window, cx| {
+            ws.open_following(a.clone(), true, window, cx)
+        });
+        wait_indexed(&ws, cx);
+        ws.update_in(cx, |ws, window, cx| {
+            ws.open_following(b.clone(), false, window, cx)
+        });
+        wait_indexed(&ws, cx);
+        let following = ws.read_with(cx, |ws, cx| {
+            ws.tabs
+                .iter()
+                .map(|t| t.crawler.read(cx).following)
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(following, [true, false]);
     }
 
     #[gpui::test]

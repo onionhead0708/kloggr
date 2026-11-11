@@ -181,7 +181,7 @@ Gaps found by comparing kloggr 0.2.0 with klogg's shortcuts, menus, options, com
 - [x] Ctrl+mouse wheel changes the font size in the log views (klogg `changeFontSize`)
 - [x] Drag tabs to reorder them (klogg `setMovable`)
 - [x] Default encoding for new files (klogg `defaultView.encodingMib`), instead of always detecting
-- [ ] Command line: `-f/--follow`, `-s/--load-session`, `-n/--new-session`; like klogg, files given on the command line start a new session (or record the difference in `docs/decisions.md`)
+- [x] Command line: `-f/--follow`, `-s/--load-session`, `-n/--new-session`; like klogg, files given on the command line start a new session (or record the difference in `docs/decisions.md`)
 - [ ] Log file with a verbosity level (klogg `-l/--log`, `-d/--debug`, Options > Advanced logging)
 
 Optional:

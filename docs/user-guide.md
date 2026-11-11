@@ -14,12 +14,15 @@ kloggr /var/log/syslog
 
 On macOS, files can also be opened from Finder with **Open With > kloggr**.
 
-Several files can be given. If kloggr is already running, the files open in
-its last active window instead, and the new launch exits; `kloggr -m`
-(`--multi`) starts a separate kloggr. `kloggr --help` lists the options.
+Several files can be given; `-f` (`--follow`) follows them. If kloggr is
+already running, the files open in its last active window instead, and the
+new launch exits; `kloggr -m` (`--multi`) starts a separate kloggr.
+`kloggr --help` lists the options.
 
-By default kloggr reopens the files that were open when it was last closed,
-with their marks, search and view settings.
+Started without files, kloggr reopens the files that were open when it was
+last closed, with their marks, search and view settings. Files given on the
+command line start a new session instead; `-s` reopens the last one as well,
+and `-n` never does.
 
 The window has two views. The top one, the *main view*, shows the file. The
 bottom one, the *filtered view*, shows the result of the search typed in the
