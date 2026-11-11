@@ -160,7 +160,7 @@ Features of the log views and the search that klogg has and kloggr lacks (found 
 - [x] Overview bar flashes the line when hovering a filtered row (klogg overview)
 - [x] Option to hide ANSI colour escape sequences (Options > View)
 
-### Phase 6: application, window and platform
+### Phase 6: application, window and platform ✅
 Menus, window management and platform integration still missing, plus open items from earlier phases.
 - [x] Edit menu: Copy, Select All, Find, Go to Line, Copy Path (`mainwindow.copy_path_to_clipboard`), Open Containing Folder, Open in Editor, Clear File (`mainwindow.clear_file`)
 - [x] Help menu: About, Documentation, Report Issue
@@ -170,7 +170,7 @@ Menus, window management and platform integration still missing, plus open items
 - [x] Window size and position remembered in the session; Fullscreen, Minimize, Maximize shortcuts
 - [x] Windows: truncated mapped files (read by blocks instead of mapping, re-enable the skipped tests)
 - [x] macOS: open files from Finder (*Open With*): GPUI open-URL events and document types in `Info.plist`
-- [ ] Benchmarks: the 10 GB runs, and the short-line search speed-up noted in `docs/benchmarks.md`
+- [x] Benchmarks: the 10 GB runs (kloggr only; klogg at 10 GB still to do) and the short-line search speed-up (`docs/benchmarks.md`)
 
 ## Conventions
 
