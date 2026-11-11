@@ -8,6 +8,96 @@ Newest first. Each entry gives the date, what klogg does, what kloggr does, and 
 
 ---
 
+## 2026-11-11: macOS Open With also offers kloggr for compressed logs
+
+**klogg:** its `Info.plist` declares `public.text` as a Viewer document type, so Finder offers klogg in Open With for text files; files arrive through `QFileOpenEvent`.
+
+**kloggr:** `public.text`, `public.plain-text` and `public.log`, plus gzip, bzip2, xz, zip, 7z and tar archives, all with rank Alternate (offered, never the default app). The files arrive as `file://` URLs through GPUI's `on_open_urls`, at launch or while running, and open in the last active window like files from a second launch.
+
+**Why:** kloggr opens compressed logs and archives itself, so Open With should offer it for them too. Alternate keeps kloggr from taking over any file type.
+
+**Code:** `scripts/package-macos.sh`, `on_open_urls` in `main.rs`, `kloggr_core::instance::path_from_file_url`.
+
+## 2026-11-11: Windows reads files instead of keeping them mapped
+
+**klogg:** `FileHolder` keeps the file open for reading; Qt maps or reads it as needed.
+
+**kloggr:** the file is mapped to be indexed (also when appended data is indexed), and the mapping is dropped right after. On Windows, the lines are then read at an offset from a handle opened with full sharing (`Access::Read`); Linux and macOS keep the mapping (`Access::Map`), and `KLOGGR_READ_FILES=1` switches them to reading too. A file truncated under a reading snapshot gives short or empty lines until it is indexed again, never a crash.
+
+**Why:** Windows refuses to truncate a file while any process has it mapped, so a kept mapping made the program writing the log fail to truncate it (`copytruncate` rotation), and kloggr's own Clear File and tests failed the same way. Reading costs some speed, measured on Linux with 256 MiB in the page cache: search 7–32% slower, quick find about 40%, a screen of lines 8 µs instead of 5. That is why the other platforms keep the mapping, where it can't block anyone; there a truncated file can still raise SIGBUS (the risk klogg accepts too).
+
+**Code:** `kloggr_core::file::{Access, Source, TextBlock}`.
+
+## 2026-11-11: Full Screen toggles, with F11, in the View menu
+
+**klogg:** `mainwindow.fullscreen`, `mainwindow.max_window` and `mainwindow.min_window` are shortcuts without default keys or menu items; they call `showFullScreen`, `showMaximized` and `showMinimized`, so full screen can't be left with the same key. Window geometry is saved with the session (`saveGeometry`).
+
+**kloggr:** Full Screen toggles, has F11 by default (Ctrl+Cmd+F on macOS) and is in the View menu, checked when on. Maximize toggles too (GPUI's `zoom_window`); Minimize is the same. Each window's size, place and maximized or full-screen state is saved with its tabs; a window that would open off every display (one was unplugged) is centred with its size.
+
+**Why:** a full-screen key that can't bring the window back is a trap; F11 is what other Linux and Windows apps use. Wayland compositors don't let apps choose their place, so there only the size comes back.
+
+**Code:** `geometry_of` in `workspace.rs`, `window_bounds` in `main.rs`, `WindowGeometry`.
+
+## 2026-11-11: Single instance over loopback TCP with a token; fewer command-line options
+
+**klogg:** `SingleApplication` (a local socket named after the user) makes a second launch send its files to the first, which opens them in its active window; `-m/--multi` allows several instances. The command line also has `-s/--load-session`, `-n/--new-session`, `-l/--log`, `-f/--follow`, `-d/--debug` and window size options.
+
+**kloggr:** the first kloggr listens on a loopback TCP port and writes the port and a random 128-bit token to `instance` in the config folder (mode 0600 on Unix). A later launch sends the token and its files (made absolute) and exits; the files open in the last active main window, which comes to the front. A wrong token is ignored; a stale file from a crash just fails to connect, and the new kloggr takes over. The command line has `-m/--multi`, `-h/--help`, `-v/--version` and files.
+
+**Why:** std has no local sockets on Windows, and loopback TCP with a token works the same on every platform without a new dependency; the token keeps other local users from making kloggr open files. The other klogg options can come back when someone needs them (`RUST_LOG` already replaces `--debug`).
+
+**Code:** `kloggr_core::instance`, `Args` and `receive_files` in `main.rs`, `workspace::open_from_another_launch`.
+
+## 2026-11-11: Favorites: no toolbar star, temporary files can't be added
+
+**klogg:** a Favorites menu (Add to Favorites, Remove from Favorites…, then the files sorted by name) and a star button on the toolbar that adds or removes the current file. Favorites are kept with the session settings.
+
+**kloggr:** the same menu, kept in `session.toml` and sorted by path. There is no toolbar, so no star. Files from the clipboard, downloads and archives can't be added (they are deleted on quit). Long folders are shortened in the middle in the Favorites and Open Recent menus (klogg shortens the whole path to 128 characters).
+
+**Why:** kloggr has no toolbar; a favorite that is deleted on quit would only lead to the "Could not read file" question.
+
+**Code:** `Workspace::{favorites_menu, add_to_favorites, prompt_remove_favorite, open_favorite}`, `Session::{add_favorite, remove_favorite}`.
+
+## 2026-11-11: New Window is always there, and every window is reopened
+
+**klogg:** File > New Window only shows with Options > General > "Enable multiple windows" (off by default). With it on, the session keeps the windows open at exit and reopens them; without it, a second launch reuses the window.
+
+**kloggr:** File > New Window is always in the menu and opens an empty window with its own tabs. The session keeps every main window's tabs (the first window where single-window sessions had them, the others under `windows`), and the next start reopens all of them. Closing a window while others stay open drops its tabs from the session; the last window closed keeps its tabs for the next start. Every session write reads the file again first, so windows don't overwrite each other's recent files or tab names. The menus are the active window's.
+
+**Why:** an option that only makes a menu item appear adds a setting without protecting anything; the session handling it needs is the same either way.
+
+**Code:** `MainWindows`, `Workspace::{save_open_files, update_session, released}`, `open_main_window` in `main.rs`, `Session::{windows, all_windows, set_windows}`.
+
+## 2026-11-11: Open from URL: progress in the status line, https by default, no SSL override
+
+**klogg:** File > Open URL… asks for the URL (offering the clipboard's), downloads it with a modal progress dialog, and opens it. `QUrl::fromUserInput` turns `host/path` into `http://host/path`. Options > File has "Ignore SSL errors" for self-signed certificates.
+
+**kloggr:** the same dialog and clipboard offer. The download runs on a thread with its progress in the status line, like extracting an archive, and Stop (Esc) cancels it; the window stays usable. A URL without a scheme gets `https://`. Certificates are always checked by the system's verifier; there is no option to ignore errors. Downloads go to the temporary folder, so they are removed on quit and not kept in the session or recent files.
+
+**Why:** a modal dialog would block every tab for a long download. https is the safer guess today, and turning off certificate checks is easy to leave on by mistake; an http URL can still be typed in full.
+
+**Code:** `kloggr_core::download`, `Workspace::open_url`.
+
+## 2026-11-11: Help menu: a kloggr user guide, no community or Qt entries
+
+**klogg:** Help has Documentation (its `DOCUMENTATION.md` built in as HTML, shown in a window), Report Issue, Join Discord, Join Telegram, Generate Dump, About Qt and About.
+
+**kloggr:** Documentation, Report Issue… and About kloggr. Documentation shows `docs/user-guide.md`, built into the binary and rendered as Markdown in its own window; the guide is adapted from klogg's but describes kloggr (Rust regex syntax, Alt+1…9, local crash reports, no Hyperscan or Qt sections). Report Issue opens a GitHub issue with klogg's bug template and the version and system. The documentation window, like the scratchpad, doesn't keep the app open.
+
+**Why:** kloggr has no Discord or Telegram community, no Qt, and its crash reports are plain text written by the panic hook, so there is no dump to generate. Keeping the guide as Markdown in `docs/` lets it be read on GitHub too, and edited with the code.
+
+**Code:** `help.rs`, `kloggr_core::crash::bug_report_url`.
+
+## 2026-11-11: Clear File lets go of the file before emptying it
+
+**klogg:** Edit > Clear File (`Ctrl+X`) asks, then truncates the file with `QFile::resize(0)` while it is still mapped; the file watcher then reloads it.
+
+**kloggr:** the same menu item, key and question. Before truncating, the tab stops its search, quick find and Save to file, and drops every snapshot of the file; it truncates once no thread holds the mapping (waiting up to 5 seconds), then opens the empty file. Marks and results are dropped, as on any reload. If the file can't be emptied, an error says why.
+
+**Why:** reading a mapping past the end of a truncated file raises SIGBUS and kills the app on Linux and macOS. (On Windows the file isn't kept mapped; see "Windows reads files instead of keeping them mapped".)
+
+**Code:** `Crawler::clear_file`, `Workspace::clear_file`.
+
 ## 2026-11-11: Hidden ANSI colour sequences: not in UTF-16, kept by Save to file
 
 **klogg:** Options > "Hide ANSI color sequences" removes `ESC [ … m` and `ESC [ … K` from every decoded line (a prefilter), so they are neither shown nor searched. Save to file writes the decoded lines, so without them.

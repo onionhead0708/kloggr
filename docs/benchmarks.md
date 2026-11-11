@@ -124,3 +124,80 @@ Once a pixel row holds 3 lines (the darkest tick), the iterator jumps to the nex
 row, so the cost depends on the bar height, not the match count. klogg walks every
 match and mark. The view caches the ticks until the matches, marks, file or bar
 height change.
+
+## 2026-11-11: block search, and 10 GiB runs, kloggr feat/phase-6
+
+Same machine, Rust 1.99.1 release build, criterion.
+
+### Search over whole blocks (1 GiB)
+
+`search_all` now runs a single UTF-8 pattern over a whole block of lines with a
+multi-line copy of the regex, and checks a line on its own only when a match runs
+past its end (`Matcher::match_block`). When most lines match, the rest of the block
+is tested line by line instead, which is cheaper. Boolean patterns, UTF-16 files,
+hidden ANSI sequences and blocks with carriage returns keep the per-line path.
+
+| benchmark | 2026-11-09 | now | |
+|---|---|---|---|
+| plain, rare | 286 ms | 118 ms (8.49 GiB/s) | 2.4× |
+| plain, ~20% of lines | 301 ms | 191 ms (5.24 GiB/s) | 1.6× |
+| plain, case-insensitive | 406 ms | 290 ms (3.45 GiB/s) | 1.4× |
+| regex (`took=\d{4}ms`, dense) | 549 ms | 556 ms (1.80 GiB/s) | same |
+| exclude | 334 ms | 253 ms (3.95 GiB/s) | 1.3× |
+| boolean | 412 ms | 431 ms | same path |
+| plain, short lines | 1996 ms | 664 ms (1.51 GiB/s) | 3.0× |
+| plain, UTF-16LE | 431 ms | 478 ms | same path |
+| quick find, forward / backward | 291 / 289 ms | 305 / 306 ms | same path |
+
+The "same path" rows didn't change code; their differences are run-to-run noise
+on a laptop (quick find also reads lines through `LogFile::text_block` now).
+
+### Reading instead of mapping (Windows)
+
+On Windows the file is no longer kept mapped after indexing (`Access::Read`,
+`docs/decisions.md`). With `KLOGGR_READ_FILES=1` on this machine, 256 MiB files
+before the block search: search 7–32% slower, quick find about 40%, 60 lines at a
+random position 8.1 µs instead of 4.9 µs.
+
+### 10 GiB
+
+`KLOGGR_BENCH_SIZE_MB=10240`. The files are close to this machine's 14 GB of RAM,
+so part of each run reads from disk (NVMe); indexing, which touches every byte
+once per sample, shows it most.
+
+| benchmark | time | throughput |
+|---|---|---|
+| index, typical | 5.31 s | 1.88 GiB/s |
+| index, short | 12.06 s | 0.83 GiB/s |
+| index, long | 0.85 s | 11.8 GiB/s |
+| index, UTF-16 | 2.90 s | 3.45 GiB/s |
+| search, plain rare | 1.14 s | 8.80 GiB/s |
+| search, plain ~20% | 1.95 s | 5.14 GiB/s |
+| search, regex | 5.57 s | 1.80 GiB/s |
+| search, short lines | 10.75 s | 0.93 GiB/s |
+
+Search scales linearly from 1 GiB.
+
+### Indexing vs klogg, 10 GiB
+
+`KLOGG=~/dev/klogg/build_root/output/klogg PROFILES="typical short utf16" RUNS=2
+scripts/bench-vs-klogg.sh 10240` (klogg 24.11 built from source, RelWithDebInfo).
+Best of 2. The long-line file is left out: klogg needs about 2.5 minutes per GiB on it.
+
+| file | kloggr | klogg | speedup | kloggr index | klogg index |
+|---|---|---|---|---|---|
+| typical, 10 GiB | 9.02 s (1.11 GiB/s) | 10.08 s (0.99 GiB/s) | 1.1× | 123.0 MiB | 96.4 MiB |
+| short, 10 GiB | 16.45 s (0.61 GiB/s) | 26.91 s (0.37 GiB/s) | 1.6× | 603.1 MiB | 742.3 MiB |
+| utf16, 10 GiB | 8.53 s (1.17 GiB/s) | 7.25 s (1.38 GiB/s) | 0.8× | 74.0 MiB | 70.6 MiB |
+
+Unlike the 1 GiB runs (3× faster), these are mostly disk-bound: a 10 GiB file
+doesn't stay in the page cache of a 14 GB machine, so both tools wait for the
+NVMe drive, and the CPU work where kloggr is ahead matters less. kloggr's times
+are also slower than criterion's (5.3 s for typical), which repeats each run with
+whatever the previous one left cached.
+
+To investigate: on the UTF-16 file klogg wins. It reads the file sequentially in
+blocks, so the kernel's read-ahead keeps the drive busy; kloggr maps the file and
+its threads fault pages in at several places at once. Advising the kernel
+(`madvise(MADV_SEQUENTIAL)`/`MADV_WILLNEED` on the chunk ahead) or reading
+batches with `read` while indexing may close the gap when the file isn't cached.

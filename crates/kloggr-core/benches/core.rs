@@ -94,7 +94,7 @@ fn search(c: &mut Criterion) {
         let path = generate::cached(&data_dir(), profile, size_mb());
         let log = LogFile::open(&path).unwrap();
         let matcher = Matcher::new(&pattern).unwrap();
-        group.throughput(Throughput::Bytes(log.bytes().len() as u64));
+        group.throughput(Throughput::Bytes(log.byte_len() as u64));
         group.bench_function(BenchmarkId::new(name, format!("{}MiB", size_mb())), |b| {
             b.iter(|| search::search_all(&log, &matcher, 0..usize::MAX, &never).unwrap())
         });
@@ -115,7 +115,7 @@ fn quick_find(c: &mut Criterion) {
     group
         .sample_size(10)
         .measurement_time(Duration::from_secs(20));
-    group.throughput(Throughput::Bytes(log.bytes().len() as u64));
+    group.throughput(Throughput::Bytes(log.byte_len() as u64));
     for (name, direction, from) in [
         ("forward_to_end", Direction::Forward, 0),
         ("backward_to_start", Direction::Backward, log.line_count()),
@@ -150,7 +150,7 @@ fn line_access(c: &mut Criterion) {
         })
     });
     group.bench_function("single_line_at_random", |b| {
-        b.iter(|| log.line(next()).map(<[u8]>::len))
+        b.iter(|| log.line(next()).map(|l| l.len()))
     });
     group.finish();
 }

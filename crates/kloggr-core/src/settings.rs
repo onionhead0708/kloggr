@@ -169,14 +169,39 @@ pub struct OpenFile {
     pub context: FileContext,
 }
 
+/// A window's size and place, in logical pixels (klogg: `saveGeometry`).
+/// When maximized or full screen, the bounds are those it returns to.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WindowGeometry {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub maximized: bool,
+    pub fullscreen: bool,
+}
+
+/// The tabs of one window (klogg: a window of `SessionInfo`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WindowFiles {
+    /// Index in `open_files` of the current tab.
+    pub current_file: usize,
+    pub open_files: Vec<OpenFile>,
+    pub geometry: Option<WindowGeometry>,
+}
+
 /// Everything stored in `session.toml`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Session {
     version: u32,
     /// Index in `open_files` of the current tab. (Plain values come before
     /// tables in TOML.)
     pub current_file: usize,
+    /// Favorite files, by path (klogg: `FavoriteFiles`, sorted by name).
+    pub favorites: Vec<PathBuf>,
     pub recent_files: RecentFiles,
     /// Files open in the window, in tab order, reopened at startup (klogg:
     /// `loadLastSession`, on by default).
@@ -186,6 +211,11 @@ pub struct Session {
     pub frozen_columns: Vec<FrozenFile>,
     /// Tab names chosen by the user, by file (klogg: `TabNameMapping`).
     pub tab_names: Vec<TabName>,
+    /// The windows after the first, whose tabs are `open_files` (klogg:
+    /// "Enable multiple windows").
+    pub windows: Vec<WindowFiles>,
+    /// The first window's size and place.
+    pub geometry: Option<WindowGeometry>,
 }
 
 impl Default for Session {
@@ -193,10 +223,13 @@ impl Default for Session {
         Self {
             version: SESSION_VERSION,
             recent_files: RecentFiles::default(),
+            favorites: Vec::new(),
             open_files: Vec::new(),
             current_file: 0,
             frozen_columns: Vec::new(),
             tab_names: Vec::new(),
+            windows: Vec::new(),
+            geometry: None,
         }
     }
 }
@@ -209,6 +242,8 @@ impl Session {
         match load_toml::<Self>(dir, SESSION_FILE) {
             Some(mut session) if session.version == SESSION_VERSION => {
                 session.recent_files.sanitize();
+                session.favorites.sort();
+                session.favorites.dedup();
                 session
             }
             Some(session) => {
@@ -225,6 +260,43 @@ impl Session {
     /// Saves to `dir`, creating it if needed.
     pub fn save(&self, dir: &Path) -> Result<(), SettingsError> {
         save_toml(self, dir, SESSION_FILE)
+    }
+
+    /// Adds `path` to the favorites, kept sorted (klogg: `FavoriteFiles::add`).
+    pub fn add_favorite(&mut self, path: &Path) {
+        if let Err(at) = self.favorites.binary_search_by(|f| f.as_path().cmp(path)) {
+            self.favorites.insert(at, path.to_path_buf());
+        }
+    }
+
+    pub fn remove_favorite(&mut self, path: &Path) {
+        self.favorites.retain(|f| f != path);
+    }
+
+    pub fn is_favorite(&self, path: &Path) -> bool {
+        self.favorites.iter().any(|f| f == path)
+    }
+
+    /// The tabs of every window, the first one first.
+    pub fn all_windows(&self) -> Vec<WindowFiles> {
+        let first = WindowFiles {
+            current_file: self.current_file,
+            open_files: self.open_files.clone(),
+            geometry: self.geometry,
+        };
+        std::iter::once(first)
+            .chain(self.windows.iter().cloned())
+            .collect()
+    }
+
+    /// Stores the tabs of every window, the first one first.
+    pub fn set_windows(&mut self, windows: Vec<WindowFiles>) {
+        let mut windows = windows.into_iter();
+        let first = windows.next().unwrap_or_default();
+        self.current_file = first.current_file;
+        self.open_files = first.open_files;
+        self.geometry = first.geometry;
+        self.windows = windows.collect();
     }
 
     /// The name given to `path`'s tab, if any (klogg: `tabName`).
@@ -470,6 +542,72 @@ mod tests {
         // A session from before tabs: no open files.
         std::fs::write(dir.0.join(SESSION_FILE), "version = 1\n").unwrap();
         assert!(Session::load(&dir.0).open_files.is_empty());
+    }
+
+    #[test]
+    fn favorites() {
+        let dir = TempDir::new("favorites");
+        let mut session = Session::default();
+        for p in [
+            "/var/log/b.log",
+            "/var/log/a.log",
+            "/srv/c.log",
+            "/var/log/a.log",
+        ] {
+            session.add_favorite(Path::new(p));
+        }
+        let expected: Vec<PathBuf> = ["/srv/c.log", "/var/log/a.log", "/var/log/b.log"]
+            .map(PathBuf::from)
+            .into();
+        assert_eq!(session.favorites, expected);
+        assert!(session.is_favorite(Path::new("/srv/c.log")));
+        session.save(&dir.0).unwrap();
+        assert_eq!(Session::load(&dir.0).favorites, expected);
+        session.remove_favorite(Path::new("/srv/c.log"));
+        assert!(!session.is_favorite(Path::new("/srv/c.log")));
+        assert_eq!(session.favorites.len(), 2);
+    }
+
+    #[test]
+    fn windows_round_trip() {
+        let dir = TempDir::new("windows");
+        let file = |p: &str| OpenFile {
+            path: p.into(),
+            context: FileContext::default(),
+        };
+        let windows = vec![
+            WindowFiles {
+                current_file: 1,
+                open_files: vec![file("/a.log"), file("/b.log")],
+                geometry: Some(WindowGeometry {
+                    x: 10.,
+                    y: 20.,
+                    width: 1200.,
+                    height: 800.,
+                    maximized: true,
+                    fullscreen: false,
+                }),
+            },
+            WindowFiles {
+                current_file: 0,
+                open_files: vec![file("/c.log")],
+                geometry: Some(WindowGeometry {
+                    width: 640.,
+                    height: 480.,
+                    ..WindowGeometry::default()
+                }),
+            },
+        ];
+        let mut session = Session::default();
+        session.set_windows(windows.clone());
+        // The first window is where a session without windows has it.
+        assert_eq!(session.open_files, windows[0].open_files);
+        assert_eq!(session.current_file, 1);
+        session.save(&dir.0).unwrap();
+        let loaded = Session::load(&dir.0);
+        assert_eq!(loaded.all_windows(), windows);
+        session.set_windows(Vec::new());
+        assert_eq!(session.all_windows(), [WindowFiles::default()]);
     }
 
     #[test]

@@ -1141,7 +1141,19 @@ impl LogView {
     /// klogg copies any selection at once, on the UI thread. Here a big one
     /// asks first and is built on a worker thread; above
     /// [`CopyLimits::max`] it isn't copied (`docs/decisions.md`).
-    fn copy_selection(&mut self, line_numbers: bool, window: &mut Window, cx: &mut Context<Self>) {
+    /// Selects every row (klogg: `selectAll`).
+    pub(crate) fn select_all(&mut self, cx: &mut Context<Self>) {
+        if let Some(last) = self.row_count(cx).checked_sub(1) {
+            self.select(Selection::range(0, last), cx);
+        }
+    }
+
+    pub(crate) fn copy_selection(
+        &mut self,
+        line_numbers: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let bytes = self.selection_bytes(cx);
         if bytes <= self.limits.ask {
             if let Some(text) = self.selected_text(line_numbers, cx) {
@@ -1640,11 +1652,7 @@ impl Render for LogView {
                     cx.emit(LogViewEvent::FollowChanged(true));
                 }
             }))
-            .on_action(cx.listener(|v, _: &SelectAll, _, cx| {
-                if let Some(last) = v.row_count(cx).checked_sub(1) {
-                    v.select(Selection::range(0, last), cx);
-                }
-            }))
+            .on_action(cx.listener(|v, _: &SelectAll, _, cx| v.select_all(cx)))
             .on_action(cx.listener(|v, _: &Copy, w, cx| v.copy_selection(false, w, cx)))
             .on_action(
                 cx.listener(|v, _: &CopyWithLineNumbers, w, cx| v.copy_selection(true, w, cx)),
@@ -3181,17 +3189,17 @@ mod tests {
         // Rows show the frozen columns, then the scrolled ones; short lines
         // are padded.
         let log = view.read_with(cx, |v, _| v.log.clone().unwrap());
-        let (text, _) = screen_text(&log, log.line(0).unwrap(), &vp);
+        let (text, _) = screen_text(&log, &log.line(0).unwrap(), &vp);
         assert!(text.starts_with(&long[..10]));
         assert_eq!(&text[10..20], &long[10 + vp.left()..20 + vp.left()]);
-        let (text, _) = screen_text(&log, log.line(1).unwrap(), &vp);
+        let (text, _) = screen_text(&log, &log.line(1).unwrap(), &vp);
         assert_eq!(text, "short     ");
         // A wide character cut by the separator is left out of the frozen
         // part.
         let path = temp_log("frozen-wide", "abcdefghi日本\n");
         let wide = LogFile::open(&path).unwrap();
         std::fs::remove_file(path).unwrap();
-        let (text, seen) = screen_text(&wide, wide.line(0).unwrap(), &vp);
+        let (text, seen) = screen_text(&wide, &wide.line(0).unwrap(), &vp);
         assert!(text.starts_with("abcdefghi "), "{text:?}");
         assert_eq!(seen, 13);
 

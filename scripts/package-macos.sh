@@ -59,6 +59,36 @@ cat > "$app/Contents/Info.plist" <<EOF
     <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSHumanReadableCopyright</key><string>GPL-3.0-or-later</string>
+    <!-- Finder's Open With (klogg: public.text); also the compressed files
+         and archives kloggr opens. Alternate: never the default app. -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key><string>Log or text file</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.text</string>
+                <string>public.plain-text</string>
+                <string>public.log</string>
+            </array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key><string>Compressed log or archive</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>org.gnu.gnu-zip-archive</string>
+                <string>public.bzip2-archive</string>
+                <string>org.tukaani.xz-archive</string>
+                <string>public.zip-archive</string>
+                <string>org.7-zip.7-zip-archive</string>
+                <string>public.tar-archive</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>
 EOF

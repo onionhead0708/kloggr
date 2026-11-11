@@ -289,6 +289,22 @@ impl LineIndex {
             .map(move |k| lf.strip_eol(&data[bounds[k - 1] as usize..bounds[k] as usize]))
     }
 
+    /// The start of each line in `range` (clamped to the line count), then
+    /// the end of the last one; empty for an empty range.
+    pub fn line_bounds(&self, range: Range<usize>) -> Vec<u64> {
+        let count = self.line_count();
+        let end = range.end.min(count);
+        let start = range.start.min(end);
+        if start == end {
+            return Vec::new();
+        }
+        let mut bounds = self.starts.range(start..(end + 1).min(count));
+        if end == count {
+            bounds.push(self.len);
+        }
+        bounds
+    }
+
     fn check_buffer(&self, data: &[u8]) {
         debug_assert!(
             data.len() as u64 >= self.len,

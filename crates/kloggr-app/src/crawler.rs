@@ -863,7 +863,7 @@ impl Crawler {
         let Some(log) = self.log.clone() else {
             return;
         };
-        self.search_covers = (log.line_count(), log.bytes().len());
+        self.search_covers = (log.line_count(), log.byte_len());
         self.searching = true;
         self.info = SearchInfo {
             text: "Search in progress…".into(),
@@ -1284,6 +1284,16 @@ impl Render for Crawler {
             .on_action(cx.listener(|this, _: &FocusSearch, window, cx| {
                 let focus = this.input.focus_handle(cx);
                 window.focus(&focus, cx);
+            }))
+            // Edit > Copy and Select All while an input has focus: the view
+            // that last had it (klogg: `MainWindow::copy`, `selectAll`).
+            .on_action(cx.listener(|this, _: &log_view::Copy, window, cx| {
+                let view = this.target_view(this.target).clone();
+                view.update(cx, |v, cx| v.copy_selection(false, window, cx));
+            }))
+            .on_action(cx.listener(|this, _: &log_view::SelectAll, _, cx| {
+                let view = this.target_view(this.target).clone();
+                view.update(cx, |v, cx| v.select_all(cx));
             }))
             .on_action(cx.listener(|this, _: &VisibilityForward, _, cx| {
                 let v = this.visibility(cx).next();

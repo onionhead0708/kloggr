@@ -26,6 +26,7 @@ base64.workspace = true
 serde_json.workspace = true
 crc32fast.workspace = true
 percent-encoding.workspace = true
+ureq.workspace = true
 quick-xml.workspace = true
 flate2.workspace = true
 tar.workspace = true

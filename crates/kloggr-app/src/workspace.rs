@@ -11,10 +11,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use gpui::{
-    Action, App, AppContext, ClipboardItem, Context, Entity, ExternalPaths, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, Menu, MenuItem, MouseButton, ParentElement, PathPromptOptions,
-    PromptLevel, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
-    Subscription, Task, Window, actions, div, px,
+    Action, App, AppContext, ClipboardItem, Context, Entity, EntityId, ExternalPaths, FocusHandle,
+    Focusable, Global, InteractiveElement, IntoElement, Menu, MenuItem, MouseButton, ParentElement,
+    PathPromptOptions, PromptLevel, Render, ScrollHandle, SharedString, StatefulInteractiveElement,
+    Styled, Subscription, Task, WeakEntity, Window, actions, div, px,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -22,10 +22,10 @@ use gpui_component::menu::{AppMenuBar, ContextMenuExt};
 use gpui_component::tab::{Tab as GuiTab, TabBar};
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme, GlobalState, Sizable, TitleBar, WindowExt};
-use kloggr_core::archive;
 use kloggr_core::file::OpenError;
-use kloggr_core::settings::{FileContext, OpenFile, Session};
+use kloggr_core::settings::{FileContext, OpenFile, Session, WindowFiles, WindowGeometry};
 use kloggr_core::{Encoding, IndexProgress, LogFile, OpenOptions, encoding};
+use kloggr_core::{archive, download};
 
 use crate::archives;
 use crate::background;
@@ -33,11 +33,15 @@ use crate::crawler::{
     Crawler, CrawlerEvent, EditPredefinedFilters, ToggleFreezeFiltered, ToggleFreezeMain,
 };
 use crate::follow::{Reload, Stop, ToggleFollow};
+use crate::go_to_line;
+use crate::help;
 use crate::highlighters::{EditHighlighters, Highlighters, NoHighlighters, ToggleHighlighterSet};
 use crate::highlighters_dialog;
 use crate::options_dialog;
 use crate::preferences::Preferences;
 use crate::shortcuts::Shortcut;
+use crate::switcher;
+use crate::{log_view, quick_find};
 
 actions!(
     workspace,
@@ -55,7 +59,20 @@ actions!(
         ToggleOverview,
         ToggleLineNumbersMain,
         ToggleLineNumbersFiltered,
-        ToggleTextWrap
+        ToggleTextWrap,
+        CopyPath,
+        OpenContainingFolder,
+        OpenInEditor,
+        ClearFile,
+        OpenClipboard,
+        SelectOpenFile,
+        OpenUrl,
+        NewWindow,
+        AddToFavorites,
+        RemoveFromFavorites,
+        ToggleFullScreen,
+        MaximizeWindow,
+        MinimizeWindow
     ]
 );
 
@@ -71,6 +88,13 @@ pub struct SetEncoding {
 #[derive(Clone, PartialEq, Debug, Action)]
 #[action(namespace = workspace, no_json)]
 pub struct OpenRecent {
+    pub path: PathBuf,
+}
+
+/// Opens a file from the Favorites menu.
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = workspace, no_json)]
+pub struct OpenFavorite {
     pub path: PathBuf,
 }
 
@@ -101,11 +125,67 @@ tab_action!(
 pub fn shortcuts() -> Vec<Shortcut> {
     let mut out = vec![
         Shortcut::new(
+            "mainwindow.new_window",
+            "Open new window",
+            None,
+            &[],
+            NewWindow,
+        ),
+        // klogg: no default keys, and Full Screen can't be left; F11 (and
+        // macOS's Ctrl+Cmd+F) toggles it here.
+        Shortcut::new(
+            "mainwindow.fullscreen",
+            "Full Screen",
+            None,
+            if cfg!(target_os = "macos") {
+                &["ctrl-cmd-f"]
+            } else {
+                &["f11"]
+            },
+            ToggleFullScreen,
+        ),
+        Shortcut::new(
+            "mainwindow.max_window",
+            "Maximize window",
+            None,
+            &[],
+            MaximizeWindow,
+        ),
+        Shortcut::new(
+            "mainwindow.min_window",
+            "Minimize window",
+            None,
+            &[],
+            MinimizeWindow,
+        ),
+        Shortcut::new(
             "mainwindow.open_file",
             "Open file",
             None,
             &["secondary-o"],
             Open,
+        ),
+        // klogg: `QKeySequence::Paste`. Inputs keep Ctrl+V for pasting.
+        Shortcut::new(
+            "mainwindow.open_from_clipboard",
+            "Paste text from clipboard",
+            None,
+            &["secondary-v"],
+            OpenClipboard,
+        ),
+        Shortcut::new(
+            "mainwindow.open_from_url",
+            "Open file from URL",
+            None,
+            &[],
+            OpenUrl,
+        ),
+        Shortcut::new(
+            "mainwindow.select_open_file",
+            "Switch to file",
+            None,
+            &["secondary-shift-o"],
+            SelectOpenFile,
         ),
         Shortcut::new(
             "mainwindow.close_file",
@@ -141,6 +221,35 @@ pub fn shortcuts() -> Vec<Shortcut> {
             None,
             &[],
             OpenScratchpad,
+        ),
+        Shortcut::new(
+            "mainwindow.copy_path_to_clipboard",
+            "Copy file path to clipboard",
+            None,
+            &[],
+            CopyPath,
+        ),
+        Shortcut::new(
+            "mainwindow.open_containing_folder",
+            "Open containing folder",
+            None,
+            &[],
+            OpenContainingFolder,
+        ),
+        Shortcut::new(
+            "mainwindow.open_in_editor",
+            "Open file in editor",
+            None,
+            &[],
+            OpenInEditor,
+        ),
+        // klogg: `QKeySequence::Cut`, after a confirmation.
+        Shortcut::new(
+            "mainwindow.clear_file",
+            "Clear file",
+            None,
+            &["secondary-x"],
+            ClearFile,
         ),
         // klogg: W; in the log views, so that W can be typed elsewhere.
         Shortcut::new(
@@ -207,6 +316,12 @@ enum ExtractEvent {
     Done(Result<Vec<PathBuf>, String>),
 }
 
+enum DownloadEvent {
+    /// Bytes received, and the size if known.
+    Progress(u64, Option<u64>),
+    Done(Result<PathBuf, download::DownloadError>),
+}
+
 enum IndexEvent {
     Progress(IndexProgress),
     Done(Result<Arc<LogFile>, OpenError>),
@@ -232,7 +347,58 @@ impl Drop for Tab {
     }
 }
 
+/// The main windows' workspaces, in the order the windows opened: their
+/// tabs are saved in that order (klogg: "Enable multiple windows").
+#[derive(Default)]
+struct MainWindows {
+    list: Vec<WeakEntity<Workspace>>,
+    /// The main window active last, where files from other launches open.
+    last_active: Option<WeakEntity<Workspace>>,
+    quitting: bool,
+}
+
+impl Global for MainWindows {}
+
+impl MainWindows {
+    fn live(cx: &App) -> Vec<Entity<Workspace>> {
+        cx.try_global::<Self>()
+            .map(|w| w.list.iter().filter_map(WeakEntity::upgrade).collect())
+            .unwrap_or_default()
+    }
+}
+
+/// Files given to a later kloggr launch, or opened from macOS's Finder:
+/// they open in the main window active last, which comes to the front
+/// (klogg: `KloggApp::loadFileNonInteractive`). Without a main window, one
+/// opens.
+pub fn open_from_another_launch(files: Vec<PathBuf>, config_dir: Option<PathBuf>, cx: &mut App) {
+    let target = cx
+        .try_global::<MainWindows>()
+        .and_then(|w| w.last_active.as_ref()?.upgrade())
+        .or_else(|| MainWindows::live(cx).into_iter().next());
+    let Some(ws) = target else {
+        crate::open_main_window(config_dir, None, files, cx);
+        return;
+    };
+    let handle = ws.read(cx).window;
+    handle
+        .update(cx, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                for file in files {
+                    ws.open(file, window, cx);
+                }
+            });
+            window.activate_window();
+        })
+        .ok();
+}
+
 pub struct Workspace {
+    /// This workspace's entity, to find it among the main windows.
+    id: EntityId,
+    window: gpui::AnyWindowHandle,
+    /// The window's size and place, kept up to date for the session.
+    geometry: Option<WindowGeometry>,
     tabs: Vec<Tab>,
     active: usize,
     /// In-window menu bar; `None` on macOS, which uses the native one.
@@ -246,13 +412,19 @@ pub struct Workspace {
     /// Why the last file could not be opened, when no tab is left to show it.
     error: Option<String>,
     /// Enter in the rename dialog's input.
-    _rename: Option<gpui::Subscription>,
+    _prompt: Option<gpui::Subscription>,
     /// "Extracting app.log.gz… 40%", while an archive is opened.
     extracting: Option<String>,
     extract_cancel: Arc<AtomicBool>,
     _extract: Option<Task<()>>,
+    /// "Downloading https://…… 40%", while a file is downloaded.
+    downloading: Option<String>,
+    download_cancel: Arc<AtomicBool>,
+    _download: Option<Task<()>>,
     /// The open archive file picker (see `archives::pick`).
     _picker: Option<Entity<archives::ArchivePicker>>,
+    /// The open file switcher (Ctrl+Shift+O).
+    _switcher: Option<Entity<switcher::FileSwitcher>>,
 }
 
 impl Workspace {
@@ -263,15 +435,44 @@ impl Workspace {
             .set_shown(Preferences::get(cx).file.recent_files);
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
+        let me = cx.entity().downgrade();
+        cx.default_global::<MainWindows>().list.push(me);
+        cx.on_release(|this, cx| this.released(cx)).detach();
+        // Another window may have changed the recent files; the menus are
+        // the active window's.
+        cx.observe_window_activation(window, |this, window, cx| {
+            if window.is_window_active() {
+                let me = cx.entity().downgrade();
+                cx.default_global::<MainWindows>().last_active = Some(me);
+                this.reload_session(cx);
+                this.update_menus(cx);
+            }
+        })
+        .detach();
+        cx.observe_window_bounds(window, |this, window, cx| {
+            let geometry = geometry_of(window);
+            let fullscreen_changed =
+                this.geometry.map(|g| g.fullscreen) != Some(geometry.fullscreen);
+            this.geometry = Some(geometry);
+            if fullscreen_changed {
+                this.update_menus(cx);
+            }
+        })
+        .detach();
         // Marks and options change without a tab change: save them on exit.
         cx.on_app_quit(|this, cx| {
+            cx.default_global::<MainWindows>().quitting = true;
             this.save_open_files(cx);
             this.extract_cancel.store(true, Ordering::Relaxed);
+            this.download_cancel.store(true, Ordering::Relaxed);
             let _ = std::fs::remove_dir_all(Self::temp_root());
             async {}
         })
         .detach();
         let mut this = Self {
+            id: cx.entity_id(),
+            window: window.window_handle(),
+            geometry: Some(geometry_of(window)),
             tabs: Vec::new(),
             active: 0,
             menu_bar: (!cfg!(target_os = "macos")).then(|| AppMenuBar::new(cx)),
@@ -280,11 +481,15 @@ impl Workspace {
             tab_scroll: ScrollHandle::new(),
             focus,
             error: None,
-            _rename: None,
+            _prompt: None,
             extracting: None,
             extract_cancel: Arc::default(),
             _extract: None,
             _picker: None,
+            _switcher: None,
+            downloading: None,
+            download_cancel: Arc::default(),
+            _download: None,
         };
         this.update_menus(cx);
         // Set names and active sets show in the menus.
@@ -324,7 +529,10 @@ impl Workspace {
         recent_items.push(MenuItem::action("Clear List", ClearRecent));
         vec![
             Menu::new("File").items([
+                MenuItem::action("New Window", NewWindow),
                 MenuItem::action("Open…", Open),
+                MenuItem::action("Open from Clipboard", OpenClipboard),
+                MenuItem::action("Open from URL…", OpenUrl),
                 MenuItem::submenu(
                     Menu::new("Open Recent")
                         .items(recent_items)
@@ -335,6 +543,23 @@ impl Workspace {
                 MenuItem::action("Close All", CloseAllTabs),
                 MenuItem::action("Quit", Quit),
             ]),
+            // klogg: the Edit menu, disabled without a file.
+            Menu::new("Edit")
+                .items([
+                    MenuItem::action("Copy", log_view::Copy),
+                    MenuItem::action("Select All", log_view::SelectAll),
+                    MenuItem::separator(),
+                    MenuItem::action("Find…", quick_find::Open),
+                    MenuItem::separator(),
+                    MenuItem::action("Go to Line…", go_to_line::Open),
+                    MenuItem::separator(),
+                    MenuItem::action("Copy Path", CopyPath),
+                    MenuItem::action("Open Containing Folder", OpenContainingFolder),
+                    MenuItem::separator(),
+                    MenuItem::action("Open in Editor", OpenInEditor),
+                    MenuItem::action("Clear File…", ClearFile),
+                ])
+                .disabled(no_tab),
             // klogg: View > Freeze columns in main / filtered view.
             Menu::new("View").items([
                 MenuItem::action("Overview", ToggleOverview).checked(view.overview),
@@ -358,6 +583,11 @@ impl Workspace {
                     .disabled(no_tab),
                 MenuItem::action("Reload", Reload).disabled(no_tab),
                 MenuItem::action("Stop", Stop).disabled(no_tab),
+                MenuItem::separator(),
+                MenuItem::submenu(self.opened_files_menu()),
+                MenuItem::separator(),
+                MenuItem::action("Full Screen", ToggleFullScreen)
+                    .checked(self.geometry.is_some_and(|g| g.fullscreen)),
             ]),
             self.encoding_menu(cx),
             Menu::new("Tools").items([
@@ -368,7 +598,53 @@ impl Workspace {
                 MenuItem::action("Highlighters…", EditHighlighters),
                 MenuItem::submenu(Highlighters::menu(cx)),
             ]),
+            self.favorites_menu(),
+            // klogg: Help > Documentation, Report Issue, About.
+            Menu::new("Help").items([
+                MenuItem::action("Documentation", help::ShowDocumentation),
+                MenuItem::separator(),
+                MenuItem::action("Report Issue…", help::ReportIssue),
+                MenuItem::separator(),
+                MenuItem::action("About kloggr", help::About),
+            ]),
         ]
+    }
+
+    /// klogg: the Favorites menu (`updateFavoritesMenu`): add the current
+    /// file, remove one, then the favorites.
+    fn favorites_menu(&self) -> Menu {
+        let current = self.tabs.get(self.active).map(|t| t.path.as_path());
+        let can_add =
+            current.is_some_and(|p| !self.session.is_favorite(p) && !Self::is_temporary(p));
+        let mut items = vec![
+            MenuItem::action("Add to Favorites", AddToFavorites).disabled(!can_add),
+            MenuItem::action("Remove from Favorites…", RemoveFromFavorites)
+                .disabled(self.session.favorites.is_empty()),
+        ];
+        if !self.session.favorites.is_empty() {
+            items.push(MenuItem::separator());
+        }
+        items.extend(
+            self.session.favorites.iter().map(|path| {
+                MenuItem::action(path_label(path), OpenFavorite { path: path.clone() })
+            }),
+        );
+        Menu::new("Favorites").items(items)
+    }
+
+    /// klogg: View > Opened Files: the switcher, then a tab per file.
+    fn opened_files_menu(&self) -> Menu {
+        let mut items = vec![
+            MenuItem::action("Switch to File…", SelectOpenFile),
+            MenuItem::separator(),
+        ];
+        items.extend(self.tabs.iter().enumerate().map(|(index, tab)| {
+            MenuItem::action(tab.path.display().to_string(), ActivateTab { index })
+                .checked(index == self.active)
+        }));
+        Menu::new("Opened Files")
+            .items(items)
+            .disabled(self.tabs.is_empty())
     }
 
     /// klogg: the Encoding menu (`EncodingMenu::generate`): Auto, then the
@@ -409,11 +685,25 @@ impl Workspace {
         }
     }
 
-    fn save_session(&self) {
+    /// Changes the session and saves it. The file is read again first:
+    /// another window may have changed it (recent files, tab names…).
+    fn update_session(&mut self, cx: &App, f: impl FnOnce(&mut Session)) {
+        self.reload_session(cx);
+        f(&mut self.session);
         if let Some(dir) = &self.config_dir
             && let Err(e) = self.session.save(dir)
         {
             tracing::warn!("{e}");
+        }
+    }
+
+    /// Reads the session file again, for what other windows changed.
+    fn reload_session(&mut self, cx: &App) {
+        if let Some(dir) = &self.config_dir {
+            self.session = Session::load(dir);
+            self.session
+                .recent_files
+                .set_shown(Preferences::get(cx).file.recent_files);
         }
     }
 
@@ -463,6 +753,124 @@ impl Workspace {
     /// (klogg: `tempDir_`).
     fn temp_root() -> PathBuf {
         std::env::temp_dir().join(format!("kloggr-{}", std::process::id()))
+    }
+
+    /// File > Open from Clipboard (klogg: `openClipboard`): the clipboard's
+    /// text, saved to a temporary file, in a new tab.
+    fn open_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = cx.read_from_clipboard().and_then(|c| c.text());
+        let Some(text) = text.filter(|t| !t.is_empty()) else {
+            self.error = Some("The clipboard holds no text".to_owned());
+            cx.notify();
+            return;
+        };
+        match Self::temp_file("clipboard", ".txt")
+            .and_then(|path| std::fs::write(&path, text).map(|_| path))
+        {
+            Ok(path) => self.open_with(path, None, window, cx),
+            Err(e) => {
+                self.error = Some(format!("Cannot save the clipboard: {e}"));
+                cx.notify();
+            }
+        }
+    }
+
+    /// View > Opened Files > Switch to File… (klogg: `selectOpenedFile`).
+    fn select_open_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tabs.is_empty() {
+            return;
+        }
+        let files = self.tabs.iter().map(|t| t.path.clone()).collect();
+        let this = cx.entity().downgrade();
+        let labels = switcher::Labels {
+            title: "Switch to file",
+            ok: "Switch",
+        };
+        self._switcher = Some(switcher::open(
+            labels,
+            files,
+            self.active,
+            window,
+            cx,
+            move |index, window, cx| {
+                this.update(cx, |ws, cx| ws.activate(index, window, cx))
+                    .ok();
+            },
+        ));
+    }
+
+    /// Downloads `url` to the temporary folder, with progress in the status
+    /// line, then opens it like any file (klogg: `openRemoteFile`). Stop
+    /// (Esc) cancels it.
+    fn open_url(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(url) = download::parse_url(&url) else {
+            self.error = Some(format!("{} is not an http or https URL", url.trim()));
+            cx.notify();
+            return;
+        };
+        // A new download replaces the running one.
+        self.download_cancel.store(true, Ordering::Relaxed);
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.download_cancel = cancel.clone();
+        let dir = Self::temp_root().join("downloads");
+        let (tx, rx) = async_channel::unbounded();
+        let thread_url = url.clone();
+        background::spawn_blocking(
+            "kloggr-download",
+            move || {
+                let mut last = None;
+                let result = download::download(&thread_url, &dir, &cancel, |got, total| {
+                    // One event per percent, or per MiB without a size.
+                    let step = total.map_or(got >> 20, |t| got * 100 / t.max(1));
+                    if last.replace(step) != Some(step) {
+                        tx.send_blocking(DownloadEvent::Progress(got, total)).ok();
+                    }
+                });
+                tx.send_blocking(DownloadEvent::Done(result)).ok();
+            },
+            cx,
+        );
+        self.downloading = Some(format!("Downloading {url}…"));
+        self.error = None;
+        cx.notify();
+        self._download = Some(cx.spawn_in(window, async move |this, cx| {
+            while let Ok(event) = rx.recv().await {
+                let alive = this.update_in(cx, |this, window, cx| {
+                    match event {
+                        DownloadEvent::Progress(got, total) => {
+                            let done = match total {
+                                Some(total) => format!("{}%", got * 100 / total.max(1)),
+                                None => archives::human_size(got).to_string(),
+                            };
+                            this.downloading = Some(format!("Downloading {url}… {done}"));
+                        }
+                        DownloadEvent::Done(result) => {
+                            this.downloading = None;
+                            match result {
+                                Ok(path) => this.open(path, window, cx),
+                                Err(download::DownloadError::Cancelled) => {}
+                                // klogg: a message box with the error.
+                                Err(e) => this.error = Some(format!("Cannot download {url}: {e}")),
+                            }
+                        }
+                    }
+                    cx.notify();
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        }));
+    }
+
+    /// A new file name in the temporary folder: `{stem}-1{ext}`, `-2`…
+    fn temp_file(stem: &str, ext: &str) -> std::io::Result<PathBuf> {
+        let dir = Self::temp_root().join(stem);
+        std::fs::create_dir_all(&dir)?;
+        Ok((1..)
+            .map(|n| dir.join(format!("{stem}-{n}{ext}")))
+            .find(|p| !p.exists())
+            .expect("a free name"))
     }
 
     /// Files taken out of an archive aren't remembered: they are gone
@@ -599,6 +1007,7 @@ impl Workspace {
         let options = OpenOptions {
             encoding: context.encoding.as_deref().and_then(Encoding::for_label),
             hide_ansi: Preferences::get(cx).view.hide_ansi,
+            ..OpenOptions::default()
         };
         let crawler = cx.new(|cx| {
             let mut crawler = Crawler::new(window, cx);
@@ -612,8 +1021,8 @@ impl Workspace {
                     // klogg: `saveFrozenColumns`.
                     if let Some(tab) = this.tabs.iter().find(|t| t.crawler == crawler) {
                         let (main, filtered) = crawler.read(cx).frozen_columns(cx);
-                        this.session.set_frozen_columns(&tab.path, main, filtered);
-                        this.save_session();
+                        let path = tab.path.clone();
+                        this.update_session(cx, |s| s.set_frozen_columns(&path, main, filtered));
                     }
                     this.update_menus(cx);
                     return;
@@ -714,19 +1123,24 @@ impl Workspace {
         if Self::is_temporary(path) {
             return;
         }
-        self.session.recent_files.add(path.to_path_buf());
-        self.save_session();
+        self.update_session(cx, |s| s.recent_files.add(path.to_path_buf()));
         self.update_menus(cx);
     }
 
     /// Reopens the files of the last session, each with its state, and
     /// shows the tab that was current (klogg: `reloadSession`). Files that
     /// are gone are skipped.
+    #[cfg(test)]
     pub fn restore_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let files = std::mem::take(&mut self.session.open_files);
-        let current = self.session.current_file;
+        let first = self.session.all_windows().swap_remove(0);
+        self.restore(first, window, cx);
+    }
+
+    /// Reopens one window's files from the session.
+    pub fn restore(&mut self, files: WindowFiles, window: &mut Window, cx: &mut Context<Self>) {
+        let current = files.current_file;
         let mut current_tab = None;
-        for (i, file) in files.into_iter().enumerate() {
+        for (i, file) in files.open_files.into_iter().enumerate() {
             if !file.path.is_file() {
                 continue;
             }
@@ -745,7 +1159,29 @@ impl Workspace {
     /// `writeSettings`, which does it on exit; here also on every tab change,
     /// so a crash keeps the tabs).
     fn save_open_files(&mut self, cx: &App) {
-        self.session.open_files = self
+        // Every main window's tabs, in the order the windows opened.
+        let id = self.id;
+        let windows = MainWindows::live(cx)
+            .iter()
+            .map(|ws| {
+                if ws.entity_id() == id {
+                    self.window_files(cx)
+                } else {
+                    ws.read(cx).window_files(cx)
+                }
+            })
+            .collect::<Vec<_>>();
+        let windows = if windows.is_empty() {
+            vec![self.window_files(cx)]
+        } else {
+            windows
+        };
+        self.update_session(cx, |s| s.set_windows(windows));
+    }
+
+    /// This window's tabs and their state, for the session.
+    fn window_files(&self, cx: &App) -> WindowFiles {
+        let open_files: Vec<OpenFile> = self
             .tabs
             .iter()
             .filter(|t| !Self::is_temporary(&t.path))
@@ -754,8 +1190,37 @@ impl Workspace {
                 context: t.crawler.read(cx).context(cx),
             })
             .collect();
-        self.session.current_file = self.active;
-        self.save_session();
+        // The current tab, counted without the temporary files.
+        let current_file = self
+            .tabs
+            .iter()
+            .take(self.active)
+            .filter(|t| !Self::is_temporary(&t.path))
+            .count()
+            .min(open_files.len().saturating_sub(1));
+        WindowFiles {
+            current_file,
+            open_files,
+            geometry: self.geometry,
+        }
+    }
+
+    /// The window closed. If other main windows are left, the session
+    /// forgets its tabs; if it was the last, they are what the next start
+    /// reopens (klogg: the last closed window is saved).
+    fn released(&mut self, cx: &mut App) {
+        let quitting = cx.try_global::<MainWindows>().is_some_and(|w| w.quitting);
+        let id = self.id;
+        cx.default_global::<MainWindows>()
+            .list
+            .retain(|w| w.entity_id() != id);
+        if quitting {
+            return;
+        }
+        match MainWindows::live(cx).first() {
+            Some(next) => next.update(cx, |ws, cx| ws.save_open_files(cx)),
+            None => self.save_open_files(cx),
+        }
     }
 
     /// Shows tab `index` (klogg: `currentTabChanged`).
@@ -794,6 +1259,7 @@ impl Workspace {
             window.focus(&self.focus, cx);
             self.save_open_files(cx);
             self.update_title(window);
+            self.update_menus(cx);
             cx.notify();
             return;
         }
@@ -852,6 +1318,82 @@ impl Workspace {
         .detach();
     }
 
+    /// Favorites > Add to Favorites (klogg: `addToFavorites`).
+    fn add_to_favorites(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.tabs.get(self.active).map(|t| t.path.clone()) else {
+            return;
+        };
+        if Self::is_temporary(&path) {
+            return;
+        }
+        self.update_session(cx, |s| s.add_favorite(&path));
+        self.update_menus(cx);
+    }
+
+    /// Favorites > Remove from Favorites… (klogg: `removeFromFavorites`,
+    /// which asks which one, the current file first).
+    fn prompt_remove_favorite(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let files = self.session.favorites.clone();
+        if files.is_empty() {
+            return;
+        }
+        let current = self.tabs.get(self.active).map(|t| t.path.as_path());
+        let selected = files
+            .iter()
+            .position(|f| Some(f.as_path()) == current)
+            .unwrap_or(0);
+        let this = cx.entity().downgrade();
+        let labels = switcher::Labels {
+            title: "Remove from favorites",
+            ok: "Remove",
+        };
+        let chosen_files = files.clone();
+        self._switcher = Some(switcher::open(
+            labels,
+            files,
+            selected,
+            window,
+            cx,
+            move |index, _, cx| {
+                let path = chosen_files[index].clone();
+                this.update(cx, |ws, cx| {
+                    ws.update_session(cx, |s| s.remove_favorite(&path));
+                    ws.update_menus(cx);
+                })
+                .ok();
+            },
+        ));
+    }
+
+    /// Opens a favorite, offering to remove it if it is gone (klogg:
+    /// `openFileFromFavorites`).
+    fn open_favorite(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if std::fs::File::open(&path).is_ok() {
+            self.open(path, window, cx);
+            return;
+        }
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &format!(
+                "Could not read file {}. Remove it from favorites?",
+                path.display()
+            ),
+            None,
+            &["Yes", "No"],
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            if answer.await == Ok(0) {
+                this.update(cx, |this, cx| {
+                    this.update_session(cx, |s| s.remove_favorite(&path));
+                    this.update_menus(cx);
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
     /// Opens a recent file, offering to forget it if it is gone (klogg:
     /// `openFileFromRecent`).
     fn open_recent(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
@@ -872,8 +1414,7 @@ impl Workspace {
         cx.spawn_in(window, async move |this, cx| {
             if answer.await == Ok(0) {
                 this.update(cx, |this, cx| {
-                    this.session.recent_files.remove(&path);
-                    this.save_session();
+                    this.update_session(cx, |s| s.recent_files.remove(&path));
                     this.update_menus(cx);
                 })
                 .ok();
@@ -883,8 +1424,7 @@ impl Workspace {
     }
 
     fn clear_recent(&mut self, cx: &mut Context<Self>) {
-        self.session.recent_files.clear();
-        self.save_session();
+        self.update_session(cx, |s| s.recent_files.clear());
         self.update_menus(cx);
     }
 
@@ -903,10 +1443,62 @@ impl Workspace {
         }
     }
 
+    /// Edit > Copy Path, or the tab's Copy full path (klogg:
+    /// `copyFullPath`).
+    fn copy_path(&self, index: usize, cx: &mut Context<Self>) {
+        if let Some(tab) = self.tabs.get(index) {
+            let path = tab.path.display().to_string();
+            cx.write_to_clipboard(ClipboardItem::new_string(path));
+        }
+    }
+
+    /// Edit > Clear File (klogg: `clearLog`): empties the current file on
+    /// disk after a warning.
+    fn clear_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let crawler = tab.crawler.clone();
+        if crawler.read(cx).log.is_none() {
+            return;
+        }
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &format!(
+                "Clear file {}? Its content will be removed from disk. This can't be undone.",
+                tab.path.display()
+            ),
+            None,
+            &["Clear", "Cancel"],
+            cx,
+        );
+        cx.spawn_in(window, async move |_, cx| {
+            if answer.await != Ok(0) {
+                return;
+            }
+            let task = crawler.update(cx, |c, cx| c.clear_file(cx));
+            if let Err(e) = task.await {
+                let message = format!("Cannot clear the file: {e}");
+                if let Ok(shown) = cx.update(|window, cx| {
+                    window.prompt(PromptLevel::Critical, &message, None, &["OK"], cx)
+                }) {
+                    shown.await.ok();
+                }
+            }
+        })
+        .detach();
+    }
+
     /// View > Stop (klogg: `stopLoading`): stops the current tab's search,
     /// and its indexing, which closes the tab as in klogg (an interrupted
     /// load leaves no file to show).
     fn stop(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.downloading.take().is_some() {
+            self.download_cancel.store(true, Ordering::Relaxed);
+            self._download = None;
+            cx.notify();
+            return;
+        }
         let index = self.active;
         let Some(crawler) = self.crawler().cloned() else {
             return;
@@ -925,6 +1517,9 @@ impl Workspace {
         if let Some(extracting) = &self.extracting {
             return extracting.clone();
         }
+        if let Some(downloading) = &self.downloading {
+            return downloading.clone();
+        }
         self.tabs
             .get(self.active)
             .map_or_else(|| IDLE_STATUS.to_owned(), |t| t.status.clone())
@@ -940,8 +1535,8 @@ impl Workspace {
 
     pub fn rename_tab(&mut self, index: usize, name: &str, cx: &mut Context<Self>) {
         if let Some(tab) = self.tabs.get(index) {
-            self.session.set_tab_name(&tab.path, name);
-            self.save_session();
+            let path = tab.path.clone();
+            self.update_session(cx, |s| s.set_tab_name(&path, name));
             cx.notify();
         }
     }
@@ -952,21 +1547,66 @@ impl Workspace {
             return;
         };
         let current = self.tab_label(tab);
+        self.prompt_text(
+            "Rename tab",
+            "Tab name (empty for the file name)",
+            current,
+            "OK",
+            move |ws, name, _, cx| ws.rename_tab(index, &name, cx),
+            window,
+            cx,
+        );
+    }
+
+    /// File > Open from URL… (klogg: `openUrl`, which offers the
+    /// clipboard's text if it is a URL).
+    fn prompt_url(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let initial = cx
+            .read_from_clipboard()
+            .and_then(|c| c.text())
+            .filter(|t| download::parse_url(t).is_some())
+            .map(|t| t.trim().to_owned())
+            .unwrap_or_default();
+        self.prompt_text(
+            "Open from URL",
+            "URL to download",
+            initial,
+            "Open",
+            |ws, url, window, cx| ws.open_url(url, window, cx),
+            window,
+            cx,
+        );
+    }
+
+    /// A dialog asking for one line of text; Enter or `ok` passes it to
+    /// `done`.
+    #[allow(clippy::too_many_arguments)]
+    fn prompt_text(
+        &mut self,
+        title: &'static str,
+        label: &'static str,
+        initial: String,
+        ok: &'static str,
+        done: impl Fn(&mut Self, String, &mut Window, &mut Context<Self>) + Clone + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let input = cx.new(|cx| {
             let mut s = InputState::new(window, cx);
-            s.set_value(current, window, cx);
+            s.set_value(initial, window, cx);
             s
         });
         let this = cx.entity().downgrade();
         // Enter confirms.
-        self._rename = Some(cx.subscribe_in(
+        let on_enter = done.clone();
+        self._prompt = Some(cx.subscribe_in(
             &input,
             window,
             move |ws, input, e: &InputEvent, window, cx| {
                 if let InputEvent::PressEnter { .. } = e {
-                    let name = input.read(cx).value().to_string();
-                    ws.rename_tab(index, &name, cx);
+                    let text = input.read(cx).value().to_string();
                     window.close_dialog(cx);
+                    on_enter(ws, text, window, cx);
                 }
             },
         ));
@@ -975,24 +1615,23 @@ impl Workspace {
             if first.replace(false) {
                 input.focus_handle(cx).focus(window, cx);
             }
-            let ok = {
-                let (this, input) = (this.clone(), input.clone());
+            let on_ok = {
+                let (this, input, done) = (this.clone(), input.clone(), done.clone());
                 move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
-                    let name = input.read(cx).value().to_string();
-                    this.update(cx, |ws, cx| ws.rename_tab(index, &name, cx))
-                        .ok();
+                    let text = input.read(cx).value().to_string();
                     window.close_dialog(cx);
+                    this.update(cx, |ws, cx| done(ws, text, window, cx)).ok();
                 }
             };
             dialog
-                .title("Rename tab")
-                .w(px(420.))
+                .title(title)
+                .w(px(480.))
                 .child(
                     div()
                         .flex()
                         .flex_col()
                         .gap_2()
-                        .child(div().text_sm().child("Tab name (empty for the file name)"))
+                        .child(div().text_sm().child(label))
                         .child(Input::new(&input)),
                 )
                 .footer(
@@ -1001,17 +1640,17 @@ impl Workspace {
                         .justify_end()
                         .gap_2()
                         .child(
-                            Button::new("rename-cancel")
+                            Button::new("prompt-cancel")
                                 .label("Cancel")
                                 .small()
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
                         .child(
-                            Button::new("rename-ok")
-                                .label("OK")
+                            Button::new("prompt-ok")
+                                .label(ok)
                                 .small()
                                 .primary()
-                                .on_click(ok),
+                                .on_click(on_ok),
                         ),
                 )
         });
@@ -1182,12 +1821,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &CloseAllTabs, window, cx| {
                 this.close_tabs(|_| true, window, cx)
             }))
-            .on_action(cx.listener(|this, a: &CopyTabPath, _, cx| {
-                if let Some(tab) = this.tabs.get(a.index) {
-                    let path = tab.path.display().to_string();
-                    cx.write_to_clipboard(ClipboardItem::new_string(path));
-                }
-            }))
+            .on_action(cx.listener(|this, a: &CopyTabPath, _, cx| this.copy_path(a.index, cx)))
             .on_action(
                 cx.listener(|this, a: &ActivateTab, window, cx| this.activate(a.index, window, cx)),
             )
@@ -1202,6 +1836,51 @@ impl Render for Workspace {
                     cx.reveal_path(&tab.path);
                 }
             }))
+            .on_action(cx.listener(|this, _: &CopyPath, _, cx| this.copy_path(this.active, cx)))
+            .on_action(
+                cx.listener(|this, _: &OpenClipboard, window, cx| this.open_clipboard(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &OpenUrl, window, cx| this.prompt_url(window, cx)))
+            .on_action(cx.listener(|this, _: &AddToFavorites, _, cx| this.add_to_favorites(cx)))
+            .on_action(cx.listener(|_, _: &ToggleFullScreen, window, _| window.toggle_fullscreen()))
+            // klogg: `showMaximized`; here it also restores a maximized window.
+            .on_action(cx.listener(|_, _: &MaximizeWindow, window, _| window.zoom_window()))
+            .on_action(cx.listener(|_, _: &MinimizeWindow, window, _| window.minimize_window()))
+            .on_action(cx.listener(|this, _: &RemoveFromFavorites, window, cx| {
+                this.prompt_remove_favorite(window, cx)
+            }))
+            .on_action(cx.listener(|this, a: &OpenFavorite, window, cx| {
+                this.open_favorite(a.path.clone(), window, cx)
+            }))
+            // klogg: File > New Window; it starts empty.
+            .on_action(cx.listener(|this, _: &NewWindow, _, cx| {
+                let config_dir = this.config_dir.clone();
+                cx.defer(move |cx| {
+                    crate::open_main_window(config_dir, None, Vec::new(), cx);
+                });
+            }))
+            .on_action(
+                cx.listener(|this, _: &SelectOpenFile, window, cx| {
+                    this.select_open_file(window, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &OpenContainingFolder, _, cx| {
+                if let Some(tab) = this.tabs.get(this.active) {
+                    cx.reveal_path(&tab.path);
+                }
+            }))
+            // klogg: `openFileInDefaultApplication`.
+            .on_action(cx.listener(|this, _: &OpenInEditor, _, cx| {
+                if let Some(tab) = this.tabs.get(this.active) {
+                    cx.open_with_system(&tab.path);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ClearFile, window, cx| this.clear_file(window, cx)))
+            .on_action(
+                cx.listener(|_, _: &help::ShowDocumentation, _, cx| help::show_documentation(cx)),
+            )
+            .on_action(cx.listener(|_, _: &help::ReportIssue, _, cx| help::report_issue(cx)))
+            .on_action(cx.listener(|_, _: &help::About, window, cx| help::about(window, cx)))
             .on_action(cx.listener(|this, _: &Reload, _, cx| this.reload(cx)))
             .on_action(cx.listener(|this, a: &SetEncoding, _, cx| {
                 let encoding = a.name.as_deref().and_then(Encoding::for_label);
@@ -1291,17 +1970,50 @@ fn file_name(path: &Path) -> String {
     )
 }
 
+/// The window's size and place, and whether it is maximized or full screen.
+fn geometry_of(window: &Window) -> WindowGeometry {
+    let (bounds, maximized, fullscreen) = match window.window_bounds() {
+        gpui::WindowBounds::Windowed(b) => (b, false, false),
+        gpui::WindowBounds::Maximized(b) => (b, true, false),
+        gpui::WindowBounds::Fullscreen(b) => (b, false, true),
+    };
+    WindowGeometry {
+        x: f32::from(bounds.origin.x),
+        y: f32::from(bounds.origin.y),
+        width: f32::from(bounds.size.width),
+        height: f32::from(bounds.size.height),
+        maximized,
+        fullscreen,
+    }
+}
+
 /// "1  app.log — /var/log" (klogg numbers recent files 1..9, then a, b, …).
 fn recent_label(index: usize, path: &Path) -> String {
     let key = match index {
         0..=8 => char::from(b'1' + index as u8),
         _ => char::from(b'a' + (index - 9) as u8),
     };
+    format!("{key}  {}", path_label(path))
+}
+
+/// "app.log — /var/log", the folder shortened in the middle when long
+/// (klogg: `DisplayFilePath`, `shrinkPath`).
+fn path_label(path: &Path) -> String {
+    const MAX_DIR: usize = 60;
     let dir = path
         .parent()
         .map(|d| d.display().to_string())
         .unwrap_or_default();
-    format!("{key}  {} — {dir}", file_name(path))
+    let chars: Vec<char> = dir.chars().collect();
+    let dir = if chars.len() > MAX_DIR {
+        let keep = (MAX_DIR - 1) / 2;
+        let head: String = chars[..keep].iter().collect();
+        let tail: String = chars[chars.len() - keep..].iter().collect();
+        format!("{head}…{tail}")
+    } else {
+        dir
+    };
+    format!("{} — {dir}", file_name(path))
 }
 
 #[cfg(test)]
@@ -1350,7 +2062,21 @@ mod tests {
             cx.bind_keys(crate::follow::key_bindings());
             cx.bind_keys(key_bindings());
         });
-        cx.add_window_view(|window, cx| Workspace::new(Some(config), window, cx))
+        // Dialogs need gpui-component's Root around the window.
+        let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let window = cx.add_window({
+            let slot = slot.clone();
+            move |window, cx| {
+                let ws = cx.new(|cx| Workspace::new(Some(config), window, cx));
+                *slot.borrow_mut() = Some(ws.clone());
+                gpui_component::Root::new(ws, window, cx)
+            }
+        });
+        let ws = slot.borrow().clone().expect("built");
+        (
+            ws,
+            VisualTestContext::from_window(window.into(), cx).into_mut(),
+        )
     }
 
     /// Indexing runs on a real thread: let it finish, then run the UI tasks.
@@ -1367,6 +2093,12 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         panic!("indexing did not finish");
+    }
+
+    /// As if kloggr started again: the workspaces made so far are no
+    /// longer main windows.
+    fn forget_windows(cx: &mut VisualTestContext) {
+        cx.update(|_, cx| cx.default_global::<MainWindows>().list.clear());
     }
 
     fn recent(ws: &Entity<Workspace>, cx: &mut VisualTestContext) -> Vec<PathBuf> {
@@ -1430,6 +2162,7 @@ mod tests {
 
         // A new workspace starts with the saved recent files.
         let config = fx.config();
+        forget_windows(cx);
         let ws2 = cx.update(|window, cx| cx.new(|cx| Workspace::new(Some(config), window, cx)));
         assert_eq!(recent(&ws2, cx), [a]);
     }
@@ -1461,7 +2194,20 @@ mod tests {
 
         cx.dispatch_action(ClearRecent);
         assert!(recent(&ws, cx).is_empty());
-        assert!(!menu_labels(cx).iter().any(|l| l.contains("a.log")));
+        // Open Recent is empty and disabled (Opened Files still lists a.log).
+        let open_recent = ws.read_with(cx, |ws, cx| {
+            ws.menus(cx)[0].items.iter().find_map(|i| match i {
+                MenuItem::Submenu(m) if m.name == "Open Recent" => {
+                    Some((m.disabled, m.items.len()))
+                }
+                _ => None,
+            })
+        });
+        assert_eq!(
+            open_recent,
+            Some((true, 2)),
+            "only the separator and Clear List"
+        );
     }
 
     #[gpui::test]
@@ -1645,6 +2391,370 @@ mod tests {
     }
 
     #[gpui::test]
+    fn edit_menu(cx: &mut TestAppContext) {
+        let fx = Fixture::new("edit");
+        let path = fx.log("a.log", 3);
+        let (ws, cx) = workspace(cx, fx.config());
+        assert!(ws.read_with(cx, |ws, cx| {
+            ws.menus(cx).iter().any(|m| m.name == "Edit" && m.disabled)
+        }));
+        ws.update_in(cx, |ws, window, cx| ws.open(path.clone(), window, cx));
+        assert_eq!(wait_indexed(&ws, cx), 3);
+        assert!(ws.read_with(cx, |ws, cx| {
+            ws.menus(cx).iter().any(|m| m.name == "Edit" && !m.disabled)
+        }));
+        let crawler = ws.read_with(cx, |ws, _| ws.crawler().unwrap().clone());
+
+        // From the search box, Select All and Copy work on the log view.
+        cx.dispatch_action(crate::crawler::FocusSearch);
+        cx.dispatch_action(log_view::SelectAll);
+        cx.dispatch_action(log_view::Copy);
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|c| c.text()).as_deref(),
+            Some("a.log 0\na.log 1\na.log 2")
+        );
+
+        cx.dispatch_action(CopyPath);
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|c| c.text()),
+            Some(path.display().to_string())
+        );
+
+        // Clear File asks first; Cancel keeps the file.
+        cx.dispatch_action(ClearFile);
+        cx.run_until_parked();
+        cx.simulate_prompt_answer("Cancel");
+        cx.run_until_parked();
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 24);
+
+        crawler.update(cx, |c, cx| c.toggle_marks_for_test(1, cx));
+        cx.dispatch_action(ClearFile);
+        cx.run_until_parked();
+        cx.simulate_prompt_answer("Clear");
+        assert_eq!(wait_indexed(&ws, cx), 0);
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+        assert!(crawler.read_with(cx, |c, cx| c.filter().read(cx).marks().is_empty()));
+        assert!(ws.read_with(cx, |ws, _| ws.status().contains("0 lines")));
+    }
+
+    #[gpui::test]
+    fn open_from_clipboard(cx: &mut TestAppContext) {
+        let fx = Fixture::new("clipboard");
+        let (ws, cx) = workspace(cx, fx.config());
+        cx.write_to_clipboard(ClipboardItem::new_string(String::new()));
+        cx.dispatch_action(OpenClipboard);
+        assert!(ws.read_with(cx, |ws, _| ws.status().contains("no text")));
+
+        cx.write_to_clipboard(ClipboardItem::new_string("one\ntwo\n".into()));
+        cx.dispatch_action(OpenClipboard);
+        assert_eq!(wait_indexed(&ws, cx), 2);
+        cx.dispatch_action(OpenClipboard);
+        assert_eq!(wait_indexed(&ws, cx), 2);
+        let paths: Vec<PathBuf> =
+            ws.read_with(cx, |ws, _| ws.tabs.iter().map(|t| t.path.clone()).collect());
+        assert_eq!(paths.len(), 2, "each paste opens a new tab");
+        assert!(paths.iter().all(|p| Workspace::is_temporary(p)));
+        assert!(paths[0].ends_with("clipboard-1.txt"));
+        // Not remembered: the file is gone after quitting.
+        assert!(recent(&ws, cx).is_empty());
+        let _ = std::fs::remove_dir_all(Workspace::temp_root());
+    }
+
+    #[gpui::test]
+    fn switch_to_open_file(cx: &mut TestAppContext) {
+        let fx = Fixture::new("switch");
+        let a = fx.log("app.log", 2);
+        let b = fx.log("db.log", 2);
+        let c = fx.log("web.log", 2);
+        let (ws, cx) = workspace(cx, fx.config());
+        for path in [&a, &b, &c] {
+            ws.update_in(cx, |ws, window, cx| ws.open(path.clone(), window, cx));
+            wait_indexed(&ws, cx);
+        }
+        let active = |cx: &mut VisualTestContext| ws.read_with(cx, |ws, _| ws.active);
+        assert_eq!(active(cx), 2);
+        // View > Opened Files lists the tabs, the current one checked.
+        let opened = |cx: &mut VisualTestContext| {
+            ws.read_with(cx, |ws, _| ws.opened_files_menu())
+                .items
+                .into_iter()
+                .filter_map(|i| match i {
+                    MenuItem::Action { name, checked, .. } => Some((name.to_string(), checked)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(opened(cx)[3], (c.display().to_string(), true));
+
+        // Ctrl+Shift+O (Cmd on macOS), a filter, then Enter.
+        cx.simulate_keystrokes("secondary-shift-o");
+        let switcher = ws.read_with(cx, |ws, _| ws._switcher.clone().unwrap());
+        // (Not just "ap*log": Windows' temp folder is under AppData.)
+        cx.simulate_input("app.l?g");
+        assert_eq!(switcher.read_with(cx, |s, _| s.shown.clone()), vec![0]);
+        cx.simulate_keystrokes("enter");
+        assert_eq!(active(cx), 0);
+        assert!(opened(cx)[1].1);
+
+        // Down moves the selection; the list is filtered anew each time.
+        cx.simulate_keystrokes("secondary-shift-o");
+        let switcher = ws.read_with(cx, |ws, _| ws._switcher.clone().unwrap());
+        cx.simulate_input(".log");
+        cx.simulate_keystrokes("down down down enter");
+        assert_eq!(switcher.read_with(cx, |s, _| s.selected), 2);
+        assert_eq!(active(cx), 2);
+
+        // Without a tab the menu is disabled.
+        cx.dispatch_action(CloseAllTabs);
+        assert!(ws.read_with(cx, |ws, _| ws.opened_files_menu().disabled));
+        assert!(ws.read_with(cx, |ws, cx| {
+            ws.menus(cx).iter().any(|m| m.name == "Edit" && m.disabled)
+        }));
+    }
+
+    /// Serves one HTTP request with `status` and `body` on a thread.
+    fn serve_once(status: &'static str, body: &'static [u8]) -> String {
+        use std::io::{BufRead, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap() > 2 {
+                line.clear();
+            }
+            let head = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(head.as_bytes()).unwrap();
+            stream.write_all(body).unwrap();
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    #[gpui::test]
+    fn open_from_url(cx: &mut TestAppContext) {
+        let fx = Fixture::new("url");
+        let (ws, cx) = workspace(cx, fx.config());
+        // The dialog offers the URL on the clipboard; Enter downloads it.
+        let url = format!(
+            "{}/logs/remote.log",
+            serve_once("200 OK", b"one\ntwo\nthree\n")
+        );
+        cx.write_to_clipboard(ClipboardItem::new_string(url));
+        cx.dispatch_action(OpenUrl);
+        cx.run_until_parked();
+        cx.simulate_keystrokes("enter");
+        assert_eq!(wait_indexed(&ws, cx), 3);
+        let path = ws.read_with(cx, |ws, _| ws.tabs[0].path.clone());
+        assert!(path.ends_with("downloads/remote.log"), "{path:?}");
+        assert!(Workspace::is_temporary(&path));
+        assert!(recent(&ws, cx).is_empty());
+
+        // Errors show in the status line.
+        let url = format!("{}/missing.log", serve_once("404 Not Found", b""));
+        ws.update_in(cx, |ws, window, cx| ws.open_url(url, window, cx));
+        for _ in 0..500 {
+            cx.run_until_parked();
+            if ws.read_with(cx, |ws, _| ws.downloading.is_none()) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let status = ws.read_with(cx, |ws, _| ws.status());
+        assert!(
+            status.contains("Cannot download") && status.contains("404"),
+            "{status}"
+        );
+        ws.update_in(cx, |ws, window, cx| {
+            ws.open_url("ftp://x/y".into(), window, cx)
+        });
+        assert!(ws.read_with(cx, |ws, _| ws.status().contains("not an http")));
+        let _ = std::fs::remove_dir_all(Workspace::temp_root());
+    }
+
+    #[gpui::test]
+    fn new_window_and_its_session(cx: &mut TestAppContext) {
+        let fx = Fixture::new("windows");
+        let (a, b) = (fx.log("a.log", 2), fx.log("b.log", 3));
+        let (ws, cx) = workspace(cx, fx.config());
+        ws.update_in(cx, |ws, window, cx| ws.open(a.clone(), window, cx));
+        wait_indexed(&ws, cx);
+
+        // File > New Window opens an empty one.
+        cx.dispatch_action(NewWindow);
+        cx.run_until_parked();
+        let ws2 = cx.update(|_, cx| {
+            let live = MainWindows::live(cx);
+            assert_eq!(live.len(), 2);
+            live[1].clone()
+        });
+        assert!(ws2.read_with(cx, |ws, _| ws.tabs.is_empty()));
+        ws2.update_in(cx, |ws, window, cx| ws.open(b.clone(), window, cx));
+        wait_indexed(&ws2, cx);
+
+        // Each window's size and place is saved with its tabs.
+        let saved = Session::load(&fx.config()).all_windows();
+        assert!(
+            saved
+                .iter()
+                .all(|w| w.geometry.is_some_and(|g| g.width > 0.))
+        );
+        // Each window's tabs, in order; the recent files of both.
+        let paths = |w: &WindowFiles| {
+            w.open_files
+                .iter()
+                .map(|f| f.path.clone())
+                .collect::<Vec<_>>()
+        };
+        let saved = Session::load(&fx.config());
+        let windows = saved.all_windows();
+        assert_eq!(
+            windows.iter().map(paths).collect::<Vec<_>>(),
+            [vec![a.clone()], vec![b.clone()]]
+        );
+        assert_eq!(saved.recent_files.files(), [b.clone(), a.clone()]);
+        // The first window's menus show the second's recent file once it is
+        // active again.
+        ws.update(cx, |ws, cx| ws.reload_session(cx));
+        assert_eq!(recent(&ws, cx), [b.clone(), a.clone()]);
+
+        // Closing a window while another is open forgets its tabs.
+        let second = cx.update(|_, cx| cx.windows()[1]);
+        cx.update(|_, cx| {
+            second
+                .update(cx, |_, window, _| window.remove_window())
+                .unwrap();
+        });
+        drop(ws2);
+        cx.run_until_parked();
+        assert_eq!(cx.update(|_, cx| MainWindows::live(cx)).len(), 1);
+        let windows = Session::load(&fx.config()).all_windows();
+        assert_eq!(
+            windows.iter().map(paths).collect::<Vec<_>>(),
+            [vec![a.clone()]]
+        );
+    }
+
+    #[test]
+    fn long_folders_are_shortened() {
+        assert_eq!(
+            path_label(Path::new("/var/log/app.log")),
+            "app.log — /var/log"
+        );
+        let deep = format!("/{}/app.log", "d".repeat(100));
+        let label = path_label(Path::new(&deep));
+        assert_eq!(label.chars().count(), "app.log — ".chars().count() + 59);
+        assert!(label.starts_with("app.log — /ddd") && label.contains('…'));
+    }
+
+    #[gpui::test]
+    fn favorites(cx: &mut TestAppContext) {
+        let fx = Fixture::new("favorites");
+        let (a, b) = (fx.log("a.log", 2), fx.log("b.log", 3));
+        let (ws, cx) = workspace(cx, fx.config());
+        let menu = |cx: &mut VisualTestContext| {
+            ws.read_with(cx, |ws, _| ws.favorites_menu())
+                .items
+                .into_iter()
+                .filter_map(|i| match i {
+                    MenuItem::Action { name, disabled, .. } => Some((name.to_string(), disabled)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        // Nothing to add or remove without a file.
+        assert_eq!(
+            menu(cx),
+            [
+                ("Add to Favorites".into(), true),
+                ("Remove from Favorites…".into(), true)
+            ]
+        );
+        for path in [&b, &a] {
+            ws.update_in(cx, |ws, window, cx| ws.open(path.clone(), window, cx));
+            wait_indexed(&ws, cx);
+            cx.dispatch_action(AddToFavorites);
+        }
+        // Sorted, and the current file can't be added twice.
+        let items = menu(cx);
+        assert_eq!(items[0], ("Add to Favorites".into(), true));
+        assert_eq!(items[2].0, path_label(&a));
+        assert_eq!(items[3].0, path_label(&b));
+        assert_eq!(
+            Session::load(&fx.config()).favorites,
+            [a.clone(), b.clone()]
+        );
+
+        // Remove from Favorites… offers the current file first.
+        cx.dispatch_action(RemoveFromFavorites);
+        cx.run_until_parked();
+        cx.simulate_keystrokes("enter");
+        assert_eq!(
+            Session::load(&fx.config()).favorites,
+            std::slice::from_ref(&b)
+        );
+
+        // A favorite that disappeared: asked, then removed.
+        ws.update_in(cx, |ws, window, cx| ws.activate(0, window, cx));
+        cx.dispatch_action(CloseAllTabs);
+        std::fs::remove_file(&b).unwrap();
+        cx.dispatch_action(OpenFavorite { path: b.clone() });
+        assert!(cx.has_pending_prompt());
+        cx.simulate_prompt_answer("Yes");
+        cx.run_until_parked();
+        assert!(Session::load(&fx.config()).favorites.is_empty());
+        assert!(ws.read_with(cx, |ws, _| ws.session.favorites.is_empty()));
+    }
+
+    #[gpui::test]
+    fn files_from_another_launch(cx: &mut TestAppContext) {
+        let fx = Fixture::new("launch");
+        let (a, b) = (fx.log("a.log", 2), fx.log("b.log", 3));
+        let (ws, cx) = workspace(cx, fx.config());
+        let config = Some(fx.config());
+        // From a task, outside any window's update (as `main` does).
+        cx.cx
+            .update(|cx| open_from_another_launch(vec![a.clone()], config.clone(), cx));
+        assert_eq!(wait_indexed(&ws, cx), 2);
+
+        // Into the window active last.
+        cx.dispatch_action(NewWindow);
+        cx.run_until_parked();
+        let ws2 = cx.update(|_, cx| MainWindows::live(cx)[1].clone());
+        cx.cx.update(|cx| {
+            cx.default_global::<MainWindows>().last_active = Some(ws2.downgrade());
+            open_from_another_launch(vec![b.clone()], config.clone(), cx);
+        });
+        assert_eq!(wait_indexed(&ws2, cx), 3);
+        assert_eq!(ws.read_with(cx, |ws, _| ws.tabs.len()), 1);
+    }
+
+    #[gpui::test]
+    fn help_menu(cx: &mut TestAppContext) {
+        let fx = Fixture::new("help");
+        let (_ws, cx) = workspace(cx, fx.config());
+        let labels = menu_labels(cx);
+        for label in ["Documentation", "Report Issue…", "About kloggr"] {
+            assert!(labels.contains(&label.to_owned()), "{label}");
+        }
+        // Documentation opens one window, and shows it again after that.
+        let windows = |cx: &mut VisualTestContext| cx.update(|_, cx| cx.windows().len());
+        assert_eq!(windows(cx), 1);
+        cx.dispatch_action(help::ShowDocumentation);
+        cx.run_until_parked();
+        assert_eq!(windows(cx), 2);
+        let docs = cx.update(|_, cx| cx.windows()[1]);
+        assert!(cx.update(|_, cx| help::is_documentation_window(docs, cx)));
+        cx.dispatch_action(help::ShowDocumentation);
+        cx.run_until_parked();
+        assert_eq!(windows(cx), 2);
+        assert!(help::GUIDE.contains("## Edit menu"));
+    }
+
+    #[gpui::test]
     fn encoding_menu(cx: &mut TestAppContext) {
         let fx = Fixture::new("encoding");
         let path = fx.dir.join("utf8.log");
@@ -1698,6 +2808,7 @@ mod tests {
         });
         cx.run_until_parked();
         let config = fx.config();
+        forget_windows(cx);
         let ws2 = cx.update(|window, cx| {
             cx.new(|cx| {
                 let mut ws = Workspace::new(Some(config), window, cx);
@@ -1777,6 +2888,7 @@ mod tests {
         std::fs::remove_file(&c).unwrap();
 
         let config = fx.config();
+        forget_windows(cx);
         let ws2 = cx.update(|window, cx| {
             cx.new(|cx| {
                 let mut ws = Workspace::new(Some(config), window, cx);

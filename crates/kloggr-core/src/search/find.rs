@@ -88,7 +88,8 @@ fn find_in_block(
     match rows {
         // Decode the block's line offsets once, as `search` does.
         Rows::All => {
-            let lines: Vec<_> = log.text_lines(block).collect();
+            let text = log.text_block(block);
+            let lines: Vec<_> = text.iter().collect();
             let test =
                 |(k, bytes): (usize, &std::borrow::Cow<'_, [u8]>)| hit(first + k, first + k, bytes);
             if backward {

@@ -94,12 +94,20 @@ enum Kind {
     },
 }
 
+/// Matches found over a block before [`Matcher::match_block`] checks
+/// whether they are dense enough to test lines one by one instead.
+const DENSE_AFTER: usize = 32;
+
 /// A compiled [`Pattern`] (klogg: `PatternMatcher`). Cheap to share between
 /// threads.
 #[derive(Debug, Clone)]
 pub struct Matcher {
     kind: Kind,
     exclude: bool,
+    /// The single pattern with `^` and `$` matching at line breaks, to run
+    /// over many lines at once (see [`match_block`](Self::match_block));
+    /// `None` when that could select other lines than matching line by line.
+    block: Option<Regex>,
 }
 
 impl Matcher {
@@ -111,6 +119,7 @@ impl Matcher {
                 text.to_owned()
             }
         };
+        let mut block = None;
         let kind = if pattern.boolean {
             let (expr, subs) = boolean::parse(&pattern.text)?;
             let subs: Vec<String> = subs.iter().map(|s| source(s)).collect();
@@ -120,12 +129,100 @@ impl Matcher {
                 .collect::<Result<_, _>>()?;
             Kind::Boolean { regexes, expr }
         } else {
-            Kind::Single(build(&source(&pattern.text), pattern.case_sensitive)?)
+            let source = source(&pattern.text);
+            // `\A` and `\z` mean the line's start and end only when lines
+            // are matched one at a time, and `(?-m)` turns `^`/`$` back into
+            // them. (An escaped backslash before A or z is caught too: a
+            // pattern only loses the faster path.)
+            let line_anchored = ["\\A", "\\z", "-m"].iter().any(|a| source.contains(a));
+            if !line_anchored {
+                block = RegexBuilder::new(&source)
+                    .case_insensitive(!pattern.case_sensitive)
+                    .multi_line(true)
+                    .build()
+                    .ok();
+            }
+            Kind::Single(build(&source, pattern.case_sensitive)?)
         };
         Ok(Self {
             kind,
             exclude: pattern.exclude,
+            block,
         })
+    }
+
+    /// The lines of a block of UTF-8 text (`bounds`: each line's start in
+    /// `data`, then the end of the last one) that the pattern selects, as
+    /// indexes from the block's first line. The regex runs over the whole
+    /// block instead of once per line, which is what short lines cost; a
+    /// line is checked on its own only when a match runs past its end.
+    /// `None` when the block must be searched line by line: a boolean
+    /// pattern, an anchor that means the line's start or end, or a carriage
+    /// return in the block (lines are compared without it).
+    pub fn match_block(&self, data: &[u8], bounds: &[usize]) -> Option<Vec<usize>> {
+        let (Kind::Single(line_re), Some(block_re)) = (&self.kind, &self.block) else {
+            return None;
+        };
+        if memchr::memchr(b'\r', data).is_some() {
+            return None;
+        }
+        let lines = bounds.len().saturating_sub(1);
+        // A file truncated under a read gives fewer bytes than the index.
+        let end_of = |k: usize| bounds[k + 1].min(data.len());
+        let content_end = |k: usize| {
+            let end = end_of(k);
+            if end > bounds[k] && data[end - 1] == b'\n' {
+                end - 1
+            } else {
+                end
+            }
+        };
+        let mut matched = Vec::new();
+        let mut at = 0;
+        while let Some(m) = block_re.find_at(data, at) {
+            // The line the match starts in.
+            let k = bounds
+                .partition_point(|&b| b <= m.start())
+                .saturating_sub(1);
+            if k >= lines {
+                break;
+            }
+            let end = content_end(k);
+            let within = m.end() <= end;
+            let start = bounds[k].min(end);
+            if within || line_re.is_match(&data[start..end]) {
+                matched.push(k);
+            }
+            let next = end_of(k);
+            if next <= at {
+                break;
+            }
+            at = next;
+            // Most lines match: a search per match costs more than testing
+            // each line, so test the rest of the block line by line.
+            if matched.len() >= DENSE_AFTER && matched.len() * 4 > k + 1 {
+                matched.extend((k + 1..lines).filter(|&j| {
+                    line_re.is_match(&data[bounds[j].min(content_end(j))..content_end(j)])
+                }));
+                break;
+            }
+        }
+        if self.exclude {
+            let mut matched = matched.into_iter().peekable();
+            return Some(
+                (0..lines)
+                    .filter(|k| {
+                        if matched.peek() == Some(k) {
+                            matched.next();
+                            false
+                        } else {
+                            true
+                        }
+                    })
+                    .collect(),
+            );
+        }
+        Some(matched)
     }
 
     /// Whether `line` (UTF-8, without terminator) is selected by the pattern.
@@ -305,6 +402,69 @@ mod tests {
         assert!(matches!(e, PatternError::Regex(ref m) if m.contains("unclosed group")));
         let e = Matcher::new(&Pattern::regex(r#""ok" or "(""#).boolean()).unwrap_err();
         assert!(matches!(e, PatternError::Regex(_)));
+    }
+
+    /// The block path selects exactly the lines matching line by line does.
+    #[test]
+    fn block_matches_like_lines() {
+        let text = "alpha beta\n\ngamma alpha\nalpha\n  x  \nbeta gamma\nlast alpha";
+        let mut bounds = vec![0];
+        for (i, b) in text.bytes().enumerate() {
+            if b == b'\n' {
+                bounds.push(i + 1);
+            }
+        }
+        bounds.push(text.len());
+        let lines: Vec<&str> = text.split('\n').collect();
+        let patterns = [
+            Pattern::regex("alpha"),
+            Pattern::regex("^alpha"),
+            Pattern::regex("alpha$"),
+            Pattern::regex("^$"),
+            Pattern::regex(r"\s+"),
+            Pattern::regex(r"a\s*\n?g"),
+            Pattern::regex(r"(?s)beta.gamma"),
+            Pattern::regex(r"\bgamma\b"),
+            Pattern::regex("x*"),
+            Pattern::regex(""),
+            Pattern::regex(r"[^a-z ]"),
+            Pattern::plain("a b").case_insensitive(),
+            Pattern::regex("ALPHA").case_insensitive(),
+            Pattern::regex("alpha").excluding(),
+            Pattern::regex("^$").excluding(),
+        ];
+        for pattern in patterns {
+            let m = Matcher::new(&pattern).unwrap();
+            let by_line: Vec<usize> = (0..lines.len())
+                .filter(|&k| m.is_match(lines[k].as_bytes()))
+                .collect();
+            let by_block = m.match_block(text.as_bytes(), &bounds).unwrap();
+            assert_eq!(by_block, by_line, "{pattern:?}");
+        }
+        // Line by line when the block can't tell.
+        for pattern in [Pattern::regex(r"\Aalpha"), Pattern::regex(r"(?-m)^alpha")] {
+            let m = Matcher::new(&pattern).unwrap();
+            assert_eq!(m.match_block(text.as_bytes(), &bounds), None, "{pattern:?}");
+        }
+        let boolean = Matcher::new(&Pattern::regex(r#""a""#).boolean()).unwrap();
+        assert_eq!(boolean.match_block(text.as_bytes(), &bounds), None);
+        let crlf = "a\r\nb\n";
+        let m = Matcher::new(&Pattern::regex("a$")).unwrap();
+        assert_eq!(m.match_block(crlf.as_bytes(), &[0, 3, 5]), None);
+        // Dense matches switch to testing each line, with the same result.
+        let dense: String = (0..200).map(|i| format!("v{}\n", i % 3)).collect();
+        let mut bounds = vec![0];
+        bounds.extend(dense.match_indices('\n').map(|(i, _)| i + 1));
+        for pattern in [Pattern::regex("v[01]"), Pattern::regex("v[01]").excluding()] {
+            let m = Matcher::new(&pattern).unwrap();
+            let by_line: Vec<usize> = (0..200)
+                .filter(|&k| m.is_match(format!("v{}", k % 3).as_bytes()))
+                .collect();
+            assert_eq!(m.match_block(dense.as_bytes(), &bounds).unwrap(), by_line);
+        }
+        // Fewer bytes than the index says (a truncated file being read).
+        let m = Matcher::new(&Pattern::regex("b")).unwrap();
+        assert_eq!(m.match_block(b"ab\nb", &[0, 3, 6, 9]), Some(vec![0, 1]));
     }
 
     #[test]
