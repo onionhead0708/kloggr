@@ -104,7 +104,10 @@ Entering (Open|Close)Connection
 lists the opening and closing calls together, so an open without a close
 stands out.
 
-The arrow at the end of the search box lists earlier searches. **Filters**
+While you type, earlier searches that start with the same text are offered
+under the search box: Down and Up choose one, Enter or a click searches for
+it, Esc closes the list. The arrow at the end of the search box lists all
+earlier searches. **Filters**
 lists the predefined filters, and **Save search as filter…** in it saves the
 current search as one.
 

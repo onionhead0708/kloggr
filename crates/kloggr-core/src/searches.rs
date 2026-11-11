@@ -76,6 +76,29 @@ impl Searches {
         }
     }
 
+    /// Earlier searches that start with `typed` and are longer, most recent
+    /// first, at most `max` (klogg: the search box's `QCompleter`, whose case
+    /// sensitivity follows the search's). Nothing for an empty `typed`.
+    pub fn completions(&self, typed: &str, case_sensitive: bool, max: usize) -> Vec<String> {
+        if typed.is_empty() {
+            return Vec::new();
+        }
+        let typed_lower = typed.to_lowercase();
+        self.history
+            .iter()
+            .filter(|h| h.len() > typed.len())
+            .filter(|h| {
+                if case_sensitive {
+                    h.starts_with(typed)
+                } else {
+                    h.to_lowercase().starts_with(&typed_lower)
+                }
+            })
+            .take(max)
+            .cloned()
+            .collect()
+    }
+
     pub fn set_history_size(&mut self, size: usize) {
         self.history_size = size;
         self.trim();
@@ -203,6 +226,24 @@ pub fn checked_filters(current: &str, filters: &[PredefinedFilter], mode: Mode) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completions_from_history() {
+        let mut searches = Searches::default();
+        for text in ["ERROR timeout", "error", "Error in worker", "WARN", "ERROR"] {
+            searches.add_recent(text);
+        }
+        // Most recent first; the typed text itself isn't offered.
+        assert_eq!(searches.completions("ERROR", true, 8), ["ERROR timeout"]);
+        assert_eq!(
+            searches.completions("err", false, 8),
+            ["ERROR", "Error in worker", "error", "ERROR timeout"]
+        );
+        assert_eq!(searches.completions("Err", true, 8), ["Error in worker"]);
+        assert_eq!(searches.completions("err", false, 1).len(), 1);
+        assert!(searches.completions("", false, 8).is_empty());
+        assert!(searches.completions("x", false, 8).is_empty());
+    }
 
     const REGEX: Mode = Mode {
         regex: true,

@@ -175,7 +175,7 @@ Menus, window management and platform integration still missing, plus open items
 ### Phase 7: remaining klogg parity
 Gaps found by comparing kloggr 0.2.0 with klogg's shortcuts, menus, options, command line and documentation on 2026-11-11.
 - [x] File watching by polling, with an interval option (klogg `filewatch.usePolling`, `pollingIntervalMs`): network shares, sftp mounts and volumes where notifications don't arrive
-- [ ] Search box autocompletion from the search history as you type (klogg `QCompleter`, case-sensitive with the search option)
+- [x] Search box autocompletion from the search history as you type (klogg `QCompleter`, case-sensitive with the search option)
 - [ ] Predefined filters: Import and Export in the dialog (klogg `PredefinedFiltersDialog::importFilters`, `exportFilters`)
 - [ ] File size and modification date in the status line (klogg toolbar `sizeField`, `dateField`)
 - [ ] Ctrl+mouse wheel changes the font size in the log views (klogg `changeFontSize`)

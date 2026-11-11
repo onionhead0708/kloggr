@@ -9,6 +9,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     Action, AppContext, Context, Entity, Focusable, InteractiveElement, IntoElement, ParentElement,
     Render, Styled, Subscription, Task, Window, actions, div, px,
@@ -279,6 +280,11 @@ pub struct Crawler {
     /// The view that last had focus: quick find works on it.
     pub(crate) target: Target,
     input: Entity<InputState>,
+    /// Earlier searches starting with what is typed, under the search box
+    /// (klogg: the search box's `QCompleter`), and the one chosen with the
+    /// arrow keys.
+    pub(crate) suggestions: Vec<String>,
+    suggested: Option<usize>,
     pub(crate) options: SearchOptions,
     pub(crate) info: SearchInfo,
     /// The pattern of the last search started, re-run when a file is opened.
@@ -349,9 +355,15 @@ impl Crawler {
         let results = Results::new(filter.clone(), filtered.clone(), window, cx);
         let subscriptions = vec![
             cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
-                if let InputEvent::PressEnter { .. } = event {
-                    this.start_search(window, cx);
+                match event {
+                    InputEvent::PressEnter { .. } => this.start_search(window, cx),
+                    // Typed (the code's own changes send no event).
+                    InputEvent::Change => this.update_suggestions(cx),
+                    _ => {}
                 }
+            }),
+            cx.on_blur(&input.focus_handle(cx), window, |this, _, cx| {
+                this.close_suggestions(cx)
             }),
             cx.subscribe_in(
                 &main,
@@ -419,6 +431,8 @@ impl Crawler {
             qf,
             target: Target::Main,
             input,
+            suggestions: Vec::new(),
+            suggested: None,
             options: SearchOptions::default(),
             info: SearchInfo::default(),
             last_pattern: None,
@@ -720,6 +734,7 @@ impl Crawler {
     /// Searches for the text in the search box (klogg: `startNewSearch`,
     /// `replaceCurrentSearch`).
     pub fn start_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_suggestions(cx);
         let text = self.input.read(cx).value().to_string();
         if text.is_empty() {
             self.clear_search(cx);
@@ -974,6 +989,103 @@ impl Crawler {
         self.input.read(cx).value().to_string()
     }
 
+    /// Suggestions shown at most (klogg's completer shows 7 rows).
+    const SUGGESTIONS: usize = 8;
+
+    fn update_suggestions(&mut self, cx: &mut Context<Self>) {
+        let typed = self.input.read(cx).value().to_string();
+        self.suggestions =
+            SavedSearches::get(cx).completions(&typed, self.options.match_case, Self::SUGGESTIONS);
+        self.suggested = None;
+        cx.notify();
+    }
+
+    fn close_suggestions(&mut self, cx: &mut Context<Self>) {
+        if !self.suggestions.is_empty() {
+            self.suggestions.clear();
+            self.suggested = None;
+            cx.notify();
+        }
+    }
+
+    /// Puts suggestion `index` in the search box and searches.
+    fn accept_suggestion(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(text) = self.suggestions.get(index).cloned() else {
+            return;
+        };
+        self.input
+            .update(cx, |input, cx| input.set_value(text, window, cx));
+        self.start_search(window, cx);
+    }
+
+    /// Up, Down, Enter and Esc while suggestions are shown.
+    fn suggestion_key(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let count = self.suggestions.len();
+        if count == 0 {
+            return;
+        }
+        match event.keystroke.key.as_str() {
+            "down" => self.suggested = Some(self.suggested.map_or(0, |i| (i + 1).min(count - 1))),
+            "up" => self.suggested = self.suggested.and_then(|i| i.checked_sub(1)),
+            "enter" => match self.suggested {
+                Some(i) => self.accept_suggestion(i, window, cx),
+                None => return,
+            },
+            "escape" => self.close_suggestions(cx),
+            _ => return,
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    fn render_suggestions(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        if self.suggestions.is_empty() {
+            return None;
+        }
+        let theme = cx.theme();
+        let (bg, border, active) = (theme.popover, theme.border, theme.list_active);
+        let items = self.suggestions.iter().enumerate().map(|(i, text)| {
+            div()
+                .id(("suggestion", i))
+                .px_2()
+                .py_0p5()
+                .text_sm()
+                .when(self.suggested == Some(i), |d| d.bg(active))
+                .hover(|d| d.bg(active))
+                .child(text.clone())
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.accept_suggestion(i, window, cx)
+                    }),
+                )
+        });
+        Some(
+            gpui::deferred(
+                div()
+                    .absolute()
+                    .top_full()
+                    .left_0()
+                    .w_full()
+                    .mt_0p5()
+                    .py_1()
+                    .bg(bg)
+                    .border_1()
+                    .border_color(border)
+                    .rounded_md()
+                    .shadow_md()
+                    .children(items),
+            )
+            .with_priority(1),
+        )
+    }
+
     /// Puts `text` in the search box and focuses it, ready for Enter
     /// (klogg: `setSearchPattern`; searching at once is an option there,
     /// off by default).
@@ -1149,7 +1261,18 @@ impl Crawler {
                         item(menu, Visibility::Matches, Box::new(ShowMatches))
                     }),
             )
-            .child(div().flex_1().child(Input::new(&self.input).small()))
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .capture_key_down(
+                        cx.listener(|this, event, window, cx| {
+                            this.suggestion_key(event, window, cx)
+                        }),
+                    )
+                    .child(Input::new(&self.input).small())
+                    .children(self.render_suggestions(cx)),
+            )
             .child(self.history_button(cx))
             .child(self.filters_button(cx))
             .child(
@@ -2249,6 +2372,48 @@ mod tests {
         cx.simulate_keystrokes("ctrl-shift-0");
         assert!(crawler.read_with(cx, |c, _| c.color_labels.is_empty()));
         assert!(filtered.read_with(cx, |v, _| v.color_labels().is_empty()));
+    }
+
+    #[gpui::test]
+    fn search_suggestions_from_history(cx: &mut TestAppContext) {
+        let log = TempLog::new("suggest", 9);
+        let (crawler, cx) = crawler(cx, &log);
+        cx.update(|_, cx| {
+            SavedSearches::init(None, cx);
+            SavedSearches::update(cx, |s| {
+                for text in ["ERROR timeout", "WARN", "ERROR 5"] {
+                    s.add_recent(text);
+                }
+            });
+        });
+        cx.dispatch_action(FocusSearch);
+        let suggestions =
+            |cx: &mut VisualTestContext| crawler.read_with(cx, |c, _| c.suggestions.clone());
+        cx.simulate_input("ERR");
+        assert_eq!(suggestions(cx), ["ERROR 5", "ERROR timeout"]);
+        // Esc closes them (and doesn't reach Stop).
+        cx.simulate_keystrokes("escape");
+        assert!(suggestions(cx).is_empty());
+
+        // Down, Down, Enter: the second one is searched.
+        cx.simulate_input("O");
+        assert_eq!(suggestions(cx).len(), 2);
+        cx.simulate_keystrokes("down down enter");
+        cx.run_until_parked();
+        assert_eq!(
+            crawler.read_with(cx, |c, cx| c.search_text(cx)),
+            "ERROR timeout"
+        );
+        assert!(suggestions(cx).is_empty());
+        assert_eq!(
+            crawler.read_with(cx, |c, _| c.last_pattern.clone().map(|p| p.text)),
+            Some("ERROR timeout".to_owned())
+        );
+        // Case follows the search's option (case-sensitive by default).
+        cx.update(|_, cx| SavedSearches::update(cx, |s| s.add_recent("error")));
+        crawler.update_in(cx, |c, window, cx| c.set_search_text("", window, cx));
+        cx.simulate_input("err");
+        assert_eq!(suggestions(cx), ["error"], "not the ERROR ones");
     }
 
     #[gpui::test]
