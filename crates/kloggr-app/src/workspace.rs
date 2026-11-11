@@ -62,7 +62,8 @@ actions!(
         CopyPath,
         OpenContainingFolder,
         OpenInEditor,
-        ClearFile
+        ClearFile,
+        OpenClipboard
     ]
 );
 
@@ -113,6 +114,14 @@ pub fn shortcuts() -> Vec<Shortcut> {
             None,
             &["secondary-o"],
             Open,
+        ),
+        // klogg: `QKeySequence::Paste`. Inputs keep Ctrl+V for pasting.
+        Shortcut::new(
+            "mainwindow.open_from_clipboard",
+            "Paste text from clipboard",
+            None,
+            &["secondary-v"],
+            OpenClipboard,
         ),
         Shortcut::new(
             "mainwindow.close_file",
@@ -361,6 +370,7 @@ impl Workspace {
         vec![
             Menu::new("File").items([
                 MenuItem::action("Open…", Open),
+                MenuItem::action("Open from Clipboard", OpenClipboard),
                 MenuItem::submenu(
                     Menu::new("Open Recent")
                         .items(recent_items)
@@ -524,6 +534,36 @@ impl Workspace {
     /// (klogg: `tempDir_`).
     fn temp_root() -> PathBuf {
         std::env::temp_dir().join(format!("kloggr-{}", std::process::id()))
+    }
+
+    /// File > Open from Clipboard (klogg: `openClipboard`): the clipboard's
+    /// text, saved to a temporary file, in a new tab.
+    fn open_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = cx.read_from_clipboard().and_then(|c| c.text());
+        let Some(text) = text.filter(|t| !t.is_empty()) else {
+            self.error = Some("The clipboard holds no text".to_owned());
+            cx.notify();
+            return;
+        };
+        match Self::temp_file("clipboard", ".txt")
+            .and_then(|path| std::fs::write(&path, text).map(|_| path))
+        {
+            Ok(path) => self.open_with(path, None, window, cx),
+            Err(e) => {
+                self.error = Some(format!("Cannot save the clipboard: {e}"));
+                cx.notify();
+            }
+        }
+    }
+
+    /// A new file name in the temporary folder: `{stem}-1{ext}`, `-2`…
+    fn temp_file(stem: &str, ext: &str) -> std::io::Result<PathBuf> {
+        let dir = Self::temp_root().join(stem);
+        std::fs::create_dir_all(&dir)?;
+        Ok((1..)
+            .map(|n| dir.join(format!("{stem}-{n}{ext}")))
+            .find(|p| !p.exists())
+            .expect("a free name"))
     }
 
     /// Files taken out of an archive aren't remembered: they are gone
@@ -1305,6 +1345,9 @@ impl Render for Workspace {
                 }
             }))
             .on_action(cx.listener(|this, _: &CopyPath, _, cx| this.copy_path(this.active, cx)))
+            .on_action(
+                cx.listener(|this, _: &OpenClipboard, window, cx| this.open_clipboard(window, cx)),
+            )
             .on_action(cx.listener(|this, _: &OpenContainingFolder, _, cx| {
                 if let Some(tab) = this.tabs.get(this.active) {
                     cx.reveal_path(&tab.path);
@@ -1803,6 +1846,29 @@ mod tests {
         assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
         assert!(crawler.read_with(cx, |c, cx| c.filter().read(cx).marks().is_empty()));
         assert!(ws.read_with(cx, |ws, _| ws.status().contains("0 lines")));
+    }
+
+    #[gpui::test]
+    fn open_from_clipboard(cx: &mut TestAppContext) {
+        let fx = Fixture::new("clipboard");
+        let (ws, cx) = workspace(cx, fx.config());
+        cx.write_to_clipboard(ClipboardItem::new_string(String::new()));
+        cx.dispatch_action(OpenClipboard);
+        assert!(ws.read_with(cx, |ws, _| ws.status().contains("no text")));
+
+        cx.write_to_clipboard(ClipboardItem::new_string("one\ntwo\n".into()));
+        cx.dispatch_action(OpenClipboard);
+        assert_eq!(wait_indexed(&ws, cx), 2);
+        cx.dispatch_action(OpenClipboard);
+        assert_eq!(wait_indexed(&ws, cx), 2);
+        let paths: Vec<PathBuf> =
+            ws.read_with(cx, |ws, _| ws.tabs.iter().map(|t| t.path.clone()).collect());
+        assert_eq!(paths.len(), 2, "each paste opens a new tab");
+        assert!(paths.iter().all(|p| Workspace::is_temporary(p)));
+        assert!(paths[0].ends_with("clipboard-1.txt"));
+        // Not remembered: the file is gone after quitting.
+        assert!(recent(&ws, cx).is_empty());
+        let _ = std::fs::remove_dir_all(Workspace::temp_root());
     }
 
     #[gpui::test]
