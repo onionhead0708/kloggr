@@ -53,6 +53,7 @@ pub struct OptionsEditor {
     font_family: Entity<InputState>,
     font_size: Entity<InputState>,
     recent_files: Entity<InputState>,
+    poll_interval: Entity<InputState>,
     /// klogg: "Search history size" (kept with the history).
     history_size: Entity<InputState>,
     search_color: Entity<ColorPickerState>,
@@ -96,6 +97,7 @@ impl OptionsEditor {
             cx,
         );
         let recent_files = input(options.file.recent_files.to_string(), "", window, cx);
+        let poll_interval = input(options.file.poll_interval_ms.to_string(), "", window, cx);
         let history_size = input(
             SavedSearches::get(cx).history_size.to_string(),
             "",
@@ -140,6 +142,7 @@ impl OptionsEditor {
             font_family,
             font_size,
             recent_files,
+            poll_interval,
             history_size,
             search_color,
             quickfind_color,
@@ -173,6 +176,18 @@ impl OptionsEditor {
                 return Err(format!(
                     "Recent files: {recent:?} is not a number from 1 to {}",
                     kloggr_core::settings::MAX_RECENT_FILES
+                ));
+            }
+        };
+        let interval = text(&self.poll_interval);
+        o.file.poll_interval_ms = match interval.parse::<u32>() {
+            Ok(ms) if kloggr_core::options::POLL_INTERVAL_MS.contains(&ms) => ms,
+            _ => {
+                let range = kloggr_core::options::POLL_INTERVAL_MS;
+                return Err(format!(
+                    "Polling interval: {interval:?} is not a number of milliseconds from {} to {}",
+                    range.start(),
+                    range.end()
                 ));
             }
         };
@@ -346,12 +361,6 @@ impl OptionsEditor {
 
     fn render_general(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let o = &self.options;
-        let heading = |text: &'static str| {
-            div()
-                .text_sm()
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child(text)
-        };
         v_flex()
             .gap_2()
             .child(heading("Session"))
@@ -578,6 +587,31 @@ impl OptionsEditor {
                             .child(Input::new(&self.recent_files).small()),
                     ),
             )
+            .child(heading("File change monitoring"))
+            .child(self.check(
+                "native-watch",
+                "Use the system's change notifications",
+                o.file.native_watch,
+                |o, v| o.file.native_watch = v,
+                cx,
+            ))
+            .child(self.check(
+                "poll",
+                "Check files at an interval (for network shares)",
+                o.file.poll,
+                |o, v| o.file.poll = v,
+                cx,
+            ))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(div().text_sm().child("Interval (ms)"))
+                    .child(
+                        div()
+                            .w(px(96.))
+                            .child(Input::new(&self.poll_interval).small()),
+                    ),
+            )
     }
 
     fn render_shortcuts(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -753,6 +787,14 @@ pub fn open(window: &mut Window, cx: &mut App) {
     window.open_dialog(cx, move |dialog, _, _| {
         dialog.title("Options").w(px(860.)).child(editor.clone())
     });
+}
+
+/// A section title in a tab.
+fn heading(text: &'static str) -> gpui::Div {
+    div()
+        .text_sm()
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .child(text)
 }
 
 #[cfg(test)]

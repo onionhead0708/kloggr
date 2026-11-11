@@ -186,7 +186,10 @@ Shift + mouse wheel scrolls horizontally.
 
 ## Live files
 
-kloggr watches the open files. When a file grows, the new lines appear;
+kloggr watches the open files with the system's change notifications. On
+network shares and some mounts these don't arrive: turn on **Check files at
+an interval** in **Options > File** (on by default on Windows). When a file
+grows, the new lines appear;
 with auto-refresh on, they are searched too. When a file is truncated,
 rewritten or rotated, kloggr indexes it again and drops the marks and
 search results.
@@ -267,8 +270,9 @@ it.
   its colour, search history size, and quick find options.
 - **View**: font, overview bar, line numbers, and hiding ANSI colour
   sequences (`ESC[…m`) that some programs write for terminals.
-- **File**: follow on scrolling past the end, archive extraction, and the
-  number of recent files.
+- **File**: follow on scrolling past the end, archive extraction, the
+  number of recent files, and how files are watched for changes
+  (notifications, checking at an interval, or both).
 - **Shortcuts**: a primary and a secondary key for every action.
 
 Settings are kept in `settings.toml` in kloggr's configuration folder

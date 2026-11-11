@@ -73,6 +73,16 @@ pub struct Watch {
     /// Wakes the reload task; tests send on it directly.
     pub(crate) changed: Option<async_channel::Sender<()>>,
     _task: Option<Task<()>>,
+    /// Wakes it every polling interval (klogg: `FileWatcher::checkTimer_`).
+    _poll: Option<Task<()>>,
+    /// The options it was started with: native, polling, interval.
+    pub(crate) settings: (bool, bool, u32),
+}
+
+/// The file watching options (Options > File).
+pub(crate) fn watch_settings(cx: &gpui::App) -> (bool, bool, u32) {
+    let file = &Preferences::get(cx).file;
+    (file.native_watch, file.poll, file.poll_interval_ms)
 }
 
 /// The file is indexed again from the start (klogg: `FullReindexOperation`).
@@ -123,12 +133,27 @@ impl Crawler {
     /// Watches the open file for changes; replaces the previous watch.
     pub(crate) fn start_watching(&mut self, cx: &mut Context<Self>) {
         self.watch = Watch::default();
+        let settings = watch_settings(cx);
+        self.watch.settings = settings;
         let Some(log) = &self.log else { return };
         let (tx, rx) = async_channel::unbounded::<()>();
+        let (native, poll, interval_ms) = settings;
+        if poll {
+            let tx = tx.clone();
+            let interval = std::time::Duration::from_millis(u64::from(interval_ms.max(10)));
+            self.watch._poll = Some(cx.spawn(async move |_, cx| {
+                loop {
+                    cx.background_executor().timer(interval).await;
+                    if tx.try_send(()).is_err() {
+                        break;
+                    }
+                }
+            }));
+        }
         // GPUI's test scheduler can't be woken from the watcher's thread:
         // tests send changes through `watch.changed`.
         #[cfg(not(test))]
-        {
+        if native {
             let tx = tx.clone();
             match Watcher::new(log.path(), move || {
                 tx.try_send(()).ok();
@@ -138,7 +163,7 @@ impl Crawler {
             }
         }
         #[cfg(test)]
-        let _ = log;
+        let _ = (log, native);
         self.watch.changed = Some(tx);
         self.watch._task = Some(cx.spawn(async move |this, cx| {
             while rx.recv().await.is_ok() {

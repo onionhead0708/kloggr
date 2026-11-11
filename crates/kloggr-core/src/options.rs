@@ -154,7 +154,20 @@ pub struct File {
     pub extract_archives: bool,
     /// Without asking first (klogg: `archives.extractAlways`).
     pub extract_without_confirmation: bool,
+    /// Watch files with the system's change notifications (klogg:
+    /// `filewatch.useNative`).
+    pub native_watch: bool,
+    /// Also check files every [`poll_interval_ms`](Self::poll_interval_ms)
+    /// (klogg: `filewatch.usePolling`, on by default on Windows): for network
+    /// shares and mounts where notifications don't arrive.
+    pub poll: bool,
+    /// klogg: `filewatch.pollingIntervalMs`.
+    pub poll_interval_ms: u32,
 }
+
+/// Polling intervals allowed, in milliseconds (klogg: `PollIntervalMin`,
+/// `PollIntervalMax`).
+pub const POLL_INTERVAL_MS: std::ops::RangeInclusive<u32> = 10..=3_600_000;
 
 impl Default for File {
     fn default() -> Self {
@@ -163,6 +176,9 @@ impl Default for File {
             recent_files: settings::DEFAULT_RECENT_SHOWN,
             extract_archives: true,
             extract_without_confirmation: false,
+            native_watch: true,
+            poll: cfg!(windows),
+            poll_interval_ms: 2000,
         }
     }
 }

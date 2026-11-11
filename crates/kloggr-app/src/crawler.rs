@@ -378,7 +378,11 @@ impl Crawler {
             cx.observe_global::<Highlighters>(|this, cx| this.show_color_labels(cx)),
             cx.observe_global::<Preferences>(|this, cx| {
                 let hide = Preferences::get(cx).view.hide_ansi;
-                this.set_hide_ansi(hide, cx)
+                this.set_hide_ansi(hide, cx);
+                // Options > File > File change monitoring.
+                if this.log.is_some() && follow::watch_settings(cx) != this.watch.settings {
+                    this.start_watching(cx);
+                }
             }),
             cx.on_focus_in(&main_focus, window, |this, _, _| this.target = Target::Main),
             cx.subscribe_in(
@@ -1864,6 +1868,44 @@ mod tests {
 
     fn line_count(crawler: &Entity<Crawler>, cx: &mut VisualTestContext) -> usize {
         crawler.read_with(cx, |c, _| c.log().unwrap().line_count())
+    }
+
+    #[gpui::test]
+    fn polling_picks_up_changes(cx: &mut TestAppContext) {
+        let log = TempLog::new("poll", 3);
+        let (crawler, cx) = crawler(cx, &log);
+        let set = |cx: &mut VisualTestContext, poll: bool, ms: u32| {
+            cx.update(|_, cx| {
+                let mut o = Preferences::get(cx).clone();
+                o.file.poll = poll;
+                o.file.poll_interval_ms = ms;
+                Preferences::set(o, None, cx);
+            });
+            cx.run_until_parked();
+        };
+        set(cx, false, 2000);
+        append(&log, "more\n");
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(10));
+        cx.run_until_parked();
+        assert_eq!(
+            line_count(&crawler, cx),
+            3,
+            "nothing checks without polling"
+        );
+
+        // Turning polling on restarts the watch; each interval checks.
+        set(cx, true, 500);
+        assert!(crawler.read_with(cx, |c, _| c.watch.settings.1));
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(600));
+        cx.run_until_parked();
+        assert_eq!(line_count(&crawler, cx), 4);
+        append(&log, "again\n");
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(600));
+        cx.run_until_parked();
+        assert_eq!(line_count(&crawler, cx), 5);
     }
 
     #[gpui::test]
