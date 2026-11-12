@@ -172,6 +172,26 @@ Menus, window management and platform integration still missing, plus open items
 - [x] macOS: open files from Finder (*Open With*): GPUI open-URL events and document types in `Info.plist`
 - [x] Benchmarks: the 10 GB runs, also against klogg, and the short-line search speed-up (`docs/benchmarks.md`)
 
+### Phase 7: remaining klogg parity
+Gaps found by comparing kloggr 0.2.0 with klogg's shortcuts, menus, options, command line and documentation on 2026-11-11.
+- [x] File watching by polling, with an interval option (klogg `filewatch.usePolling`, `pollingIntervalMs`): network shares, sftp mounts and volumes where notifications don't arrive
+- [x] Search box autocompletion from the search history as you type (klogg `QCompleter`, case-sensitive with the search option)
+- [x] Predefined filters: Import and Export in the dialog (klogg `PredefinedFiltersDialog::importFilters`, `exportFilters`)
+- [x] File size and modification date in the status line (klogg toolbar `sizeField`, `dateField`)
+- [x] Ctrl+mouse wheel changes the font size in the log views (klogg `changeFontSize`)
+- [x] Drag tabs to reorder them (klogg `setMovable`)
+- [x] Default encoding for new files (klogg `defaultView.encodingMib`), instead of always detecting
+- [x] Command line: `-f/--follow`, `-s/--load-session`, `-n/--new-session`; like klogg, files given on the command line start a new session (or record the difference in `docs/decisions.md`)
+- [x] Log file with a verbosity level (klogg `-l/--log`, `-d/--debug`, Options > Advanced logging)
+
+Optional:
+- [ ] Translations (klogg ships Simplified and Traditional Chinese)
+- [ ] Minimize to tray (klogg `view.minimizeToTray`)
+- [ ] Font bold and antialiasing options (klogg `mainFont.bold`, `mainFont.antialiasing`)
+- [ ] Mouse wheel modifiers: klogg scrolls sideways with Alt and faster with Shift, kloggr sideways with Shift; match or record in `docs/decisions.md`
+- [ ] A command-line search tool like `klogg_grep`, which also lets the benchmarks compare search with klogg
+- [ ] Indexing files larger than memory: read-ahead hints (`madvise`) or sequential reads, where klogg wins on UTF-16 at 10 GiB; tab widths while indexing (the `long` benchmark row)
+
 ## Conventions
 
 - Edition 2024. `cargo fmt` and clippy must be clean with `-D warnings`.

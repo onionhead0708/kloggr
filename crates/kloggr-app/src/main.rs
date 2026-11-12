@@ -36,10 +36,10 @@ use workspace::{Quit, Workspace};
 /// desktops show the launcher's icon for kloggr's windows.
 pub const APP_ID: &str = "kloggr";
 
+/// The log file of this run, if one is written (shown in Help > About).
+pub(crate) static LOG_FILE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
 fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
     let args = match Args::parse(std::env::args_os().skip(1)) {
         Ok(args) => args,
         Err(message) => {
@@ -47,6 +47,18 @@ fn main() {
             return;
         }
     };
+    let options =
+        kloggr_core::settings::config_dir().map(|d| kloggr_core::options::Options::load(&d));
+    if let Some(path) = init_logging(&args, options.as_ref()) {
+        LOG_FILE.set(path).ok();
+    }
+    tracing::info!(
+        "kloggr {} on {}-{}, files {:?}",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        args.files
+    );
     // klogg: a second kloggr hands its files to the first, unless
     // -m/--multi.
     let single = !args.multi;
@@ -60,6 +72,11 @@ fn main() {
     if let Some(dir) = kloggr_core::settings::config_dir() {
         kloggr_core::crash::install_hook(dir);
     }
+    let cli = Args {
+        files: Vec::new(),
+        ..args.clone()
+    };
+    let follow = cli.follow;
     let paths = args.files;
 
     // macOS: files opened from Finder (Open With, double-click) arrive as
@@ -81,9 +98,11 @@ fn main() {
         preferences::Preferences::apply_style(None, cx);
         highlighters::Highlighters::init(config_dir.clone(), cx);
         saved_searches::SavedSearches::init(config_dir.clone(), cx);
-        // klogg: the last session's windows, then the file given in
-        // the first one.
-        let mut windows = if preferences::Preferences::get(cx).general.load_last_session {
+        // klogg: the last session's windows, then the files given in
+        // the first one. Files given start a new session (unless -s).
+        let load_last = preferences::Preferences::get(cx).general.load_last_session;
+        let reopen = cli.reopen_session(!paths.is_empty(), load_last);
+        let mut windows = if reopen {
             config_dir
                 .as_deref()
                 .map(|dir| kloggr_core::settings::Session::load(dir).all_windows())
@@ -98,7 +117,7 @@ fn main() {
         let mut first = None;
         for files in windows {
             let paths = std::mem::take(&mut paths);
-            let handle = open_main_window(config_dir.clone(), Some(files), paths, cx);
+            let handle = open_main_window(config_dir.clone(), Some(files), paths, follow, cx);
             first = first.or(handle);
         }
         if single && let Some(dir) = config_dir.clone() {
@@ -145,11 +164,21 @@ fn main() {
 }
 
 /// The command line (klogg: `CliParameters`).
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 struct Args {
     files: Vec<PathBuf>,
     /// -m, --multi: don't hand the files to a running kloggr.
     multi: bool,
+    /// -f, --follow: follow the files given.
+    follow: bool,
+    /// -s, --load-session: reopen the last session even with files given.
+    load_session: bool,
+    /// -n, --new-session: don't reopen the last session.
+    new_session: bool,
+    /// -l, --log: write a log file.
+    log: bool,
+    /// -d, --debug, once per level above warnings.
+    debug: usize,
 }
 
 impl Args {
@@ -158,35 +187,123 @@ impl Args {
 A fast log viewer for very large files.
 
 Options:
-  -m, --multi    allow several kloggr to run, instead of opening the files
-                 in the one already running
-  -h, --help     print this help and exit
-  -v, --version  print the version and exit";
+  -f, --follow       follow the files given
+  -s, --load-session reopen the last session (the default without files)
+  -n, --new-session  don't reopen the last session (the default with files)
+  -l, --log          write a log file in the temporary folder
+  -d, --debug        log more: -d info, -dd debug, -ddd trace
+  -m, --multi        allow several kloggr to run, instead of opening the files
+                     in the one already running
+  -h, --help         print this help and exit
+  -v, --version      print the version and exit";
 
-    /// The arguments, or the text to print and exit with.
+    /// The arguments, or the text to print and exit with. Short options
+    /// can be combined (`-fm`).
     fn parse(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Self, String> {
         let mut out = Self::default();
         let mut only_files = false;
         for arg in args {
-            match arg.to_str() {
-                _ if only_files => out.files.push(arg.into()),
-                Some("--") => only_files = true,
-                Some("-m" | "--multi") => out.multi = true,
-                Some("-h" | "--help") => return Err(Self::HELP.to_owned()),
-                Some("-v" | "--version") => {
-                    return Err(format!("kloggr {}", env!("CARGO_PKG_VERSION")));
+            let text = arg.to_str();
+            let flags: Vec<String> = match text {
+                _ if only_files => {
+                    out.files.push(arg.into());
+                    continue;
+                }
+                Some("--") => {
+                    only_files = true;
+                    continue;
                 }
                 // Older macOS passes a process serial number to apps
                 // started from Finder.
-                Some(a) if a.starts_with("-psn_") => {}
+                Some(a) if a.starts_with("-psn_") => continue,
+                Some(a) if a.starts_with("--") => vec![a.to_owned()],
                 Some(a) if a.starts_with('-') && a.len() > 1 => {
-                    return Err(format!("Unknown option {a}\n\n{}", Self::HELP));
+                    a[1..].chars().map(|c| format!("-{c}")).collect()
                 }
-                _ => out.files.push(arg.into()),
+                _ => {
+                    out.files.push(arg.into());
+                    continue;
+                }
+            };
+            for flag in flags {
+                match flag.as_str() {
+                    "-m" | "--multi" => out.multi = true,
+                    "-f" | "--follow" => out.follow = true,
+                    "-s" | "--load-session" => out.load_session = true,
+                    "-n" | "--new-session" => out.new_session = true,
+                    "-l" | "--log" => out.log = true,
+                    "-d" | "--debug" => out.debug += 1,
+                    "-h" | "--help" => return Err(Self::HELP.to_owned()),
+                    "-v" | "--version" => {
+                        return Err(format!("kloggr {}", env!("CARGO_PKG_VERSION")));
+                    }
+                    other => return Err(format!("Unknown option {other}\n\n{}", Self::HELP)),
+                }
             }
         }
         Ok(out)
     }
+
+    /// Whether to reopen the last session (klogg: `load_session ||
+    /// (filenames.empty() && !new_session && loadLastSession)`).
+    fn reopen_session(&self, files_given: bool, load_last_session: bool) -> bool {
+        self.load_session || (!files_given && !self.new_session && load_last_session)
+    }
+}
+
+/// Sets up the log (klogg: `enableLogging`, `enableFileLogging`): errors
+/// on the terminal, or more with `-d`; with `-l` or Options > General > "Write
+/// a log file", also a file in the temporary folder at the higher of the two
+/// levels. Only kloggr's own messages go below warnings. `RUST_LOG`
+/// overrides both. Returns the file's path.
+fn init_logging(args: &Args, options: Option<&kloggr_core::options::Options>) -> Option<PathBuf> {
+    use kloggr_core::options::LogLevel;
+    use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
+
+    let env = std::env::var("RUST_LOG").ok().filter(|e| !e.is_empty());
+    let filter = |level: Option<LogLevel>| match (&env, level) {
+        (Some(directives), _) => EnvFilter::new(directives),
+        (None, Some(level)) => EnvFilter::new(format!(
+            "warn,kloggr={0},kloggr_core={0}",
+            level.directive()
+        )),
+        (None, None) => EnvFilter::new("error"),
+    };
+    let cli = (args.debug > 0).then(|| LogLevel::from_debug_flags(args.debug));
+    let terminal = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_filter(filter(cli));
+    let file_level = [
+        args.log.then(|| cli.unwrap_or(LogLevel::Warning)),
+        options
+            .filter(|o| o.general.log_file)
+            .map(|o| o.general.log_level),
+    ]
+    .into_iter()
+    .flatten()
+    .max();
+    let mut path = None;
+    let file = file_level.and_then(|level| {
+        let name = format!(
+            "kloggr_{}_{}.log",
+            chrono::Local::now().format("%Y-%m-%d_%H-%M-%S"),
+            std::process::id()
+        );
+        let file_path = std::env::temp_dir().join(name);
+        let file = std::fs::File::create(&file_path).ok()?;
+        path = Some(file_path);
+        Some(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(std::sync::Mutex::new(file))
+                .with_filter(filter(Some(level))),
+        )
+    });
+    tracing_subscriber::registry()
+        .with(terminal)
+        .with(file)
+        .init();
+    path
 }
 
 /// Files sent by later launches open in the last active window (klogg:
@@ -229,6 +346,7 @@ pub(crate) fn open_main_window(
     config_dir: Option<PathBuf>,
     files: Option<kloggr_core::settings::WindowFiles>,
     paths: Vec<PathBuf>,
+    follow: bool,
     cx: &mut App,
 ) -> Option<gpui::AnyWindowHandle> {
     let options = WindowOptions {
@@ -246,7 +364,7 @@ pub(crate) fn open_main_window(
                 workspace.restore(files, window, cx);
             }
             for path in paths {
-                workspace.open(path, window, cx);
+                workspace.open_following(path, follow, window, cx);
             }
             workspace
         });
@@ -284,11 +402,13 @@ fn window_bounds(g: kloggr_core::settings::WindowGeometry, cx: &App) -> Option<g
     })
 }
 
-/// Window options shared by every window. Linux draws its own title bar
-/// (GNOME on Wayland has no server decorations); Windows and macOS keep the
-/// native one.
+/// Whether windows draw their own title bar: only on Linux, where GNOME on
+/// Wayland has no server decorations. Windows and macOS keep the native one.
+pub(crate) const OWN_TITLE_BAR: bool = cfg!(target_os = "linux");
+
+/// Window options shared by every window (see [`OWN_TITLE_BAR`]).
 pub(crate) fn window_base_options() -> WindowOptions {
-    if cfg!(target_os = "linux") {
+    if OWN_TITLE_BAR {
         gpui_component::TitleBar::window_options()
     } else {
         WindowOptions::default()
@@ -352,7 +472,26 @@ mod tests {
             Ok(Args {
                 files: vec!["a.log".into(), "/var/log/b.log".into()],
                 multi: true,
+                ..Args::default()
             })
+        );
+        // Combined short options, and the session rule (klogg's).
+        let args = parse(&["-fn", "--load-session", "x.log"]).unwrap();
+        assert!(args.follow && args.new_session && args.load_session && !args.multi);
+        assert!(args.reopen_session(true, false), "-s reopens it anyway");
+        let none = Args::default();
+        assert!(none.reopen_session(false, true));
+        assert!(
+            !none.reopen_session(true, true),
+            "files start a new session"
+        );
+        assert!(!none.reopen_session(false, false), "the option is off");
+        let n = parse(&["-n"]).unwrap();
+        assert!(!n.reopen_session(false, true));
+        assert!(
+            parse(&["-fx"])
+                .unwrap_err()
+                .starts_with("Unknown option -x")
         );
         assert_eq!(parse(&["--", "-m"]).unwrap().files, [PathBuf::from("-m")]);
         assert_eq!(parse(&["-"]).unwrap().files, [PathBuf::from("-")]);
@@ -360,5 +499,9 @@ mod tests {
         assert!(parse(&["--help"]).unwrap_err().starts_with("Usage: kloggr"));
         assert!(parse(&["-v"]).unwrap_err().starts_with("kloggr 0."));
         assert!(parse(&["-x"]).unwrap_err().starts_with("Unknown option -x"));
+        // klogg: -l writes a file, each -d is one level more than warnings.
+        let args = parse(&["-l", "-dd"]).unwrap();
+        assert!(args.log);
+        assert_eq!(args.debug, 2);
     }
 }

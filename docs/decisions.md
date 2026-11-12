@@ -8,6 +8,26 @@ Newest first. Each entry gives the date, what klogg does, what kloggr does, and 
 
 ---
 
+## 2026-11-11: No empty bar above the tabs on macOS
+
+**klogg:** Qt's native title bar on every platform, with the menu bar under it on Windows and Linux, and in the screen's menu bar on macOS.
+
+**kloggr:** the same on Windows and macOS. Linux draws its own title bar holding the menus (GNOME on Wayland has no server decorations). Before this, macOS drew an empty row under the native title bar, kept for a menu bar that only the other systems have. The scratchpad window also drew a second title bar under the native one on Windows and macOS.
+
+**Why:** a fix, not a difference: the empty row and the repeated title looked broken.
+
+**Code:** `OWN_TITLE_BAR` in `main.rs`, `Workspace::render`.
+
+## 2026-11-11: Log file: kloggr's own messages, levels by name, set at startup
+
+**klogg:** `-l/--log` writes `klogg_<date>_<pid>.log` in the temporary folder; `-d` adds a level each time, from warnings; Options > Advanced "Enable logging" with a verbosity number (4 = info) also writes the file and logs to the console.
+
+**kloggr:** the same flags and file (`kloggr_<date>_<pid>.log`), and Options > General > Logging with Error, Warning, Info, Debug and Trace (default Info). The file gets the higher of the command line's and the option's levels; the terminal shows errors only unless `-d` is given. Below warnings only kloggr's own messages are written (libraries such as the graphics stack stay at warnings), and `RUST_LOG` overrides everything. The option applies from the next start. Help > About shows the file's path.
+
+**Why:** at debug level GPUI and wgpu write thousands of lines a second, which would bury kloggr's. Changing the subscriber of a running process isn't worth it for an option used to report a problem.
+
+**Code:** `init_logging` in `main.rs`, `kloggr_core::options::LogLevel`.
+
 ## 2026-11-11: macOS Open With also offers kloggr for compressed logs
 
 **klogg:** its `Info.plist` declares `public.text` as a Viewer document type, so Finder offers klogg in Open With for text files; files arrive through `QFileOpenEvent`.
@@ -38,13 +58,13 @@ Newest first. Each entry gives the date, what klogg does, what kloggr does, and 
 
 **Code:** `geometry_of` in `workspace.rs`, `window_bounds` in `main.rs`, `WindowGeometry`.
 
-## 2026-11-11: Single instance over loopback TCP with a token; fewer command-line options
+## 2026-11-11: Single instance over loopback TCP with a token
 
 **klogg:** `SingleApplication` (a local socket named after the user) makes a second launch send its files to the first, which opens them in its active window; `-m/--multi` allows several instances. The command line also has `-s/--load-session`, `-n/--new-session`, `-l/--log`, `-f/--follow`, `-d/--debug` and window size options.
 
-**kloggr:** the first kloggr listens on a loopback TCP port and writes the port and a random 128-bit token to `instance` in the config folder (mode 0600 on Unix). A later launch sends the token and its files (made absolute) and exits; the files open in the last active main window, which comes to the front. A wrong token is ignored; a stale file from a crash just fails to connect, and the new kloggr takes over. The command line has `-m/--multi`, `-h/--help`, `-v/--version` and files.
+**kloggr:** the first kloggr listens on a loopback TCP port and writes the port and a random 128-bit token to `instance` in the config folder (mode 0600 on Unix). A later launch sends the token and its files (made absolute) and exits; the files open in the last active main window, which comes to the front. A wrong token is ignored; a stale file from a crash just fails to connect, and the new kloggr takes over. The command line has klogg's `-m/--multi`, `-f/--follow`, `-s/--load-session`, `-n/--new-session`, `-h/--help`, `-v/--version` and files, with klogg's rule that files given start a new session (2026-11-11, Phase 7); `-l/--log` and `-d/--debug` are covered by the log file entry.
 
-**Why:** std has no local sockets on Windows, and loopback TCP with a token works the same on every platform without a new dependency; the token keeps other local users from making kloggr open files. The other klogg options can come back when someone needs them (`RUST_LOG` already replaces `--debug`).
+**Why:** std has no local sockets on Windows, and loopback TCP with a token works the same on every platform without a new dependency; the token keeps other local users from making kloggr open files.
 
 **Code:** `kloggr_core::instance`, `Args` and `receive_files` in `main.rs`, `workspace::open_from_another_launch`.
 

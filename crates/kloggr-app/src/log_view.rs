@@ -455,6 +455,8 @@ pub struct LogView {
     grab: Option<MouseGrab>,
     /// Sub-column horizontal wheel motion not applied yet.
     hscroll_carry: Pixels,
+    /// Ctrl+wheel scrolled, in lines, until it makes a font size step.
+    zoom_carry: f32,
     /// Quick-find pattern: its occurrences on visible rows are highlighted
     /// (klogg: `QuickFindPattern`).
     quick_find: Option<Arc<Matcher>>,
@@ -512,6 +514,7 @@ impl LogView {
             layout: None,
             grab: None,
             hscroll_carry: px(0.),
+            zoom_carry: 0.,
             quick_find: None,
             search_highlight: None,
             search_limits: 0..usize::MAX,
@@ -1508,9 +1511,27 @@ impl LogView {
         cx.notify();
     }
 
-    fn on_scroll(&mut self, event: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_scroll(&mut self, event: &ScrollWheelEvent, window: &mut Window, cx: &mut Context<Self>) {
         let Some(layout) = self.layout else { return };
         let delta = event.delta.pixel_delta(layout.line_height);
+        // klogg: Ctrl+wheel (Cmd on macOS) changes the font size, one step
+        // per wheel notch (which X11 reports as 3 lines); a trackpad's small
+        // scrolls add up to a line first.
+        if event.modifiers.secondary() {
+            self.zoom_carry += match event.delta {
+                gpui::ScrollDelta::Lines(lines) if lines.y > 0. => 1.,
+                gpui::ScrollDelta::Lines(lines) if lines.y < 0. => -1.,
+                gpui::ScrollDelta::Lines(_) => 0.,
+                gpui::ScrollDelta::Pixels(_) => delta.y / layout.line_height,
+            };
+            let steps = self.zoom_carry.trunc();
+            if steps != 0. {
+                self.zoom_carry -= steps;
+                change_font_size(steps, window, cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
         let (dx, dy) = if event.modifiers.shift && delta.x == px(0.) {
             (delta.y, px(0.))
         } else {
@@ -1535,6 +1556,21 @@ impl LogView {
             self.viewport.scroll_cols(cols as isize);
         }
         cx.notify();
+    }
+}
+
+/// Changes the log views' font size by `steps` points (klogg:
+/// `CrawlerWidget::changeFontSize`), within the options' 4 to 72.
+fn change_font_size(steps: f32, window: &mut Window, cx: &mut App) {
+    let mut options = Preferences::get(cx).clone();
+    let current = options
+        .view
+        .font_size
+        .unwrap_or_else(|| f32::from(cx.theme().mono_font_size));
+    let size = (current.round() + steps).clamp(4., 72.);
+    if size != current {
+        options.view.font_size = Some(size);
+        Preferences::set(options, Some(window), cx);
     }
 }
 
@@ -3036,6 +3072,41 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(viewport(&view, cx).top(), 1.5);
+
+        // Ctrl (Cmd) + wheel changes the font size instead of scrolling.
+        let size =
+            |cx: &mut VisualTestContext| cx.update(|_, cx| f32::from(cx.theme().mono_font_size));
+        let before = size(cx);
+        let zoom = |cx: &mut VisualTestContext, lines: f32| {
+            cx.simulate_event(ScrollWheelEvent {
+                position: at,
+                delta: ScrollDelta::Lines(point(0., lines)),
+                modifiers: gpui::Modifiers::secondary_key(),
+                ..Default::default()
+            })
+        };
+        // A wheel notch is one step, however many lines it scrolls.
+        zoom(cx, 3.);
+        assert_eq!(size(cx), before + 1.);
+        assert_eq!(viewport(&view, cx).top(), 1.5, "not scrolled");
+        zoom(cx, -3.);
+        zoom(cx, -3.);
+        zoom(cx, -3.);
+        assert_eq!(size(cx), before - 2.);
+        // A trackpad's pixels add up to a line per step.
+        let pixels = |cx: &mut VisualTestContext, lines: f32| {
+            cx.simulate_event(ScrollWheelEvent {
+                position: at,
+                delta: ScrollDelta::Pixels(point(px(0.), l.line_height * lines)),
+                modifiers: gpui::Modifiers::secondary_key(),
+                ..Default::default()
+            })
+        };
+        pixels(cx, 0.6);
+        assert_eq!(size(cx), before - 2., "not a line yet");
+        pixels(cx, 0.6);
+        assert_eq!(size(cx), before - 1.);
+        cx.update(|_, cx| assert_eq!(Preferences::get(cx).view.font_size, Some(before - 1.)));
 
         // Drag the vertical thumb to the bottom of its track.
         cx.run_until_parked();

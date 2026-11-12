@@ -2,12 +2,12 @@
 //! `PredefinedFiltersCollection`, `PredefinedFiltersDialog`), shared by
 //! every tab and saved in `searches.toml`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use gpui::{
     App, AppContext, Context, Entity, EventEmitter, Focusable, Global, InteractiveElement,
-    IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window,
-    div, px,
+    IntoElement, ParentElement, PathPromptOptions, Render, SharedString,
+    StatefulInteractiveElement, Styled, Window, div, px,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::checkbox::Checkbox;
@@ -156,9 +156,12 @@ struct FilterRow {
 }
 
 /// klogg: `PredefinedFiltersDialog` (Tools > Predefined filters…): a table
-/// of name, pattern and "regex"; add, remove, move up and down.
+/// of name, pattern and "regex"; add, remove, move up and down, import and
+/// export klogg `.conf` files.
 pub struct FiltersEditor {
     rows: Vec<FilterRow>,
+    /// The result of the last import or export.
+    message: Option<String>,
 }
 
 impl EventEmitter<Close> for FiltersEditor {}
@@ -166,7 +169,10 @@ impl EventEmitter<Close> for FiltersEditor {}
 impl FiltersEditor {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let filters = SavedSearches::get(cx).filters;
-        let mut this = Self { rows: Vec::new() };
+        let mut this = Self {
+            rows: Vec::new(),
+            message: None,
+        };
         for f in filters {
             this.push(f, window, cx);
         }
@@ -214,6 +220,75 @@ impl FiltersEditor {
             window,
             cx,
         );
+        cx.notify();
+    }
+
+    fn import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Import".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = paths.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            this.update_in(cx, |this, window, cx| this.import_file(&path, window, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    /// Replaces the rows with the filters of a klogg `.conf` file, as klogg
+    /// does (`importFilters`); OK keeps them.
+    pub fn import_file(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        let filters = std::fs::read_to_string(path)
+            .map_err(|e| e.to_string())
+            .and_then(|text| {
+                kloggr_core::searches::import_klogg_filters(&text)
+                    .ok_or_else(|| "no predefined filters in it".to_owned())
+            });
+        self.message = Some(match filters {
+            Ok(filters) => {
+                let n = filters.len();
+                self.rows.clear();
+                for f in filters {
+                    self.push(f, window, cx);
+                }
+                format!("Imported {n} filter(s) from {}", path.display())
+            }
+            Err(e) => format!("{}: {e}", path.display()),
+        });
+        cx.notify();
+    }
+
+    fn export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dir = std::env::home_dir().unwrap_or_default();
+        let path = cx.prompt_for_new_path(&dir, Some("filters.conf"));
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(path))) = path.await else {
+                return;
+            };
+            this.update(cx, |this, cx| this.export_to(path, cx)).ok();
+        })
+        .detach();
+    }
+
+    /// Writes the rows as a klogg `.conf` file (klogg adds the extension if
+    /// missing).
+    pub fn export_to(&mut self, mut path: PathBuf, cx: &mut Context<Self>) {
+        if path.extension().is_none_or(|e| e != "conf") {
+            path.as_mut_os_string().push(".conf");
+        }
+        let text = kloggr_core::searches::export_klogg_filters(&self.filters(cx));
+        self.message = Some(match std::fs::write(&path, text) {
+            Ok(()) => format!("Exported to {}", path.display()),
+            Err(e) => format!("{}: {e}", path.display()),
+        });
         cx.notify();
     }
 
@@ -309,7 +384,26 @@ impl Render for FiltersEditor {
                             .small()
                             .on_click(cx.listener(|this, _, window, cx| this.add(window, cx))),
                     )
-                    .child(div().flex_1())
+                    .child(
+                        Button::new("filter-import")
+                            .label("Import…")
+                            .small()
+                            .on_click(cx.listener(|this, _, window, cx| this.import(window, cx))),
+                    )
+                    .child(
+                        Button::new("filter-export")
+                            .label("Export…")
+                            .small()
+                            .on_click(cx.listener(|this, _, window, cx| this.export(window, cx))),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_sm()
+                            .text_color(muted)
+                            .truncate()
+                            .children(self.message.clone()),
+                    )
                     .child(
                         Button::new("filters-cancel")
                             .label("Cancel")
@@ -344,4 +438,64 @@ pub fn edit_filters(window: &mut Window, cx: &mut App) {
             .w(px(760.))
             .child(editor.clone())
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{TestAppContext, VisualTestContext};
+
+    #[gpui::test]
+    fn filters_import_and_export(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            SavedSearches::init(None, cx);
+            SavedSearches::update(cx, |s| {
+                s.filters = vec![PredefinedFilter {
+                    name: "Errors".into(),
+                    pattern: "ERROR|FATAL".into(),
+                    regex: true,
+                }]
+            });
+        });
+        let (editor, cx): (Entity<FiltersEditor>, &mut VisualTestContext) =
+            cx.add_window_view(FiltersEditor::new);
+        let dir = std::env::temp_dir().join(format!("kloggr-filters-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Export adds klogg's extension.
+        editor.update(cx, |e, cx| e.export_to(dir.join("mine"), cx));
+        let exported = dir.join("mine.conf");
+        let text = std::fs::read_to_string(&exported).unwrap();
+        assert!(text.starts_with("[PredefinedFiltersCollection]"));
+
+        // Import replaces the rows (klogg does too); OK would keep them.
+        let other = dir.join("other.conf");
+        std::fs::write(
+            &other,
+            "[PredefinedFiltersCollection]\nversion=1\nfilters\\1\\name=Warn\n\
+             filters\\1\\filter=WARN\nfilters\\1\\regex=false\nfilters\\size=1\n",
+        )
+        .unwrap();
+        editor.update_in(cx, |e, window, cx| e.import_file(&other, window, cx));
+        let filters = editor.read_with(cx, |e, cx| e.filters(cx));
+        assert_eq!(
+            filters,
+            [PredefinedFilter {
+                name: "Warn".into(),
+                pattern: "WARN".into(),
+                regex: false
+            }]
+        );
+        assert!(cx.update(|_, cx| SavedSearches::get(cx).filters[0].name == "Errors"));
+
+        // A file without filters leaves the rows and says why.
+        editor.update_in(cx, |e, window, cx| {
+            e.import_file(&exported.with_extension("txt"), window, cx)
+        });
+        assert_eq!(editor.read_with(cx, |e, cx| e.filters(cx)).len(), 1);
+        let message = editor.read_with(cx, |e, _| e.message.clone().unwrap());
+        assert!(message.contains("mine.txt"), "{message}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

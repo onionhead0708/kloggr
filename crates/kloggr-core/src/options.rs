@@ -38,6 +38,11 @@ pub struct General {
     /// Ask GitHub for a newer release once a week (klogg:
     /// `versionchecker.enabled`, also on by default).
     pub check_for_updates: bool,
+    /// Write a log file, from the next start (klogg:
+    /// `logging.enableLogging`).
+    pub log_file: bool,
+    /// How much it says (klogg: `logging.verbosity`, 4 = info).
+    pub log_level: LogLevel,
 }
 
 impl Default for General {
@@ -46,6 +51,56 @@ impl Default for General {
             load_last_session: true,
             follow_on_load: false,
             check_for_updates: true,
+            log_file: false,
+            log_level: LogLevel::Info,
+        }
+    }
+}
+
+/// How much the log says (klogg: `LogLevel`, without None and Fatal).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    Error,
+    Warning,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl LogLevel {
+    pub const ALL: [Self; 5] = [
+        Self::Error,
+        Self::Warning,
+        Self::Info,
+        Self::Debug,
+        Self::Trace,
+    ];
+
+    /// The level after `steps` more `-d` options, from Warning (klogg:
+    /// `log_level = 3` plus one per `-d`).
+    pub fn from_debug_flags(steps: usize) -> Self {
+        Self::ALL[(1 + steps).min(Self::ALL.len() - 1)]
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Error => "Error",
+            Self::Warning => "Warning",
+            Self::Info => "Info",
+            Self::Debug => "Debug",
+            Self::Trace => "Trace",
+        }
+    }
+
+    /// The `tracing` / `RUST_LOG` name.
+    pub fn directive(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warning => "warn",
+            Self::Info => "info",
+            Self::Debug => "debug",
+            Self::Trace => "trace",
         }
     }
 }
@@ -154,7 +209,23 @@ pub struct File {
     pub extract_archives: bool,
     /// Without asking first (klogg: `archives.extractAlways`).
     pub extract_without_confirmation: bool,
+    /// Watch files with the system's change notifications (klogg:
+    /// `filewatch.useNative`).
+    pub native_watch: bool,
+    /// Also check files every [`poll_interval_ms`](Self::poll_interval_ms)
+    /// (klogg: `filewatch.usePolling`, on by default on Windows): for network
+    /// shares and mounts where notifications don't arrive.
+    pub poll: bool,
+    /// klogg: `filewatch.pollingIntervalMs`.
+    pub poll_interval_ms: u32,
+    /// The encoding of files opened for the first time, by name; `None`:
+    /// detected (klogg: `defaultView.encodingMib`, "Auto").
+    pub default_encoding: Option<String>,
 }
+
+/// Polling intervals allowed, in milliseconds (klogg: `PollIntervalMin`,
+/// `PollIntervalMax`).
+pub const POLL_INTERVAL_MS: std::ops::RangeInclusive<u32> = 10..=3_600_000;
 
 impl Default for File {
     fn default() -> Self {
@@ -163,6 +234,10 @@ impl Default for File {
             recent_files: settings::DEFAULT_RECENT_SHOWN,
             extract_archives: true,
             extract_without_confirmation: false,
+            native_watch: true,
+            poll: cfg!(windows),
+            poll_interval_ms: 2000,
+            default_encoding: None,
         }
     }
 }
@@ -205,6 +280,7 @@ impl Options {
             boolean: s.boolean,
             auto_refresh: s.auto_refresh,
             follow: self.general.follow_on_load,
+            encoding: self.file.default_encoding.clone(),
             ..FileContext::default()
         }
     }
@@ -241,6 +317,21 @@ impl Options {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn log_levels() {
+        assert_eq!(LogLevel::from_debug_flags(0), LogLevel::Warning);
+        assert_eq!(LogLevel::from_debug_flags(1), LogLevel::Info);
+        assert_eq!(LogLevel::from_debug_flags(2), LogLevel::Debug);
+        assert_eq!(LogLevel::from_debug_flags(9), LogLevel::Trace);
+        assert!(LogLevel::Debug > LogLevel::Info);
+        let mut o = Options::default();
+        o.general.log_file = true;
+        o.general.log_level = LogLevel::Debug;
+        let text = toml::to_string(&o).unwrap();
+        assert!(text.contains("log_level = \"debug\""), "{text}");
+        assert_eq!(toml::from_str::<Options>(&text).unwrap().general, o.general);
+    }
 
     #[test]
     fn defaults_follow_klogg() {

@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     Action, App, AppContext, ClipboardItem, Context, Entity, EntityId, ExternalPaths, FocusHandle,
     Focusable, Global, InteractiveElement, IntoElement, Menu, MenuItem, MouseButton, ParentElement,
@@ -327,6 +328,29 @@ enum IndexEvent {
     Done(Result<Arc<LogFile>, OpenError>),
 }
 
+/// A tab being dragged to another place in the tab bar.
+#[derive(Clone)]
+struct DraggedTab {
+    index: usize,
+    label: SharedString,
+}
+
+impl Render for DraggedTab {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        div()
+            .px_2()
+            .py_1()
+            .text_sm()
+            .bg(theme.background)
+            .border_1()
+            .border_color(theme.border)
+            .rounded_md()
+            .shadow_md()
+            .child(self.label.clone())
+    }
+}
+
 /// One open file (klogg: a `CrawlerWidget` in `TabbedCrawlerWidget`).
 struct Tab {
     path: PathBuf,
@@ -377,7 +401,7 @@ pub fn open_from_another_launch(files: Vec<PathBuf>, config_dir: Option<PathBuf>
         .and_then(|w| w.last_active.as_ref()?.upgrade())
         .or_else(|| MainWindows::live(cx).into_iter().next());
     let Some(ws) = target else {
-        crate::open_main_window(config_dir, None, files, cx);
+        crate::open_main_window(config_dir, None, files, false, cx);
         return;
     };
     let handle = ws.read(cx).window;
@@ -747,6 +771,26 @@ impl Workspace {
                 });
             });
         }
+    }
+
+    /// Opens `path`, and follows it if `follow` (the command line's `-f`,
+    /// klogg: `loadInitialFile` with `followFile`).
+    pub fn open_following(
+        &mut self,
+        path: PathBuf,
+        follow: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let options = &Preferences::get(cx).file;
+        let archive = options.extract_archives && archive::kind(&path).is_ok_and(|k| !k.is_plain());
+        if !follow || archive {
+            self.open(path, window, cx);
+            return;
+        }
+        let mut context = Preferences::get(cx).new_file_context();
+        context.follow = true;
+        self.open_with(path, Some(context), window, cx);
     }
 
     /// Where files taken out of archives go; removed when kloggr quits
@@ -1656,12 +1700,39 @@ impl Workspace {
         });
     }
 
+    /// Moves tab `from` to `to` (dragged in the tab bar); the current tab
+    /// stays current.
+    pub(crate) fn move_tab(
+        &mut self,
+        from: usize,
+        to: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let n = self.tabs.len();
+        if from == to || from >= n || to >= n {
+            return;
+        }
+        let current = self.tabs[self.active].crawler.clone();
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+        self.active = self
+            .tabs
+            .iter()
+            .position(|t| t.crawler == current)
+            .unwrap_or(0);
+        self.save_open_files(cx);
+        self.update_menus(cx);
+        self.update_title(window);
+        cx.notify();
+    }
+
     /// The tab bar, shown with two tabs or more (klogg hides it for one).
     fn render_tabs(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         if self.tabs.len() < 2 {
             return None;
         }
-        let accent = cx.theme().blue;
+        let (accent, drop_bg) = (cx.theme().blue, cx.theme().drop_target);
         let last = self.tabs.len() - 1;
         let tabs = self.tabs.iter().enumerate().map(|(index, tab)| {
             let label = div()
@@ -1699,8 +1770,18 @@ impl Workspace {
                         .menu("Rename tab", Box::new(RenameTab { index }))
                         .menu("Reset tab name", Box::new(ResetTabName { index }))
                 });
+            let dragged = DraggedTab {
+                index,
+                label: self.tab_label(tab).into(),
+            };
             GuiTab::new()
                 .child(label)
+                // klogg: tabs can be moved (`setMovable`).
+                .on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone()))
+                .drag_over::<DraggedTab>(move |style, _, _, _| style.bg(drop_bg))
+                .on_drop(cx.listener(move |this, dragged: &DraggedTab, window, cx| {
+                    this.move_tab(dragged.index, index, window, cx)
+                }))
                 .suffix(
                     Button::new(("tab-close", index))
                         .label("×")
@@ -1856,7 +1937,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &NewWindow, _, cx| {
                 let config_dir = this.config_dir.clone();
                 cx.defer(move |cx| {
-                    crate::open_main_window(config_dir, None, Vec::new(), cx);
+                    crate::open_main_window(config_dir, None, Vec::new(), false, cx);
                 });
             }))
             .on_action(
@@ -1902,26 +1983,22 @@ impl Render for Workspace {
             )
             .on_drop(cx.listener(Self::drop_paths))
             .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(drop_bg))
-            .child(if cfg!(target_os = "linux") {
-                // GNOME (Wayland) draws no decorations for GPUI windows: the
-                // title bar with the window controls is ours.
-                TitleBar::new()
-                    .child(
-                        div()
-                            .flex_1()
-                            .flex()
-                            .items_center()
-                            .children(self.menu_bar.clone()),
-                    )
-                    .into_any_element()
-            } else {
-                div()
-                    .h(px(32.))
-                    .px_1()
-                    .border_b_1()
-                    .border_color(border)
-                    .children(self.menu_bar.clone())
-                    .into_any_element()
+            // Linux: our title bar, with the menus and the window controls.
+            // Windows: the native title bar, then the menus. macOS: the menus
+            // are in the screen's menu bar, so nothing above the tabs.
+            .map(|this| match self.menu_bar.clone() {
+                Some(menus) if crate::OWN_TITLE_BAR => this.child(
+                    TitleBar::new().child(div().flex_1().flex().items_center().child(menus)),
+                ),
+                Some(menus) => this.child(
+                    div()
+                        .h(px(32.))
+                        .px_1()
+                        .border_b_1()
+                        .border_color(border)
+                        .child(menus),
+                ),
+                None => this,
             })
             .children(self.render_tabs(cx))
             .child(div().flex_1().min_h_0().child(content))
@@ -1957,10 +2034,26 @@ fn status_of(path: &Path, crawler: &Crawler) -> String {
                 "detected as"
             };
             let lines = log.line_count();
-            format!("{shown} — {lines} lines — {how} {}", log.encoding())
+            // klogg's toolbar: size, modification date, encoding, lines.
+            let size = archives::human_size(log.byte_len() as u64);
+            let modified = log
+                .modified()
+                .map(|t| format!(" — modified {}", local_time(t)))
+                .unwrap_or_default();
+            format!(
+                "{shown} — {size}{modified} — {lines} lines — {how} {}",
+                log.encoding()
+            )
         }
         (None, None) => format!("{shown} — indexing…"),
     }
+}
+
+/// "2026-11-11 14:02:05", in the local time zone.
+fn local_time(time: std::time::SystemTime) -> String {
+    chrono::DateTime::<chrono::Local>::from(time)
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string()
 }
 
 fn file_name(path: &Path) -> String {
@@ -2733,6 +2826,76 @@ mod tests {
     }
 
     #[gpui::test]
+    fn moving_tabs(cx: &mut TestAppContext) {
+        let fx = Fixture::new("move");
+        let files: Vec<PathBuf> = ["a.log", "b.log", "c.log"]
+            .iter()
+            .map(|n| fx.log(n, 2))
+            .collect();
+        let (ws, cx) = workspace(cx, fx.config());
+        for path in &files {
+            ws.update_in(cx, |ws, window, cx| ws.open(path.clone(), window, cx));
+            wait_indexed(&ws, cx);
+        }
+        ws.update_in(cx, |ws, window, cx| ws.activate(1, window, cx));
+        let order = |cx: &mut VisualTestContext| {
+            ws.read_with(cx, |ws, _| {
+                let names = ws
+                    .tabs
+                    .iter()
+                    .map(|t| file_name(&t.path))
+                    .collect::<Vec<_>>();
+                (names, ws.active)
+            })
+        };
+        // a.log goes last; b.log stays current.
+        ws.update_in(cx, |ws, window, cx| ws.move_tab(0, 2, window, cx));
+        assert_eq!(
+            order(cx),
+            (vec!["b.log".into(), "c.log".into(), "a.log".into()], 0)
+        );
+        ws.update_in(cx, |ws, window, cx| ws.move_tab(2, 1, window, cx));
+        assert_eq!(
+            order(cx),
+            (vec!["b.log".into(), "a.log".into(), "c.log".into()], 0)
+        );
+        // The session keeps the order; Ctrl+3 is now c.log.
+        let saved: Vec<PathBuf> = Session::load(&fx.config())
+            .open_files
+            .iter()
+            .map(|f| f.path.clone())
+            .collect();
+        assert_eq!(
+            saved,
+            [files[1].clone(), files[0].clone(), files[2].clone()]
+        );
+        cx.simulate_keystrokes("secondary-3");
+        assert_eq!(order(cx).1, 2);
+    }
+
+    #[gpui::test]
+    fn follow_from_the_command_line(cx: &mut TestAppContext) {
+        let fx = Fixture::new("follow-cli");
+        let (a, b) = (fx.log("a.log", 3), fx.log("b.log", 3));
+        let (ws, cx) = workspace(cx, fx.config());
+        ws.update_in(cx, |ws, window, cx| {
+            ws.open_following(a.clone(), true, window, cx)
+        });
+        wait_indexed(&ws, cx);
+        ws.update_in(cx, |ws, window, cx| {
+            ws.open_following(b.clone(), false, window, cx)
+        });
+        wait_indexed(&ws, cx);
+        let following = ws.read_with(cx, |ws, cx| {
+            ws.tabs
+                .iter()
+                .map(|t| t.crawler.read(cx).following)
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(following, [true, false]);
+    }
+
+    #[gpui::test]
     fn help_menu(cx: &mut TestAppContext) {
         let fx = Fixture::new("help");
         let (_ws, cx) = workspace(cx, fx.config());
@@ -2752,6 +2915,45 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(windows(cx), 2);
         assert!(help::GUIDE.contains("## Edit menu"));
+    }
+
+    #[gpui::test]
+    fn default_encoding_for_new_files(cx: &mut TestAppContext) {
+        let fx = Fixture::new("default-encoding");
+        let path = fx.dir.join("latin.log");
+        std::fs::write(&path, "caf\u{e9}\n").unwrap();
+        let (ws, cx) = workspace(cx, fx.config());
+        cx.update(|_, cx| {
+            let mut o = Preferences::get(cx).clone();
+            o.file.default_encoding = Some("windows-1252".into());
+            Preferences::set(o, None, cx);
+        });
+        ws.update_in(cx, |ws, window, cx| ws.open(path.clone(), window, cx));
+        assert_eq!(wait_indexed(&ws, cx), 1);
+        let status = ws.read_with(cx, |ws, _| ws.status());
+        assert!(status.contains("displayed as windows-1252"), "{status}");
+        let text = ws.read_with(cx, |ws, cx| {
+            ws.crawler()
+                .unwrap()
+                .read(cx)
+                .log()
+                .unwrap()
+                .line_text(0)
+                .unwrap()
+                .into_owned()
+        });
+        assert_eq!(text, "caf\u{c3}\u{a9}", "UTF-8 bytes read as Windows-1252");
+
+        // Auto again: new files are detected.
+        cx.update(|_, cx| {
+            let mut o = Preferences::get(cx).clone();
+            o.file.default_encoding = None;
+            Preferences::set(o, None, cx);
+        });
+        let other = fx.log("new.log", 1);
+        ws.update_in(cx, |ws, window, cx| ws.open(other.clone(), window, cx));
+        wait_indexed(&ws, cx);
+        assert!(ws.read_with(cx, |ws, _| ws.status().contains("detected as")));
     }
 
     #[gpui::test]
@@ -2859,6 +3061,15 @@ mod tests {
         cx.simulate_keystrokes("secondary-1");
         assert_eq!(new_data(cx), [false, false]);
         assert!(ws.read_with(cx, |ws, _| ws.status().contains("3 lines")));
+        // klogg's toolbar fields: the size and the modification date.
+        let status = ws.read_with(cx, |ws, _| ws.status());
+        let size = std::fs::metadata(ws.read_with(cx, |ws, _| ws.tabs[0].path.clone()))
+            .unwrap()
+            .len();
+        assert!(
+            status.contains(&format!("— {size} B — modified 20")),
+            "{status}"
+        );
     }
 
     #[gpui::test]

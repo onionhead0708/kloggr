@@ -13,11 +13,13 @@ use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::checkbox::Checkbox;
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
 use gpui_component::input::{Input, InputState};
+use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::radio::{Radio, RadioGroup};
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::{ActiveTheme, Disableable, Sizable, WindowExt, h_flex, v_flex};
+use kloggr_core::encoding;
 use kloggr_core::highlight::Color;
-use kloggr_core::options::{Options, Style};
+use kloggr_core::options::{LogLevel, Options, Style};
 
 use crate::highlighters::hsla;
 use crate::key_capture;
@@ -53,6 +55,7 @@ pub struct OptionsEditor {
     font_family: Entity<InputState>,
     font_size: Entity<InputState>,
     recent_files: Entity<InputState>,
+    poll_interval: Entity<InputState>,
     /// klogg: "Search history size" (kept with the history).
     history_size: Entity<InputState>,
     search_color: Entity<ColorPickerState>,
@@ -96,6 +99,7 @@ impl OptionsEditor {
             cx,
         );
         let recent_files = input(options.file.recent_files.to_string(), "", window, cx);
+        let poll_interval = input(options.file.poll_interval_ms.to_string(), "", window, cx);
         let history_size = input(
             SavedSearches::get(cx).history_size.to_string(),
             "",
@@ -140,6 +144,7 @@ impl OptionsEditor {
             font_family,
             font_size,
             recent_files,
+            poll_interval,
             history_size,
             search_color,
             quickfind_color,
@@ -173,6 +178,18 @@ impl OptionsEditor {
                 return Err(format!(
                     "Recent files: {recent:?} is not a number from 1 to {}",
                     kloggr_core::settings::MAX_RECENT_FILES
+                ));
+            }
+        };
+        let interval = text(&self.poll_interval);
+        o.file.poll_interval_ms = match interval.parse::<u32>() {
+            Ok(ms) if kloggr_core::options::POLL_INTERVAL_MS.contains(&ms) => ms,
+            _ => {
+                let range = kloggr_core::options::POLL_INTERVAL_MS;
+                return Err(format!(
+                    "Polling interval: {interval:?} is not a number of milliseconds from {} to {}",
+                    range.start(),
+                    range.end()
                 ));
             }
         };
@@ -346,12 +363,6 @@ impl OptionsEditor {
 
     fn render_general(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let o = &self.options;
-        let heading = |text: &'static str| {
-            div()
-                .text_sm()
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child(text)
-        };
         v_flex()
             .gap_2()
             .child(heading("Session"))
@@ -377,6 +388,35 @@ impl OptionsEditor {
                 |o, v| o.general.check_for_updates = v,
                 cx,
             ))
+            // klogg: Options > Advanced > logging, and its verbosity.
+            .child(heading("Logging"))
+            .child(
+                h_flex()
+                    .gap_4()
+                    .child(self.check(
+                        "log-file",
+                        "Write a log file (from the next start)",
+                        o.general.log_file,
+                        |o, v| o.general.log_file = v,
+                        cx,
+                    ))
+                    .child(
+                        RadioGroup::horizontal("log-level")
+                            .children(
+                                LogLevel::ALL
+                                    .iter()
+                                    .map(|l| Radio::new(l.label()).label(l.label())),
+                            )
+                            .selected_index(
+                                LogLevel::ALL.iter().position(|l| *l == o.general.log_level),
+                            )
+                            .disabled(!o.general.log_file)
+                            .on_click(cx.listener(|this, index: &usize, _, cx| {
+                                this.options.general.log_level = LogLevel::ALL[*index];
+                                cx.notify();
+                            })),
+                    ),
+            )
             .child(heading("Search options for new files"))
             .child(
                 h_flex()
@@ -578,6 +618,83 @@ impl OptionsEditor {
                             .child(Input::new(&self.recent_files).small()),
                     ),
             )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(div().text_sm().child("Encoding of new files"))
+                    .child(self.encoding_button(cx)),
+            )
+            .child(heading("File change monitoring"))
+            .child(self.check(
+                "native-watch",
+                "Use the system's change notifications",
+                o.file.native_watch,
+                |o, v| o.file.native_watch = v,
+                cx,
+            ))
+            .child(self.check(
+                "poll",
+                "Check files at an interval (for network shares)",
+                o.file.poll,
+                |o, v| o.file.poll = v,
+                cx,
+            ))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(div().text_sm().child("Interval (ms)"))
+                    .child(
+                        div()
+                            .w(px(96.))
+                            .child(Input::new(&self.poll_interval).small()),
+                    ),
+            )
+    }
+
+    /// klogg: Options > File > Encoding: "Auto" or an encoding, from the
+    /// Encoding menu's groups.
+    fn encoding_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let chosen = self.options.file.default_encoding.clone();
+        let this = cx.entity().downgrade();
+        let set = move |name: Option<String>| {
+            let this = this.clone();
+            move |_: &gpui::ClickEvent, _: &mut Window, cx: &mut App| {
+                let name = name.clone();
+                this.update(cx, |e, cx| {
+                    e.options.file.default_encoding = name;
+                    cx.notify();
+                })
+                .ok();
+            }
+        };
+        Button::new("default-encoding")
+            .label(chosen.clone().unwrap_or_else(|| "Auto".to_owned()))
+            .small()
+            .outline()
+            .dropdown_caret(true)
+            .dropdown_menu(move |menu, window, cx| {
+                let mut menu = menu
+                    .item(
+                        PopupMenuItem::new("Auto")
+                            .checked(chosen.is_none())
+                            .on_click(set(None)),
+                    )
+                    .separator();
+                for (group, names) in encoding::MENU {
+                    let (chosen, set) = (chosen.clone(), set.clone());
+                    menu = menu.submenu(*group, window, cx, move |mut sub, _, _| {
+                        for name in names.iter() {
+                            sub = sub.item(
+                                PopupMenuItem::new(*name)
+                                    .checked(chosen.as_deref() == Some(*name))
+                                    .on_click(set(Some((*name).to_owned()))),
+                            );
+                        }
+                        sub
+                    });
+                }
+                menu
+            })
     }
 
     fn render_shortcuts(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -753,6 +870,14 @@ pub fn open(window: &mut Window, cx: &mut App) {
     window.open_dialog(cx, move |dialog, _, _| {
         dialog.title("Options").w(px(860.)).child(editor.clone())
     });
+}
+
+/// A section title in a tab.
+fn heading(text: &'static str) -> gpui::Div {
+    div()
+        .text_sm()
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .child(text)
 }
 
 #[cfg(test)]

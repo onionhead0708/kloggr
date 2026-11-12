@@ -14,20 +14,24 @@ kloggr /var/log/syslog
 
 On macOS, files can also be opened from Finder with **Open With > kloggr**.
 
-Several files can be given. If kloggr is already running, the files open in
-its last active window instead, and the new launch exits; `kloggr -m`
-(`--multi`) starts a separate kloggr. `kloggr --help` lists the options.
+Several files can be given; `-f` (`--follow`) follows them. If kloggr is
+already running, the files open in its last active window instead, and the
+new launch exits; `kloggr -m` (`--multi`) starts a separate kloggr.
+`kloggr --help` lists the options.
 
-By default kloggr reopens the files that were open when it was last closed,
-with their marks, search and view settings.
+Started without files, kloggr reopens the files that were open when it was
+last closed, with their marks, search and view settings. Files given on the
+command line start a new session instead; `-s` reopens the last one as well,
+and `-n` never does.
 
 The window has two views. The top one, the *main view*, shows the file. The
 bottom one, the *filtered view*, shows the result of the search typed in the
 bar between them. Lines that match are listed in file order and get a bullet
 in the margin of both views.
 
-The status line at the bottom shows the file's path, its number of lines and
-its encoding, or the progress of indexing, searching and saving.
+The status line at the bottom shows the file's path, size, modification time,
+number of lines and encoding, or the progress of indexing, searching and
+saving.
 
 ## Opening files
 
@@ -44,7 +48,8 @@ Temporary files (from the clipboard, downloaded, or extracted from archives)
 are removed when kloggr closes, and are not remembered in the session or the
 recent files.
 
-Each file opens in its own tab. Ctrl+1 to Ctrl+8 show the first eight tabs,
+Each file opens in its own tab; drag a tab to move it. Ctrl+1 to Ctrl+8
+show the first eight tabs,
 Ctrl+9 the last one, and Ctrl+Tab / Ctrl+Shift+Tab cycle through them.
 **View > Opened Files** lists the open files; its **Switch to File…**
 (Ctrl+Shift+O) filters them as you type (`*` and `?` are wildcards). The
@@ -76,7 +81,8 @@ whether kloggr extracts them, and whether it asks first.
 kloggr detects the encoding of a file (UTF-8, UTF-16, and the common legacy
 encodings). If the guess is wrong, pick the encoding from the **Encoding**
 menu; **Auto** goes back to the detected one. The choice is remembered for
-the file.
+the file. **Options > File > Encoding of new files** sets the encoding
+of files opened for the first time instead of detecting it.
 
 ## Searching
 
@@ -104,7 +110,10 @@ Entering (Open|Close)Connection
 lists the opening and closing calls together, so an open without a close
 stands out.
 
-The arrow at the end of the search box lists earlier searches. **Filters**
+While you type, earlier searches that start with the same text are offered
+under the search box: Down and Up choose one, Enter or a click searches for
+it, Esc closes the list. The arrow at the end of the search box lists all
+earlier searches. **Filters**
 lists the predefined filters, and **Save search as filter…** in it saves the
 current search as one.
 
@@ -155,7 +164,9 @@ over a line's margin in the filtered view flashes its place in the overview.
 ### Predefined filters
 
 **Tools > Predefined Filters…** edits filters you use often. Each has a name,
-a pattern, and whether the pattern is a regular expression. Checking filters
+a pattern, and whether the pattern is a regular expression. **Import…** and
+**Export…** read and write klogg's filter files (`.conf`); an import replaces
+the list in the dialog, and OK keeps it. Checking filters
 in the **Filters** drop-down builds the search from them; several checked
 filters are combined with "or".
 
@@ -182,11 +193,16 @@ The keys follow *vi* and *less*. All shortcuts can be changed in
 | F5 | reload the file |
 | Esc | stop the search, or the loading |
 
-Shift + mouse wheel scrolls horizontally.
+Shift + mouse wheel scrolls horizontally. Ctrl + mouse wheel (Cmd on macOS)
+makes the font bigger or smaller, one point per notch; the size is kept in
+**Options > View**.
 
 ## Live files
 
-kloggr watches the open files. When a file grows, the new lines appear;
+kloggr watches the open files with the system's change notifications. On
+network shares and some mounts these don't arrive: turn on **Check files at
+an interval** in **Options > File** (on by default on Windows). When a file
+grows, the new lines appear;
 with auto-refresh on, they are searched too. When a file is truncated,
 rewritten or rotated, kloggr indexes it again and drops the marks and
 search results.
@@ -263,12 +279,13 @@ it.
 **Tools > Options…** has four tabs:
 
 - **General**: reopen the last session, follow new files, check for new
-  versions once a week, the default search options, match highlighting and
+  versions once a week, write a log file (and how detailed), the default search options, match highlighting and
   its colour, search history size, and quick find options.
 - **View**: font, overview bar, line numbers, and hiding ANSI colour
   sequences (`ESC[…m`) that some programs write for terminals.
-- **File**: follow on scrolling past the end, archive extraction, and the
-  number of recent files.
+- **File**: follow on scrolling past the end, archive extraction, the
+  number of recent files, and how files are watched for changes
+  (notifications, checking at an interval, or both).
 - **Shortcuts**: a primary and a secondary key for every action.
 
 Settings are kept in `settings.toml` in kloggr's configuration folder
@@ -276,6 +293,10 @@ Settings are kept in `settings.toml` in kloggr's configuration folder
 searches.
 
 ## When something goes wrong
+
+`kloggr -l` writes a log file in the temporary folder (`-d`, `-dd`, `-ddd`
+for more detail), as does **Options > General > Write a log file** from the
+next start; **Help > About** shows where it is.
 
 If kloggr crashes, it saves a report and shows it at the next start, with a
 button that opens a GitHub issue with the report. **Help > Report Issue**

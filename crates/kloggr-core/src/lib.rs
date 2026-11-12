@@ -37,6 +37,7 @@ pub mod highlight;
 pub mod instance;
 pub mod line_index;
 pub mod options;
+mod qt_ini;
 pub mod scratch;
 pub mod search;
 pub mod searches;
