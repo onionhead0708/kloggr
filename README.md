@@ -22,7 +22,7 @@ So I rebuilt klogg in Rust. That's where the name comes from: **kloggr**,
 *klogg in Rust*.
 
 - **Speed.** Rust compiles to fast native code and makes it safe to use every
-  CPU core. On a 1 GiB log, kloggr indexes the file about 3× faster than klogg
+  CPU core. On a 1 GiB log, kloggr indexes the file 3–5× faster than klogg
   ([benchmarks](docs/benchmarks.md)).
 - **Built with AI.** I'm not familiar with the glogg or klogg code, or with
   Rust. So I used [Claude Code](https://claude.com/claude-code) to rebuild the
@@ -49,6 +49,11 @@ So I rebuilt klogg in Rust. That's where the name comes from: **kloggr**,
 - Tabs and sessions, frozen columns, wide (CJK) characters.
 - Predefined filters, search history, scratchpad with encoders and decoders.
 - Opens gzip, bzip2, xz, zip, 7z and tar files directly.
+- `kloggr-grep`, a command-line search with the same engine, like klogg's
+  `klogg_grep` (not in the packages yet: `cargo build --release -p kloggr-grep`).
+- The interface can be translated with a text file, no build needed. It's in
+  English only so far: translations are welcome
+  ([`docs/translating.md`](docs/translating.md)).
 
 Differences from klogg are listed in [`docs/decisions.md`](docs/decisions.md).
 
