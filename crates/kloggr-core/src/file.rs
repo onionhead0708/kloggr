@@ -433,8 +433,12 @@ impl LogFile {
                 .as_ref()
                 .map(|map| scope.spawn(|| ahead.run(&file, map)))
                 .is_some();
+            // No read-ahead thread on Windows (see `ReadAhead::run`).
             #[cfg(not(unix))]
-            let reading = false;
+            let reading = {
+                let _ = scope;
+                false
+            };
             if reading {
                 ahead.wait(0, len, cancel);
             } else {
