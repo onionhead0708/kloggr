@@ -3720,6 +3720,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "kloggr-grep"
+version = "0.3.0"
+dependencies = [
+ "kloggr-core",
+]
+
+[[package]]
 name = "kqueue"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

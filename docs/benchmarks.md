@@ -201,3 +201,25 @@ blocks, so the kernel's read-ahead keeps the drive busy; kloggr maps the file an
 its threads fault pages in at several places at once. Advising the kernel
 (`madvise(MADV_SEQUENTIAL)`/`MADV_WILLNEED` on the chunk ahead) or reading
 batches with `read` while indexing may close the gap when the file isn't cached.
+
+## 2026-11-13: search vs klogg_grep, 1 GiB, kloggr feat/phase-7-optional
+
+`KLOGG_GREP=~/dev/klogg/build_root/output/klogg_grep scripts/bench-grep-vs-klogg.sh 1024`
+(klogg 24.11 built from source, RelWithDebInfo; Intel i7-7500U, 4 threads). Best of 3,
+wall clock of the whole process: start, index, search, and write the matching
+lines to a file, with a warm page cache. Both tools printed the same lines, byte
+for byte, except on UTF-16.
+
+| search | file | kloggr-grep | (index + search) | klogg_grep | speedup | matches |
+|---|---|---|---|---|---|---|
+| plain, rare (`id=123456`) | typical | 417 ms | 290 + 115 ms | 1726 ms | 4.1× | 3 |
+| plain, ~20% (`ERROR`) | typical | 1184 ms | 290 + 878 ms | 5002 ms | 4.2× | 1,470,710 |
+| regex (`took=\d{4}ms`, dense) | typical | 2995 ms | 290 + 2667 ms | 14783 ms | 4.9× | 5,884,992 |
+| plain, short lines (`cache`) | short | 3391 ms | 933 + 2413 ms | 40944 ms | 12.1× | 8,305,705 |
+| plain, UTF-16LE (`ERROR`) | utf16 | 1123 ms | 230 + 852 ms | 1550 ms | – | 735,513 |
+
+kloggr-grep's search time includes writing the lines, which is most of it when
+many lines match (criterion's `search_all`, which only collects them, takes 191 ms
+for `ERROR`). klogg_grep doesn't decode UTF-16: it found no line with `ERROR` in
+that file, so its time there isn't comparable.
+

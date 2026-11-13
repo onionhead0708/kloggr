@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/kloggr-core", "crates/kloggr-app"]
+members = ["crates/kloggr-core", "crates/kloggr-app", "crates/kloggr-grep"]
 
 [workspace.package]
 version = "0.3.0"

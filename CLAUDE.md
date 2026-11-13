@@ -47,6 +47,7 @@ stays GPLv3. Keep klogg's copyright notices where code is translated closely.
 crates/
   kloggr-core/   engine: mmap, line index, encodings, search, filtering, watching
   kloggr-app/    GPUI desktop app (binary `kloggr`)
+  kloggr-grep/   command-line search with the engine (binary `kloggr-grep`, like klogg_grep; not packaged)
 ```
 
 Rules:
@@ -80,6 +81,8 @@ bacon                            # watch mode
 cargo deny check                 # license / advisory check (GPL-compatible deps only)
 cargo bench -p kloggr-core        # criterion benches (KLOGGR_BENCH_SIZE_MB=10240 for 10 GB)
 scripts/bench-vs-klogg.sh 1024   # indexing time vs klogg on the same generated files
+scripts/bench-grep-vs-klogg.sh 1024  # kloggr-grep vs klogg_grep (KLOGG_GREP=…), output compared
+cargo run -p kloggr-grep --release -- -n PATTERN FILE  # command-line search (--help)
 scripts/package-linux.sh         # tarball, .deb (and AppImage with appimagetool) in target/package/
 scripts/package-windows.sh       # Windows .zip and .msi (Git Bash on Windows, WiX 5); CI runs it
 scripts/package-macos.sh         # macOS universal .dmg (on a Mac); CI runs it
@@ -189,7 +192,7 @@ Optional:
 - [ ] Minimize to tray (klogg `view.minimizeToTray`)
 - [x] Font bold and antialiasing options (klogg `mainFont.bold`, `mainFont.antialiasing`): Bold font, and Text smoothing System/Subpixel/Grayscale (`docs/decisions.md`)
 - [x] Mouse wheel modifiers: Alt + wheel scrolls sideways as in klogg, Shift + wheel too; no page-per-notch wheel (`docs/decisions.md`)
-- [ ] A command-line search tool like `klogg_grep`, which also lets the benchmarks compare search with klogg
+- [x] A command-line search tool like `klogg_grep`, which also lets the benchmarks compare search with klogg (`kloggr-grep`, `scripts/bench-grep-vs-klogg.sh`, results in `docs/benchmarks.md`)
 - [ ] Indexing files larger than memory: read-ahead hints (`madvise`) or sequential reads, where klogg wins on UTF-16 at 10 GiB; tab widths while indexing (the `long` benchmark row)
 
 ## Conventions
