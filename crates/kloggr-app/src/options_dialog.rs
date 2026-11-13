@@ -19,23 +19,30 @@ use gpui_component::tab::{Tab, TabBar};
 use gpui_component::{ActiveTheme, Disableable, Sizable, WindowExt, h_flex, v_flex};
 use kloggr_core::encoding;
 use kloggr_core::highlight::Color;
-use kloggr_core::options::{LogLevel, Options, Style};
+use kloggr_core::options::{LogLevel, Options, Style, TextRendering};
 
 use crate::highlighters::hsla;
 use crate::key_capture;
 use crate::preferences::Preferences;
 use crate::saved_searches::SavedSearches;
 use crate::shortcuts::{self, Shortcut};
+use crate::{msg, tr};
 
 /// Emitted when the dialog should close.
 pub struct Close;
 
 impl EventEmitter<Close> for OptionsEditor {}
 
+const TEXT_RENDERINGS: [(TextRendering, &str); 3] = [
+    (TextRendering::System, msg!("System")),
+    (TextRendering::Subpixel, msg!("Subpixel")),
+    (TextRendering::Grayscale, msg!("Grayscale")),
+];
+
 const STYLES: [(Style, &str); 3] = [
-    (Style::System, "System"),
-    (Style::Light, "Light"),
-    (Style::Dark, "Dark"),
+    (Style::System, msg!("System")),
+    (Style::Light, msg!("Light")),
+    (Style::Dark, msg!("Dark")),
 ];
 
 /// One row of the Shortcuts tab: the action and its primary and secondary
@@ -65,6 +72,8 @@ pub struct OptionsEditor {
     error: Option<String>,
     /// The open key dialog (see [`key_capture::open`]).
     capture: Option<Entity<key_capture::KeyCapture>>,
+    /// The translations to choose from: (tag, name).
+    languages: Vec<(String, String)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -125,7 +134,7 @@ impl OptionsEditor {
                 shortcut,
             })
             .collect();
-        shortcuts.sort_by_key(|r| r.shortcut.label.to_lowercase());
+        shortcuts.sort_by_key(|r| crate::i18n::tr(r.shortcut.label).to_lowercase());
         let subscriptions = vec![
             cx.subscribe(&search_color, |this, _, e: &ColorPickerEvent, cx| {
                 let ColorPickerEvent::Change(c) = e;
@@ -151,6 +160,10 @@ impl OptionsEditor {
             shortcuts,
             error: None,
             capture: None,
+            languages: crate::i18n::available(Preferences::config_dir(cx).as_deref())
+                .into_iter()
+                .map(|c| (c.language, c.name))
+                .collect(),
             _subscriptions: subscriptions,
         }
     }
@@ -168,17 +181,25 @@ impl OptionsEditor {
         } else {
             match size.parse::<f32>() {
                 Ok(s) if (4.0..=72.0).contains(&s) => Some(s),
-                _ => return Err(format!("Font size: {size:?} is not a size from 4 to 72")),
+                _ => {
+                    return Err(tr!(
+                        "Font size: \"{size}\" is not a size from 4 to 72",
+                        size = size
+                    )
+                    .to_string());
+                }
             }
         };
         let recent = text(&self.recent_files);
         o.file.recent_files = match recent.parse::<usize>() {
             Ok(n) if (1..=kloggr_core::settings::MAX_RECENT_FILES).contains(&n) => n,
             _ => {
-                return Err(format!(
-                    "Recent files: {recent:?} is not a number from 1 to {}",
-                    kloggr_core::settings::MAX_RECENT_FILES
-                ));
+                return Err(tr!(
+                    "Recent files: \"{value}\" is not a number from 1 to {max}",
+                    value = recent,
+                    max = kloggr_core::settings::MAX_RECENT_FILES,
+                )
+                .to_string());
             }
         };
         let interval = text(&self.poll_interval);
@@ -186,18 +207,21 @@ impl OptionsEditor {
             Ok(ms) if kloggr_core::options::POLL_INTERVAL_MS.contains(&ms) => ms,
             _ => {
                 let range = kloggr_core::options::POLL_INTERVAL_MS;
-                return Err(format!(
-                    "Polling interval: {interval:?} is not a number of milliseconds from {} to {}",
-                    range.start(),
-                    range.end()
-                ));
+                return Err(tr!(
+                    "Polling interval: \"{value}\" is not a number of milliseconds from {min} to {max}",
+                    value = interval,
+                    min = range.start(),
+                    max = range.end(),
+                )
+                .to_string());
             }
         };
         if let Some(key) = self.duplicates().first() {
-            return Err(format!(
-                "{} is used by more than one action",
-                shortcuts::display(key)
-            ));
+            return Err(tr!(
+                "{key} is used by more than one action",
+                key = shortcuts::display(key),
+            )
+            .to_string());
         }
         o.shortcuts.clear();
         for row in &self.shortcuts {
@@ -263,9 +287,13 @@ impl OptionsEditor {
         let history_size = match size.parse::<usize>() {
             Ok(n) if (1..=1000).contains(&n) => n,
             _ => {
-                self.error = Some(format!(
-                    "Search history size: {size:?} is not a number from 1 to 1000"
-                ));
+                self.error = Some(
+                    tr!(
+                        "Search history size: \"{value}\" is not a number from 1 to 1000",
+                        value = size,
+                    )
+                    .to_string(),
+                );
                 cx.notify();
                 return false;
             }
@@ -302,8 +330,8 @@ impl OptionsEditor {
         window.open_alert_dialog(cx, move |alert, _, _| {
             let this = this.clone();
             alert
-                .title("Restore Default Shortcuts")
-                .description("Do you want to restore default shortcuts?")
+                .title(tr!("Restore Default Shortcuts"))
+                .description(tr!("Do you want to restore default shortcuts?"))
                 .show_cancel(true)
                 .on_ok(move |_, _, cx| {
                     this.update(cx, |this, cx| this.restore_default_shortcuts(cx))
@@ -321,7 +349,7 @@ impl OptionsEditor {
     fn check(
         &self,
         id: &'static str,
-        label: &'static str,
+        label: SharedString,
         value: bool,
         f: fn(&mut Options, bool),
         cx: &mut Context<Self>,
@@ -338,7 +366,7 @@ impl OptionsEditor {
     fn color_row(
         &self,
         id: &'static str,
-        label: &'static str,
+        label: SharedString,
         state: &Entity<ColorPickerState>,
         clear: fn(&mut Options),
         cx: &mut Context<Self>,
@@ -350,7 +378,7 @@ impl OptionsEditor {
             .child(ColorPicker::new(state).small())
             .child(
                 Button::new(id)
-                    .label("Default")
+                    .label(tr!("Default"))
                     .xsmall()
                     .ghost()
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -365,37 +393,46 @@ impl OptionsEditor {
         let o = &self.options;
         v_flex()
             .gap_2()
-            .child(heading("Session"))
+            .child(heading(tr!("Session")))
             .child(self.check(
                 "load-last",
-                "Load last session",
+                tr!("Load last session"),
                 o.general.load_last_session,
                 |o, v| o.general.load_last_session = v,
                 cx,
             ))
             .child(self.check(
                 "follow-on-load",
-                "Follow file on load",
+                tr!("Follow file on load"),
                 o.general.follow_on_load,
                 |o, v| o.general.follow_on_load = v,
                 cx,
             ))
-            .child(heading("Updates"))
+            .child(heading(tr!("Language")))
+            .child(
+                h_flex().gap_2().child(self.language_button(cx)).child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(tr!("from the next start")),
+                ),
+            )
+            .child(heading(tr!("Updates")))
             .child(self.check(
                 "check-updates",
-                "Check for new versions once a week",
+                tr!("Check for new versions once a week"),
                 o.general.check_for_updates,
                 |o, v| o.general.check_for_updates = v,
                 cx,
             ))
             // klogg: Options > Advanced > logging, and its verbosity.
-            .child(heading("Logging"))
+            .child(heading(tr!("Logging")))
             .child(
                 h_flex()
                     .gap_4()
                     .child(self.check(
                         "log-file",
-                        "Write a log file (from the next start)",
+                        tr!("Write a log file (from the next start)"),
                         o.general.log_file,
                         |o, v| o.general.log_file = v,
                         cx,
@@ -405,7 +442,7 @@ impl OptionsEditor {
                             .children(
                                 LogLevel::ALL
                                     .iter()
-                                    .map(|l| Radio::new(l.label()).label(l.label())),
+                                    .map(|l| Radio::new(l.label()).label(log_level_label(*l))),
                             )
                             .selected_index(
                                 LogLevel::ALL.iter().position(|l| *l == o.general.log_level),
@@ -417,34 +454,34 @@ impl OptionsEditor {
                             })),
                     ),
             )
-            .child(heading("Search options for new files"))
+            .child(heading(tr!("Search options for new files")))
             .child(
                 h_flex()
                     .gap_4()
                     .child(self.check(
                         "match-case",
-                        "Case sensitive",
+                        tr!("Case sensitive"),
                         o.search.match_case,
                         |o, v| o.search.match_case = v,
                         cx,
                     ))
                     .child(self.check(
                         "regex",
-                        "Regular expressions",
+                        tr!("Regular expressions"),
                         o.search.regex,
                         |o, v| o.search.regex = v,
                         cx,
                     ))
                     .child(self.check(
                         "boolean",
-                        "Logical combining",
+                        tr!("Logical combining"),
                         o.search.boolean,
                         |o, v| o.search.boolean = v,
                         cx,
                     ))
                     .child(self.check(
                         "auto-refresh",
-                        "Auto refresh",
+                        tr!("Auto refresh"),
                         o.search.auto_refresh,
                         |o, v| o.search.auto_refresh = v,
                         cx,
@@ -452,14 +489,14 @@ impl OptionsEditor {
             )
             .child(self.check(
                 "highlight",
-                "Highlight matches",
+                tr!("Highlight matches"),
                 o.search.highlight_matches,
                 |o, v| o.search.highlight_matches = v,
                 cx,
             ))
             .child(self.color_row(
                 "search-color-default",
-                "Match highlight colour",
+                tr!("Match highlight colour"),
                 &self.search_color,
                 |o| o.search.highlight_color = None,
                 cx,
@@ -467,34 +504,39 @@ impl OptionsEditor {
             .child(
                 h_flex()
                     .gap_2()
-                    .child(div().w(px(160.)).text_sm().child("Search history size"))
+                    .child(
+                        div()
+                            .w(px(160.))
+                            .text_sm()
+                            .child(tr!("Search history size")),
+                    )
                     .child(
                         div()
                             .w(px(64.))
                             .child(Input::new(&self.history_size).small()),
                     ),
             )
-            .child(heading("Quick find"))
+            .child(heading(tr!("Quick find")))
             .child(
                 h_flex()
                     .gap_4()
                     .child(self.check(
                         "qf-incremental",
-                        "Incremental",
+                        tr!("Incremental"),
                         o.search.quickfind_incremental,
                         |o, v| o.search.quickfind_incremental = v,
                         cx,
                     ))
                     .child(self.check(
                         "qf-match-case",
-                        "Case sensitive",
+                        tr!("Case sensitive"),
                         o.search.quickfind_match_case,
                         |o, v| o.search.quickfind_match_case = v,
                         cx,
                     ))
                     .child(self.check(
                         "qf-regex",
-                        "Regular expressions",
+                        tr!("Regular expressions"),
                         o.search.quickfind_regex,
                         |o, v| o.search.quickfind_regex = v,
                         cx,
@@ -502,7 +544,7 @@ impl OptionsEditor {
             )
             .child(self.color_row(
                 "qf-color-default",
-                "Occurrence colour",
+                tr!("Occurrence colour"),
                 &self.quickfind_color,
                 |o| o.search.quickfind_color = None,
                 cx,
@@ -511,36 +553,61 @@ impl OptionsEditor {
 
     fn render_view(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let o = &self.options;
-        let row = |label: &'static str, child: gpui::AnyElement| {
+        let row = |label: SharedString, child: gpui::AnyElement| {
             h_flex()
                 .gap_2()
                 .child(div().w(px(160.)).text_sm().child(label))
                 .child(child)
         };
         let style_index = STYLES.iter().position(|(s, _)| *s == o.view.style);
+        let rendering_index = TEXT_RENDERINGS
+            .iter()
+            .position(|(r, _)| *r == o.view.text_rendering);
         v_flex()
             .gap_2()
             .child(row(
-                "Font family",
+                tr!("Font family"),
                 div()
                     .w(px(280.))
                     .child(Input::new(&self.font_family).small())
                     .into_any_element(),
             ))
             .child(row(
-                "Font size",
+                tr!("Font size"),
                 div()
                     .w(px(80.))
                     .child(Input::new(&self.font_size).small())
                     .into_any_element(),
             ))
+            .child(self.check(
+                "font-bold",
+                tr!("Bold font"),
+                o.view.font_bold,
+                |o, v| o.view.font_bold = v,
+                cx,
+            ))
             .child(row(
-                "Style",
+                tr!("Text smoothing"),
+                RadioGroup::horizontal("text-rendering")
+                    .children(
+                        TEXT_RENDERINGS
+                            .iter()
+                            .map(|(_, label)| Radio::new(*label).label(crate::i18n::tr(label))),
+                    )
+                    .selected_index(rendering_index)
+                    .on_click(cx.listener(|this, index: &usize, _, cx| {
+                        this.options.view.text_rendering = TEXT_RENDERINGS[*index].0;
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+            ))
+            .child(row(
+                tr!("Style"),
                 RadioGroup::horizontal("style")
                     .children(
                         STYLES
                             .iter()
-                            .map(|(_, label)| Radio::new(*label).label(*label)),
+                            .map(|(_, label)| Radio::new(*label).label(crate::i18n::tr(label))),
                     )
                     .selected_index(style_index)
                     .on_click(cx.listener(|this, index: &usize, _, cx| {
@@ -551,28 +618,28 @@ impl OptionsEditor {
             ))
             .child(self.check(
                 "overview",
-                "Show the overview bar",
+                tr!("Show the overview bar"),
                 o.view.overview,
                 |o, v| o.view.overview = v,
                 cx,
             ))
             .child(self.check(
                 "numbers-main",
-                "Line numbers in main view",
+                tr!("Line numbers in main view"),
                 o.view.line_numbers_main,
                 |o, v| o.view.line_numbers_main = v,
                 cx,
             ))
             .child(self.check(
                 "numbers-filtered",
-                "Line numbers in filtered view",
+                tr!("Line numbers in filtered view"),
                 o.view.line_numbers_filtered,
                 |o, v| o.view.line_numbers_filtered = v,
                 cx,
             ))
             .child(self.check(
                 "hide-ansi",
-                "Hide ANSI colour sequences",
+                tr!("Hide ANSI colour sequences"),
                 o.view.hide_ansi,
                 |o, v| o.view.hide_ansi = v,
                 cx,
@@ -585,21 +652,21 @@ impl OptionsEditor {
             .gap_2()
             .child(self.check(
                 "follow-on-scroll",
-                "Turn on follow on scroll past the end",
+                tr!("Turn on follow on scroll past the end"),
                 o.file.follow_on_scroll,
                 |o, v| o.file.follow_on_scroll = v,
                 cx,
             ))
             .child(self.check(
                 "extract-archives",
-                "Extract archives",
+                tr!("Extract archives"),
                 o.file.extract_archives,
                 |o, v| o.file.extract_archives = v,
                 cx,
             ))
             .child(self.check(
                 "extract-always",
-                "Extract archives without confirmation",
+                tr!("Extract archives without confirmation"),
                 o.file.extract_without_confirmation,
                 |o, v| o.file.extract_without_confirmation = v,
                 cx,
@@ -610,7 +677,7 @@ impl OptionsEditor {
                     .child(
                         div()
                             .text_sm()
-                            .child("Show the number of recently opened files"),
+                            .child(tr!("Show the number of recently opened files")),
                     )
                     .child(
                         div()
@@ -621,20 +688,20 @@ impl OptionsEditor {
             .child(
                 h_flex()
                     .gap_2()
-                    .child(div().text_sm().child("Encoding of new files"))
+                    .child(div().text_sm().child(tr!("Encoding of new files")))
                     .child(self.encoding_button(cx)),
             )
-            .child(heading("File change monitoring"))
+            .child(heading(tr!("File change monitoring")))
             .child(self.check(
                 "native-watch",
-                "Use the system's change notifications",
+                tr!("Use the system's change notifications"),
                 o.file.native_watch,
                 |o, v| o.file.native_watch = v,
                 cx,
             ))
             .child(self.check(
                 "poll",
-                "Check files at an interval (for network shares)",
+                tr!("Check files at an interval (for network shares)"),
                 o.file.poll,
                 |o, v| o.file.poll = v,
                 cx,
@@ -642,13 +709,75 @@ impl OptionsEditor {
             .child(
                 h_flex()
                     .gap_2()
-                    .child(div().text_sm().child("Interval (ms)"))
+                    .child(div().text_sm().child(tr!("Interval (ms)")))
                     .child(
                         div()
                             .w(px(96.))
                             .child(Input::new(&self.poll_interval).small()),
                     ),
             )
+    }
+
+    /// klogg: Options > General > Language: the system's, English, or a
+    /// translation (built in, or in the configuration folder).
+    fn language_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let chosen = self.options.general.language.clone();
+        let languages = self.languages.clone();
+        let this = cx.entity().downgrade();
+        let set = move |tag: Option<String>| {
+            let this = this.clone();
+            move |_: &gpui::ClickEvent, _: &mut Window, cx: &mut App| {
+                let tag = tag.clone();
+                this.update(cx, |e, cx| {
+                    e.options.general.language = tag;
+                    cx.notify();
+                })
+                .ok();
+            }
+        };
+        let label = match chosen.as_deref() {
+            None => tr!("System"),
+            Some(tag) if tag.eq_ignore_ascii_case("en") => "English".into(),
+            Some(tag) => languages
+                .iter()
+                .find(|(t, _)| t.eq_ignore_ascii_case(tag))
+                .map_or_else(
+                    || SharedString::from(tag.to_owned()),
+                    |(_, n)| n.clone().into(),
+                ),
+        };
+        Button::new("language")
+            .label(label)
+            .small()
+            .outline()
+            .dropdown_caret(true)
+            .dropdown_menu(move |menu, _, _| {
+                let is = |tag: &str| {
+                    chosen
+                        .as_deref()
+                        .is_some_and(|c| c.eq_ignore_ascii_case(tag))
+                };
+                let mut menu = menu
+                    .item(
+                        PopupMenuItem::new(tr!("System"))
+                            .checked(chosen.is_none())
+                            .on_click(set(None)),
+                    )
+                    .separator()
+                    .item(
+                        PopupMenuItem::new("English")
+                            .checked(is("en"))
+                            .on_click(set(Some("en".into()))),
+                    );
+                for (tag, name) in &languages {
+                    menu = menu.item(
+                        PopupMenuItem::new(name.clone())
+                            .checked(is(tag))
+                            .on_click(set(Some(tag.clone()))),
+                    );
+                }
+                menu
+            })
     }
 
     /// klogg: Options > File > Encoding: "Auto" or an encoding, from the
@@ -668,30 +797,35 @@ impl OptionsEditor {
             }
         };
         Button::new("default-encoding")
-            .label(chosen.clone().unwrap_or_else(|| "Auto".to_owned()))
+            .label(
+                chosen
+                    .clone()
+                    .map_or_else(|| tr!("Auto"), SharedString::from),
+            )
             .small()
             .outline()
             .dropdown_caret(true)
             .dropdown_menu(move |menu, window, cx| {
                 let mut menu = menu
                     .item(
-                        PopupMenuItem::new("Auto")
+                        PopupMenuItem::new(tr!("Auto"))
                             .checked(chosen.is_none())
                             .on_click(set(None)),
                     )
                     .separator();
                 for (group, names) in encoding::MENU {
                     let (chosen, set) = (chosen.clone(), set.clone());
-                    menu = menu.submenu(*group, window, cx, move |mut sub, _, _| {
-                        for name in names.iter() {
-                            sub = sub.item(
-                                PopupMenuItem::new(*name)
-                                    .checked(chosen.as_deref() == Some(*name))
-                                    .on_click(set(Some((*name).to_owned()))),
-                            );
-                        }
-                        sub
-                    });
+                    menu =
+                        menu.submenu(crate::i18n::tr(group), window, cx, move |mut sub, _, _| {
+                            for name in names.iter() {
+                                sub = sub.item(
+                                    PopupMenuItem::new(*name)
+                                        .checked(chosen.as_deref() == Some(*name))
+                                        .on_click(set(Some((*name).to_owned()))),
+                                );
+                            }
+                            sub
+                        });
                 }
                 menu
             })
@@ -706,9 +840,9 @@ impl OptionsEditor {
             .px_2()
             .text_sm()
             .text_color(muted)
-            .child(div().w(px(330.)).child("Action"))
-            .child(div().flex_1().child("Primary shortcut"))
-            .child(div().flex_1().child("Secondary shortcut"));
+            .child(div().w(px(330.)).child(tr!("Action")))
+            .child(div().flex_1().child(tr!("Primary shortcut")))
+            .child(div().flex_1().child(tr!("Secondary shortcut")));
         let rows = self.shortcuts.iter().enumerate().map(|(i, row)| {
             let id = row.shortcut.id;
             let cell = |slot: usize| {
@@ -749,7 +883,7 @@ impl OptionsEditor {
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .text_ellipsis()
-                        .child(row.shortcut.label),
+                        .child(crate::i18n::tr(row.shortcut.label)),
                 )
                 .child(cell(0))
                 .child(cell(1))
@@ -770,7 +904,7 @@ impl OptionsEditor {
             .child(
                 h_flex().child(
                     Button::new("restore-shortcuts")
-                        .label("Restore defaults")
+                        .label(tr!("Restore defaults"))
                         .small()
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.confirm_restore_defaults(window, cx)
@@ -809,10 +943,10 @@ impl Render for OptionsEditor {
                     .underline()
                     .small()
                     .selected_index(self.tab)
-                    .child(Tab::new().label("General"))
-                    .child(Tab::new().label("View"))
-                    .child(Tab::new().label("File"))
-                    .child(Tab::new().label("Shortcuts"))
+                    .child(Tab::new().label(tr!("General")))
+                    .child(Tab::new().label(tr!("View")))
+                    .child(Tab::new().label(tr!("File")))
+                    .child(Tab::new().label(tr!("Shortcuts")))
                     .on_click(cx.listener(|this, index: &usize, _, cx| {
                         this.tab = *index;
                         cx.notify();
@@ -830,13 +964,13 @@ impl Render for OptionsEditor {
                     .child(div().flex_1())
                     .child(
                         Button::new("cancel")
-                            .label("Cancel")
+                            .label(tr!("Cancel"))
                             .small()
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(Close))),
                     )
                     .child(
                         Button::new("apply")
-                            .label("Apply")
+                            .label(tr!("Apply"))
                             .small()
                             .disabled(has_duplicates)
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -845,7 +979,7 @@ impl Render for OptionsEditor {
                     )
                     .child(
                         Button::new("ok")
-                            .label("OK")
+                            .label(tr!("OK"))
                             .small()
                             .primary()
                             .disabled(has_duplicates)
@@ -868,16 +1002,30 @@ pub fn open(window: &mut Window, cx: &mut App) {
         })
         .detach();
     window.open_dialog(cx, move |dialog, _, _| {
-        dialog.title("Options").w(px(860.)).child(editor.clone())
+        dialog
+            .title(tr!("Options"))
+            .w(px(860.))
+            .child(editor.clone())
     });
 }
 
 /// A section title in a tab.
-fn heading(text: &'static str) -> gpui::Div {
+fn heading(text: SharedString) -> gpui::Div {
     div()
         .text_sm()
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .child(text)
+}
+
+/// The name of a log level in the interface's language.
+fn log_level_label(level: LogLevel) -> SharedString {
+    match level {
+        LogLevel::Error => tr!("Error"),
+        LogLevel::Warning => tr!("Warning"),
+        LogLevel::Info => tr!("Info"),
+        LogLevel::Debug => tr!("Debug"),
+        LogLevel::Trace => tr!("Trace"),
+    }
 }
 
 #[cfg(test)]

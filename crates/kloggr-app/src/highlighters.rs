@@ -14,6 +14,7 @@ use kloggr_core::highlight::{COLOR_LABELS, Color, CompiledSet, HighlighterSets};
 
 use crate::log_view;
 use crate::shortcuts::Shortcut;
+use crate::{msg, tr};
 
 actions!(
     highlighters,
@@ -58,15 +59,15 @@ pub fn shortcuts() -> Vec<Shortcut> {
         "logview.add_color_label_9",
     ];
     const LABELS: [&str; COLOR_LABELS] = [
-        "Highlight text with color 1",
-        "Highlight text with color 2",
-        "Highlight text with color 3",
-        "Highlight text with color 4",
-        "Highlight text with color 5",
-        "Highlight text with color 6",
-        "Highlight text with color 7",
-        "Highlight text with color 8",
-        "Highlight text with color 9",
+        msg!("Highlight text with color 1"),
+        msg!("Highlight text with color 2"),
+        msg!("Highlight text with color 3"),
+        msg!("Highlight text with color 4"),
+        msg!("Highlight text with color 5"),
+        msg!("Highlight text with color 6"),
+        msg!("Highlight text with color 7"),
+        msg!("Highlight text with color 8"),
+        msg!("Highlight text with color 9"),
     ];
     let mut out: Vec<Shortcut> = (0..COLOR_LABELS)
         .map(|label| Shortcut {
@@ -79,21 +80,21 @@ pub fn shortcuts() -> Vec<Shortcut> {
         .collect();
     out.push(Shortcut::new(
         "logview.add_next_color_label",
-        "Highlight text with next color",
+        msg!("Highlight text with next color"),
         view,
         &["ctrl-d"],
         NextColorLabel,
     ));
     out.push(Shortcut {
         id: "logview.clear_color_labels",
-        label: "Clear all color labels",
+        label: msg!("Clear all color labels"),
         context: view,
         keys: keys(0),
         action: Box::new(ClearColorLabels),
     });
     out.push(Shortcut::new(
         "mainwindow.highlighters",
-        "Highlighters…",
+        msg!("Highlighters…"),
         None,
         &[],
         EditHighlighters,
@@ -166,7 +167,7 @@ impl Highlighters {
     /// The Tools > Highlighters menu (klogg: `HighlightersMenu`): "None",
     /// then each set, checked when active.
     pub fn menu(cx: &App) -> Menu {
-        let mut items = vec![MenuItem::action("None", NoHighlighters)];
+        let mut items = vec![MenuItem::action(tr!("None"), NoHighlighters)];
         if let Some(this) = cx.try_global::<Self>() {
             if !this.sets.sets.is_empty() {
                 items.push(MenuItem::separator());
@@ -179,7 +180,7 @@ impl Highlighters {
                 .checked(this.sets.is_active(&set.id))
             }));
         }
-        Menu::new("Highlighters").items(items)
+        Menu::new(tr!("Highlighters")).items(items)
     }
 
     /// The styles of the color labels.

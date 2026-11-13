@@ -23,10 +23,11 @@ use kloggr_core::highlight::{
 };
 
 use crate::highlighters::{Highlighters, hsla};
+use crate::{msg, tr};
 
 /// klogg: `DEFAULT_NAME`, `DEFAULT_PATTERN`.
-const NEW_SET_NAME: &str = "New Highlighter set";
-const NEW_PATTERN: &str = "New Highlighter";
+const NEW_SET_NAME: &str = msg!("New Highlighter set");
+const NEW_PATTERN: &str = msg!("New Highlighter");
 
 /// Emitted when the dialog should close.
 pub struct Close;
@@ -266,7 +267,9 @@ impl HighlightersEditor {
     }
 
     pub fn add_set(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.sets.sets.push(HighlighterSet::new(NEW_SET_NAME));
+        self.sets.sets.push(HighlighterSet::new(
+            crate::i18n::tr(NEW_SET_NAME).to_string(),
+        ));
         self.select_set(self.sets.sets.len() - 1, window, cx);
     }
 
@@ -296,7 +299,7 @@ impl HighlightersEditor {
             return;
         };
         set.highlighters.push(Highlighter {
-            pattern: NEW_PATTERN.into(),
+            pattern: crate::i18n::tr(NEW_PATTERN).to_string(),
             ..Highlighter::default()
         });
         let last = set.highlighters.len() - 1;
@@ -338,7 +341,7 @@ impl HighlightersEditor {
             files: true,
             directories: false,
             multiple: true,
-            prompt: Some("Import".into()),
+            prompt: Some(tr!("Import")),
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = paths.await else {
@@ -362,7 +365,7 @@ impl HighlightersEditor {
             }
         }
         self.message = Some(if errors.is_empty() {
-            format!("Imported {added} highlighter set(s)")
+            tr!("Imported {count} highlighter set(s)", count = added).to_string()
         } else {
             errors.join("; ")
         });
@@ -392,7 +395,7 @@ impl HighlightersEditor {
         }
         self.message = Some(
             match std::fs::write(&path, klogg_conf::export(&self.sets)) {
-                Ok(()) => format!("Exported to {}", path.display()),
+                Ok(()) => tr!("Exported to {file}", file = path.display()).to_string(),
                 Err(e) => format!("{}: {e}", path.display()),
             },
         );
@@ -464,7 +467,7 @@ fn list_buttons(
     can_down: bool,
     on: impl Fn(&'static str, &ClickEvent, &mut Window, &mut App) + Clone + 'static,
 ) -> impl IntoElement {
-    let button = |name: &'static str, label: &'static str, enabled: bool, tooltip: &'static str| {
+    let button = |name: &'static str, label: &'static str, enabled: bool, tooltip: SharedString| {
         let on = on.clone();
         Button::new(SharedString::from(format!("{prefix}-{name}")))
             .label(label)
@@ -476,10 +479,10 @@ fn list_buttons(
     };
     h_flex()
         .gap_1()
-        .child(button("add", "+", true, "Add"))
-        .child(button("remove", "−", can_edit, "Remove"))
-        .child(button("up", "↑", can_up, "Move up"))
-        .child(button("down", "↓", can_down, "Move down"))
+        .child(button("add", "+", true, tr!("Add")))
+        .child(button("remove", "−", can_edit, tr!("Remove")))
+        .child(button("up", "↑", can_up, tr!("Move up")))
+        .child(button("down", "↓", can_down, tr!("Move down")))
 }
 
 impl HighlightersEditor {
@@ -494,7 +497,7 @@ impl HighlightersEditor {
         v_flex()
             .w(px(200.))
             .gap_1()
-            .child(div().text_sm().child("Highlighter sets"))
+            .child(div().text_sm().child(tr!("Highlighter sets")))
             .child(
                 v_flex()
                     .id("sets")
@@ -530,7 +533,7 @@ impl HighlightersEditor {
                 div()
                     .text_sm()
                     .text_color(muted)
-                    .child("No highlighter set"),
+                    .child(tr!("No highlighter set")),
             );
         };
         let rows: Vec<_> = set
@@ -539,7 +542,7 @@ impl HighlightersEditor {
             .enumerate()
             .map(|(i, h)| {
                 let label = if h.pattern.is_empty() {
-                    "(empty)".to_owned()
+                    tr!("(empty)").to_string()
                 } else {
                     h.pattern.clone()
                 };
@@ -560,7 +563,7 @@ impl HighlightersEditor {
         let entity = cx.entity();
         let h = self.current_highlighter().cloned();
         let check = |id: &'static str,
-                     label: &'static str,
+                     label: SharedString,
                      value: bool,
                      enabled: bool,
                      f: fn(&mut Highlighter, bool),
@@ -580,7 +583,7 @@ impl HighlightersEditor {
                 .child(
                     h_flex()
                         .gap_2()
-                        .child(div().w(px(90.)).text_sm().child("Pattern"))
+                        .child(div().w(px(90.)).text_sm().child(tr!("Pattern")))
                         .child(div().flex_1().child(Input::new(&self.pattern).small())),
                 )
                 .children(self.pattern_error.clone().map(|e| {
@@ -594,7 +597,7 @@ impl HighlightersEditor {
                         .gap_4()
                         .child(check(
                             "ignore-case",
-                            "Ignore case",
+                            tr!("Ignore case"),
                             h.ignore_case,
                             true,
                             |h, v| h.ignore_case = v,
@@ -602,7 +605,7 @@ impl HighlightersEditor {
                         ))
                         .child(check(
                             "use-regex",
-                            "Regular expression",
+                            tr!("Regular expression"),
                             h.use_regex,
                             true,
                             |h, v| h.use_regex = v,
@@ -610,7 +613,7 @@ impl HighlightersEditor {
                         ))
                         .child(check(
                             "match-only",
-                            "Highlight only match",
+                            tr!("Highlight only match"),
                             h.match_only,
                             true,
                             |h, v| h.match_only = v,
@@ -622,13 +625,13 @@ impl HighlightersEditor {
                         .gap_2()
                         .child(check(
                             "variate",
-                            "Variate colors",
+                            tr!("Variate colors"),
                             h.variate_colors,
                             h.match_only,
                             |h, v| h.variate_colors = v,
                             cx,
                         ))
-                        .child(div().text_sm().text_color(muted).child("by ±"))
+                        .child(div().text_sm().text_color(muted).child(tr!("by ±")))
                         .child(div().w(px(56.)).child(Input::new(&self.variance).xsmall()))
                         .child(div().text_sm().text_color(muted).child("%")),
                 )
@@ -638,13 +641,13 @@ impl HighlightersEditor {
                         .child(
                             h_flex()
                                 .gap_2()
-                                .child(div().text_sm().child("Foreground"))
+                                .child(div().text_sm().child(tr!("Foreground")))
                                 .child(ColorPicker::new(&self.fore.state).small()),
                         )
                         .child(
                             h_flex()
                                 .gap_2()
-                                .child(div().text_sm().child("Background"))
+                                .child(div().text_sm().child(tr!("Background")))
                                 .child(ColorPicker::new(&self.back.state).small()),
                         ),
                 )
@@ -655,10 +658,14 @@ impl HighlightersEditor {
             .child(
                 h_flex()
                     .gap_2()
-                    .child(div().w(px(90.)).text_sm().child("Name"))
+                    .child(div().w(px(90.)).text_sm().child(tr!("Name")))
                     .child(div().flex_1().child(Input::new(&self.set_name).small())),
             )
-            .child(div().text_sm().child("Highlighters (the first match wins)"))
+            .child(
+                div()
+                    .text_sm()
+                    .child(tr!("Highlighters (the first match wins)")),
+            )
             .child(
                 v_flex()
                     .id("highlighters")
@@ -693,10 +700,10 @@ impl HighlightersEditor {
             .gap_3()
             .text_sm()
             .text_color(muted)
-            .child(div().w(px(260.)).child("Name"))
-            .child(div().w(px(90.)).child("Foreground"))
-            .child(div().w(px(90.)).child("Background"))
-            .child(div().child("Ctrl+D cycle"));
+            .child(div().w(px(260.)).child(tr!("Name")))
+            .child(div().w(px(90.)).child(tr!("Foreground")))
+            .child(div().w(px(90.)).child(tr!("Background")))
+            .child(div().child(tr!("Ctrl+D cycle")));
         let rows = (0..COLOR_LABELS).map(|i| {
             let (fore, back) = &self.label_colors[i];
             let cycle = self.sets.color_labels[i].cycle;
@@ -751,8 +758,8 @@ impl Render for HighlightersEditor {
                     .underline()
                     .small()
                     .selected_index(self.tab)
-                    .child(Tab::new().label("Highlighter sets"))
-                    .child(Tab::new().label("Color labels"))
+                    .child(Tab::new().label(tr!("Highlighter sets")))
+                    .child(Tab::new().label(tr!("Color labels")))
                     .on_click(cx.listener(|this, index: &usize, _, cx| {
                         this.tab = *index;
                         cx.notify();
@@ -764,13 +771,13 @@ impl Render for HighlightersEditor {
                     .gap_2()
                     .child(
                         Button::new("import")
-                            .label("Import…")
+                            .label(tr!("Import…"))
                             .small()
                             .on_click(cx.listener(|this, _, window, cx| this.import(window, cx))),
                     )
                     .child(
                         Button::new("export")
-                            .label("Export…")
+                            .label(tr!("Export…"))
                             .small()
                             .on_click(cx.listener(|this, _, window, cx| this.export(window, cx))),
                     )
@@ -782,19 +789,19 @@ impl Render for HighlightersEditor {
                     .child(div().flex_1())
                     .child(
                         Button::new("cancel")
-                            .label("Cancel")
+                            .label(tr!("Cancel"))
                             .small()
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(Close))),
                     )
                     .child(
                         Button::new("apply")
-                            .label("Apply")
+                            .label(tr!("Apply"))
                             .small()
                             .on_click(cx.listener(|this, _, _, cx| this.apply(cx))),
                     )
                     .child(
                         Button::new("ok")
-                            .label("OK")
+                            .label(tr!("OK"))
                             .small()
                             .primary()
                             .on_click(cx.listener(|this, _, _, cx| {
@@ -816,7 +823,7 @@ pub fn open(window: &mut Window, cx: &mut App) {
         .detach();
     window.open_dialog(cx, move |dialog, _, _| {
         dialog
-            .title("Highlighters")
+            .title(tr!("Highlighters"))
             .w(px(900.))
             .child(editor.clone())
     });

@@ -8,6 +8,44 @@ Newest first. Each entry gives the date, what klogg does, what kloggr does, and 
 
 ---
 
+## 2026-11-13: Translations: TOML catalogs keyed by the English text, none shipped yet
+
+**klogg:** Qt Linguist `.ts` files compiled into the app; Simplified and Traditional Chinese ship. Options > General > Language, applied after a restart.
+
+**kloggr:** every message goes through `tr!` with its English text as the key, looked up in a TOML catalog (`docs/translating.md`). Catalogs are built in or read from the configuration folder's `translations` folder; the language is chosen in Options > General > Language (default: the system's) and applies from the next start, as in klogg. `crates/kloggr-app/locales/template.toml` lists every message and a test keeps it current. No translation ships yet: only the framework.
+
+**Why:** TOML needs no Qt tools to edit, and a catalog in the configuration folder can be tried without building kloggr. Translations written without a native speaker reviewing them would be worse than English, so they wait for contributors. Key names, encoding names, system error details and the command line stay English.
+
+**Code:** `kloggr_core::i18n`, `crates/kloggr-app/src/i18n.rs`.
+
+## 2026-11-13: No tray icon
+
+**klogg:** Options > View "Minimize to tray" (`view.minimizeToTray`) puts a tray icon up and hides the window when it is minimized or closed; the icon's menu shows the window again or quits.
+
+**kloggr:** no tray icon. Minimizing minimizes, closing the last window quits.
+
+**Why:** GPUI has no tray support. The usual crate (`tray-icon`) needs GTK and libappindicator on Linux, which would add build dependencies and libraries to the .deb and AppImage of an app that otherwise has none, and GNOME shows tray icons only with an extension. Not worth it for an optional feature; revisit if GPUI gains a tray API.
+
+## 2026-11-13: Text smoothing instead of "force antialiasing"
+
+**klogg:** Options > View has "Force font antialiasing" (`mainFont.antialiasing`), which asks Qt to antialias the log views' font even where the system wouldn't, and "Use bold font" (`mainFont.bold`).
+
+**kloggr:** "Bold font" as in klogg. Instead of the antialiasing checkbox, "Text smoothing" chooses System (default), Subpixel or Grayscale, and applies to every window, not only the log views.
+
+**Why:** GPUI always antialiases text, so the checkbox would do nothing; what it can change is subpixel against grayscale smoothing, and only for the whole app (`App::set_text_rendering_mode`). Subpixel is used only where the display supports it.
+
+**Code:** `kloggr_core::options::TextRendering`, `Preferences::apply_style`.
+
+## 2026-11-13: Mouse wheel: Shift and Alt scroll sideways, nothing scrolls by pages
+
+**klogg:** Qt's scroll area: Alt + wheel scrolls sideways, Shift + wheel scrolls a page per notch.
+
+**kloggr:** Alt + wheel scrolls sideways as in klogg, and so does Shift + wheel. There is no page-per-notch wheel.
+
+**Why:** Shift + wheel scrolling sideways is the convention in browsers, editors and file managers on Linux and Windows. macOS turns Shift + wheel into a sideways scroll before the app sees it, so klogg's page scrolling never worked there. Page Up and Page Down still scroll by pages.
+
+**Code:** `LogView::on_scroll`.
+
 ## 2026-11-11: No empty bar above the tabs on macOS
 
 **klogg:** Qt's native title bar on every platform, with the menu bar under it on Windows and Linux, and in the screen's menu bar on macOS.

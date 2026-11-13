@@ -193,7 +193,7 @@ The keys follow *vi* and *less*. All shortcuts can be changed in
 | F5 | reload the file |
 | Esc | stop the search, or the loading |
 
-Shift + mouse wheel scrolls horizontally. Ctrl + mouse wheel (Cmd on macOS)
+Shift or Alt + mouse wheel scrolls horizontally. Ctrl + mouse wheel (Cmd on macOS)
 makes the font bigger or smaller, one point per notch; the size is kept in
 **Options > View**.
 
@@ -278,15 +278,22 @@ it.
 
 **Tools > Options…** has four tabs:
 
-- **General**: reopen the last session, follow new files, check for new
+- **General**: reopen the last session, follow new files, the language (from
+  the next start; see below), check for new
   versions once a week, write a log file (and how detailed), the default search options, match highlighting and
   its colour, search history size, and quick find options.
-- **View**: font, overview bar, line numbers, and hiding ANSI colour
+- **View**: font (family, size, bold), text smoothing (the system's
+  choice, subpixel or grayscale, for every window), overview bar, line
+  numbers, and hiding ANSI colour
   sequences (`ESC[…m`) that some programs write for terminals.
 - **File**: follow on scrolling past the end, archive extraction, the
   number of recent files, and how files are watched for changes
   (notifications, checking at an interval, or both).
 - **Shortcuts**: a primary and a secondary key for every action.
+
+kloggr's interface is in English; translations can be added as catalogs in
+the configuration folder's `translations` folder and chosen under
+**Options > General > Language** (see `docs/translating.md` in the source).
 
 Settings are kept in `settings.toml` in kloggr's configuration folder
 (`~/.config/kloggr` on Linux), next to the session, highlighters and

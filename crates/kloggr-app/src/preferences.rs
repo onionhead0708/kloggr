@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use gpui::{App, Global, Hsla, Window, px};
 use gpui_component::{Theme, ThemeMode};
-use kloggr_core::options::{Options, Style};
+use kloggr_core::options::{Options, Style, TextRendering};
 
 use crate::highlighters::hsla;
 use crate::shortcuts;
@@ -30,6 +30,11 @@ impl Preferences {
             config_dir,
             default_font: None,
         });
+    }
+
+    /// kloggr's configuration folder, if there is one.
+    pub fn config_dir(cx: &App) -> Option<PathBuf> {
+        cx.try_global::<Self>().and_then(|p| p.config_dir.clone())
     }
 
     /// The options; the defaults if the global isn't installed (tests).
@@ -83,6 +88,11 @@ impl Preferences {
             let font = (theme.mono_font_family.clone(), theme.mono_font_size);
             cx.global_mut::<Self>().default_font = Some(font);
         }
+        cx.set_text_rendering_mode(match view.text_rendering {
+            TextRendering::System => gpui::TextRenderingMode::PlatformDefault,
+            TextRendering::Subpixel => gpui::TextRenderingMode::Subpixel,
+            TextRendering::Grayscale => gpui::TextRenderingMode::Grayscale,
+        });
         let default = cx.try_global::<Self>().and_then(|p| p.default_font.clone());
         let theme = Theme::global_mut(cx);
         if let Some((family, size)) = default {

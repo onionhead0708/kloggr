@@ -9,6 +9,7 @@ use gpui_component::WindowExt;
 use kloggr_core::version_check::{LATEST_RELEASE_URL, Release, Schedule};
 
 use crate::preferences::Preferences;
+use crate::tr;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -90,12 +91,16 @@ fn announce(release: Release, window: &mut gpui::Window, cx: &mut App) {
         notes += line;
     }
     let description = if notes.is_empty() {
-        format!("You have version {VERSION}.")
+        tr!("You have version {version}.", version = VERSION)
     } else {
-        format!("You have version {VERSION}.\n\n{notes}")
+        tr!(
+            "You have version {version}.\n\n{notes}",
+            version = VERSION,
+            notes = notes
+        )
     };
     let (title, url) = (
-        format!("kloggr {} is available", release.version()),
+        tr!("kloggr {version} is available", version = release.version()),
         release.html_url,
     );
     window.open_alert_dialog(cx, move |alert, _, _| {
@@ -103,9 +108,9 @@ fn announce(release: Release, window: &mut gpui::Window, cx: &mut App) {
         alert
             .title(title.clone())
             .description(description.clone())
-            .ok_text("Open download page")
+            .ok_text(tr!("Open download page"))
             .show_cancel(true)
-            .cancel_text("Later")
+            .cancel_text(tr!("Later"))
             .on_ok(move |_, _, cx| {
                 cx.open_url(&url);
                 true

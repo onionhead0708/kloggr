@@ -3,6 +3,7 @@
 //! selected part) in place, and read-outs of it. The log views send their
 //! selection to it (klogg: Ctrl+Z, Ctrl+Shift+Z).
 
+use crate::{msg, tr};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, AppContext, Bounds, ClipboardItem, Context, Entity, Focusable, Global, InteractiveElement,
@@ -62,7 +63,7 @@ impl Scratchpad {
                 cx.notify();
             }));
         self.tabs.push(PadTab {
-            name: format!("Scratchpad {}", self.counter),
+            name: tr!("Scratchpad {number}", number = self.counter).to_string(),
             text,
         });
         self.active = self.tabs.len() - 1;
@@ -112,9 +113,9 @@ impl Scratchpad {
                     }
                 });
                 cx.write_to_clipboard(ClipboardItem::new_string(result));
-                self.status = Some("Copied to clipboard");
+                self.status = Some(msg!("Copied to clipboard"));
             }
-            None => self.status = Some("Empty transformation"),
+            None => self.status = Some(msg!("Empty transformation")),
         }
         cx.notify();
     }
@@ -159,13 +160,13 @@ type Transform = fn(&str) -> Option<String>;
 
 /// The toolbar's transformations (klogg's order).
 const TRANSFORMS: [(&str, Transform); 7] = [
-    ("From base64", scratch::from_base64),
-    ("To base64", scratch::to_base64),
-    ("From hex", scratch::from_hex),
-    ("To hex", scratch::to_hex),
-    ("Decode url", scratch::decode_url),
-    ("Format json", scratch::format_json),
-    ("Format xml", scratch::format_xml),
+    (msg!("From base64"), scratch::from_base64),
+    (msg!("To base64"), scratch::to_base64),
+    (msg!("From hex"), scratch::from_hex),
+    (msg!("To hex"), scratch::to_hex),
+    (msg!("Decode url"), scratch::decode_url),
+    (msg!("Format json"), scratch::format_json),
+    (msg!("Format xml"), scratch::format_xml),
 ];
 
 impl Render for Scratchpad {
@@ -179,12 +180,12 @@ impl Render for Scratchpad {
             .children(TRANSFORMS.iter().enumerate().map(|(i, (label, f))| {
                 let f = *f;
                 Button::new(("transform", i))
-                    .label(*label)
+                    .label(crate::i18n::tr(label))
                     .small()
                     .ghost()
                     .on_click(cx.listener(move |this, _, window, cx| this.transform(f, window, cx)))
             }));
-        let readout = |label: &'static str, value: String| {
+        let readout = |label: SharedString, value: String| {
             v_flex()
                 .gap_0p5()
                 .child(div().text_xs().text_color(muted).child(label))
@@ -219,7 +220,7 @@ impl Render for Scratchpad {
                     .label("+")
                     .xsmall()
                     .ghost()
-                    .tooltip("New tab (Ctrl+N)")
+                    .tooltip(tr!("New tab (Ctrl+N)"))
                     .on_click(cx.listener(|this, _, window, cx| this.add_tab(window, cx))),
             )
             .on_click(cx.listener(|this, index: &usize, _, cx| {
@@ -249,12 +250,12 @@ impl Render for Scratchpad {
                         v_flex()
                             .w(px(260.))
                             .gap_2()
-                            .child(readout("CRC32 hex", readouts.crc32_hex))
-                            .child(readout("CRC32 dec", readouts.crc32_dec))
-                            .child(readout("File time (UTC)", readouts.file_time))
-                            .child(readout("Dec->Hex", readouts.dec_to_hex))
-                            .child(readout("Hex->Dec", readouts.hex_to_dec))
-                            .child(readout("Time (UTC)", readouts.time)),
+                            .child(readout(tr!("CRC32 hex"), readouts.crc32_hex))
+                            .child(readout(tr!("CRC32 dec"), readouts.crc32_dec))
+                            .child(readout(tr!("File time (UTC)"), readouts.file_time))
+                            .child(readout(tr!("Dec->Hex"), readouts.dec_to_hex))
+                            .child(readout(tr!("Hex->Dec"), readouts.hex_to_dec))
+                            .child(readout(tr!("Time (UTC)"), readouts.time)),
                     ),
             )
             .child(
@@ -262,7 +263,7 @@ impl Render for Scratchpad {
                     .h(px(18.))
                     .text_xs()
                     .text_color(muted)
-                    .children(self.status.map(SharedString::from)),
+                    .children(self.status.map(crate::i18n::tr)),
             );
         // Linux: the title bar is ours. Elsewhere the native one shows the title.
         v_flex()
@@ -272,7 +273,8 @@ impl Render for Scratchpad {
             .on_action(cx.listener(|this, _: &NewTab, window, cx| this.add_tab(window, cx)))
             .when(crate::OWN_TITLE_BAR, |this| {
                 this.child(
-                    TitleBar::new().child(div().flex_1().text_sm().child("kloggr - scratchpad")),
+                    TitleBar::new()
+                        .child(div().flex_1().text_sm().child(tr!("kloggr - scratchpad"))),
                 )
             })
             .child(body)
@@ -320,7 +322,7 @@ pub fn show(
                 };
                 if !crate::OWN_TITLE_BAR {
                     options.titlebar = Some(TitlebarOptions {
-                        title: Some("kloggr - scratchpad".into()),
+                        title: Some(tr!("kloggr - scratchpad")),
                         ..Default::default()
                     });
                 }

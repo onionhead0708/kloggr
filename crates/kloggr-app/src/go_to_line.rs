@@ -17,6 +17,7 @@ use gpui_component::input::{Input, InputState};
 
 use crate::crawler::{self, Crawler};
 use crate::shortcuts::Shortcut;
+use crate::{msg, tr};
 
 actions!(go_to_line, [Open]);
 
@@ -24,7 +25,7 @@ actions!(go_to_line, [Open]);
 pub fn shortcuts() -> Vec<Shortcut> {
     vec![Shortcut::new(
         "logview.jump_to_line",
-        "Jump to line",
+        msg!("Jump to line"),
         Some(crawler::CONTEXT),
         &["secondary-l"],
         Open,
@@ -48,7 +49,7 @@ impl GoToLine {
     pub fn new(window: &mut Window, cx: &mut Context<Crawler>) -> Self {
         Self {
             open: false,
-            input: cx.new(|cx| InputState::new(window, cx).placeholder("Line number")),
+            input: cx.new(|cx| InputState::new(window, cx).placeholder(tr!("Line number"))),
             error: None,
             failed_text: String::new(),
         }
@@ -56,10 +57,10 @@ impl GoToLine {
 }
 
 /// The 0-based line for what was typed, or an error message.
-pub fn parse_line(text: &str) -> Result<usize, &'static str> {
+pub fn parse_line(text: &str) -> Result<usize, gpui::SharedString> {
     let text = text.trim();
     if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
-        return Err("Not a line number");
+        return Err(tr!("Not a line number"));
     }
     // Too large to parse: past the end anyway.
     let number: u64 = text.parse().unwrap_or(u64::MAX);
@@ -97,7 +98,7 @@ impl Crawler {
                 self.close_go_to_line(window, cx);
             }
             Err(message) => {
-                self.go_to.error = Some(message.to_owned());
+                self.go_to.error = Some(message.to_string());
                 self.go_to.failed_text = text;
                 cx.notify();
             }
@@ -152,12 +153,12 @@ impl Crawler {
             .child(
                 Button::new("go-to-close")
                     .label("×")
-                    .tooltip("Close (Esc)")
+                    .tooltip(tr!("Close (Esc)"))
                     .small()
                     .ghost()
                     .on_click(cx.listener(|this, _, window, cx| this.close_go_to_line(window, cx))),
             )
-            .child(div().px_1().text_sm().child("Jump to line"))
+            .child(div().px_1().text_sm().child(tr!("Jump to line")))
             .child(div().w_40().child(Input::new(&self.go_to.input).small()))
             .child(div().px_2().text_sm().text_color(color).child(hint))
     }

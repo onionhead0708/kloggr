@@ -16,6 +16,7 @@ use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::{ActiveTheme, Sizable, WindowExt, h_flex, v_flex};
 
 use crate::shortcuts;
+use crate::tr;
 
 /// The dialog's result: the key, or `None` when cleared.
 pub struct Done(pub Option<String>);
@@ -102,7 +103,7 @@ impl Render for KeyCapture {
         let shown = self.key.as_deref().map(shortcuts::display);
         v_flex()
             .gap_2()
-            .child(div().text_sm().child("Press new key combination"))
+            .child(div().text_sm().child(tr!("Press new key combination")))
             .child(
                 h_flex()
                     .gap_2()
@@ -126,7 +127,7 @@ impl Render for KeyCapture {
                     )
                     .child(
                         Button::new("key-clear")
-                            .label("Clear")
+                            .label(tr!("Clear"))
                             .small()
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.key = None;
@@ -141,13 +142,13 @@ impl Render for KeyCapture {
                     .gap_2()
                     .child(
                         Button::new("key-cancel")
-                            .label("Cancel")
+                            .label(tr!("Cancel"))
                             .small()
                             .on_click(|_, window, cx| window.close_dialog(cx)),
                     )
                     .child(
                         Button::new("key-ok")
-                            .label("OK")
+                            .label(tr!("OK"))
                             .small()
                             .primary()
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -182,7 +183,7 @@ pub fn open(
             window.focus(&focus, cx);
         }
         dialog
-            .title("Shortcut")
+            .title(tr!("Shortcut"))
             .w(px(380.))
             .child(dialog_capture.clone())
     });

@@ -27,6 +27,7 @@ use crate::crawler::{self, Crawler};
 use crate::log_view::{self, LogView};
 use crate::preferences::Preferences;
 use crate::shortcuts::Shortcut;
+use crate::{msg, tr};
 
 actions!(
     quick_find,
@@ -49,21 +50,21 @@ pub fn shortcuts() -> Vec<Shortcut> {
     vec![
         Shortcut::new(
             "mainwindow.open_qf",
-            "Open quick find",
+            msg!("Open quick find"),
             crawler,
             &["secondary-f"],
             Open,
         ),
         Shortcut::new(
             "logview.open_qf_forward",
-            "Quick find forward",
+            msg!("Quick find forward"),
             view,
             &["'"],
             OpenForward,
         ),
         Shortcut::new(
             "logview.open_qf_backward",
-            "Quick find backward",
+            msg!("Quick find backward"),
             view,
             &["\""],
             OpenBackward,
@@ -72,42 +73,42 @@ pub fn shortcuts() -> Vec<Shortcut> {
         // the log views (`AbstractLogView::keyPressEvent`).
         Shortcut::new(
             "qf.find_next",
-            "Find next",
+            msg!("Find next"),
             crawler,
             &["f3", "secondary-g"],
             FindNext,
         ),
         Shortcut::new(
             "qf.find_prev",
-            "Find previous",
+            msg!("Find previous"),
             crawler,
             &["shift-f3", "secondary-shift-g"],
             FindPrevious,
         ),
         Shortcut::new(
             "logview.qf_next",
-            "Find next (log view)",
+            msg!("Find next (log view)"),
             view,
             &["n"],
             FindNext,
         ),
         Shortcut::new(
             "logview.qf_prev",
-            "Find previous (log view)",
+            msg!("Find previous (log view)"),
             view,
             &["shift-n"],
             FindPrevious,
         ),
         Shortcut::new(
             "logview.qf_selected_forward",
-            "Find selection forward",
+            msg!("Find selection forward"),
             view,
             &["*", "."],
             FindSelectionNext,
         ),
         Shortcut::new(
             "logview.qf_selected_backward",
-            "Find selection backward",
+            msg!("Find selection backward"),
             view,
             &["/", ","],
             FindSelectionPrevious,
@@ -166,7 +167,7 @@ impl QuickFind {
     pub fn new(window: &mut Window, cx: &mut Context<Crawler>) -> Self {
         Self {
             open: false,
-            input: cx.new(|cx| InputState::new(window, cx).placeholder("Quick find")),
+            input: cx.new(|cx| InputState::new(window, cx).placeholder(tr!("Quick find"))),
             match_case: Preferences::get(cx).search.quickfind_match_case,
             regex: Preferences::get(cx).search.quickfind_regex,
             info: String::new(),
@@ -406,7 +407,8 @@ impl Crawler {
                 let alive = this.update(cx, |this, cx| {
                     match event {
                         FindEvent::Progress(p) => {
-                            this.qf.info = format!("Searching (position {p} %)");
+                            this.qf.info =
+                                tr!("Searching (position {percent} %)", percent = p).to_string();
                         }
                         FindEvent::Done(Ok(Some(found))) => {
                             this.qf.running = false;
@@ -423,9 +425,11 @@ impl Crawler {
                             this.qf.running = false;
                             this.qf.queued.clear();
                             this.qf.info = match direction {
-                                Direction::Forward => "Reached end of file, no occurrence found.",
+                                Direction::Forward => {
+                                    tr!("Reached end of file, no occurrence found.")
+                                }
                                 Direction::Backward => {
-                                    "Reached beginning of file, no occurrence found."
+                                    tr!("Reached beginning of file, no occurrence found.")
                                 }
                             }
                             .into();
@@ -457,7 +461,7 @@ impl Crawler {
             .child(
                 Button::new("qf-close")
                     .label("×")
-                    .tooltip("Close (Esc)")
+                    .tooltip(tr!("Close (Esc)"))
                     .small()
                     .ghost()
                     .on_click(cx.listener(|this, _, window, cx| this.close_quick_find(window, cx))),
@@ -465,8 +469,8 @@ impl Crawler {
             .child(div().w_80().child(Input::new(&qf.input).small()))
             .child(
                 Toggle::new("qf-match-case")
-                    .label("Aa")
-                    .tooltip("Match case")
+                    .label(tr!("Aa"))
+                    .tooltip(tr!("Match case"))
                     .checked(qf.match_case)
                     .small()
                     .on_click(cx.listener(|this, on: &bool, _, cx| {
@@ -477,7 +481,7 @@ impl Crawler {
             .child(
                 Toggle::new("qf-regex")
                     .label(".*")
-                    .tooltip("Use regex")
+                    .tooltip(tr!("Use regex"))
                     .checked(qf.regex)
                     .small()
                     .on_click(cx.listener(|this, on: &bool, _, cx| {
@@ -487,8 +491,8 @@ impl Crawler {
             )
             .child(
                 Button::new("qf-prev")
-                    .label("Previous")
-                    .tooltip("Shift+Enter, N, Shift+F3")
+                    .label(tr!("Previous"))
+                    .tooltip(tr!("Shift+Enter, N, Shift+F3"))
                     .small()
                     .ghost()
                     .on_click(cx.listener(|this, _, window, cx| {
@@ -497,8 +501,8 @@ impl Crawler {
             )
             .child(
                 Button::new("qf-next")
-                    .label("Next")
-                    .tooltip("Enter, n, F3")
+                    .label(tr!("Next"))
+                    .tooltip(tr!("Enter, n, F3"))
                     .small()
                     .ghost()
                     .on_click(cx.listener(|this, _, window, cx| {

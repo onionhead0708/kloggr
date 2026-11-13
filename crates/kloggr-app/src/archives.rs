@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 
+use crate::tr;
 use gpui::{
     App, AppContext, Context, Entity, EventEmitter, InteractiveElement, IntoElement, ParentElement,
     Render, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
@@ -68,7 +69,7 @@ impl Render for ArchivePicker {
                 div()
                     .text_sm()
                     .text_color(muted)
-                    .child(format!("Extracted to {}", self.root.display())),
+                    .child(tr!("Extracted to {folder}", folder = self.root.display())),
             )
             .child(
                 v_flex()
@@ -88,13 +89,13 @@ impl Render for ArchivePicker {
                     .gap_2()
                     .child(
                         Button::new("archive-cancel")
-                            .label("Cancel")
+                            .label(tr!("Cancel"))
                             .small()
                             .on_click(|_, window, cx| window.close_dialog(cx)),
                     )
                     .child(
                         Button::new("archive-open")
-                            .label("Open")
+                            .label(tr!("Open"))
                             .small()
                             .primary()
                             .disabled(none)
@@ -140,7 +141,7 @@ pub fn pick(
     let dialog_picker = picker.clone();
     window.open_dialog(cx, move |dialog, _, _| {
         dialog
-            .title("Open file from archive")
+            .title(tr!("Open file from archive"))
             .w(px(620.))
             .child(dialog_picker.clone())
     });

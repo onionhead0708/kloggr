@@ -27,6 +27,21 @@ pub enum Style {
     Dark,
 }
 
+/// How text is smoothed (klogg: `mainFont.antialiasing`, which forces
+/// antialiasing on). GPUI always antialiases text, so the choice is between
+/// subpixel and grayscale smoothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextRendering {
+    /// What the system recommends for the font and size.
+    #[default]
+    System,
+    /// Subpixel (ClearType-style) smoothing, on displays that support it.
+    Subpixel,
+    /// Grayscale smoothing.
+    Grayscale,
+}
+
 /// The options dialog's General tab.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -43,6 +58,9 @@ pub struct General {
     pub log_file: bool,
     /// How much it says (klogg: `logging.verbosity`, 4 = info).
     pub log_level: LogLevel,
+    /// The interface's language, a BCP 47 tag such as `"de"`; `None`: the
+    /// system's (klogg: `language`). Applies from the next start.
+    pub language: Option<String>,
 }
 
 impl Default for General {
@@ -53,6 +71,7 @@ impl Default for General {
             check_for_updates: true,
             log_file: false,
             log_level: LogLevel::Info,
+            language: None,
         }
     }
 }
@@ -162,6 +181,10 @@ pub struct View {
     pub font_family: Option<String>,
     /// In points; `None`: the theme's.
     pub font_size: Option<f32>,
+    /// Bold text in the log views (klogg: `mainFont.bold`).
+    pub font_bold: bool,
+    /// Text smoothing in every window (klogg: `mainFont.antialiasing`).
+    pub text_rendering: TextRendering,
     pub style: Style,
     /// klogg: `view.overviewVisible`.
     pub overview: bool,
@@ -183,6 +206,8 @@ impl Default for View {
         Self {
             font_family: None,
             font_size: None,
+            font_bold: false,
+            text_rendering: TextRendering::System,
             style: Style::System,
             overview: true,
             line_numbers_main: true,
@@ -366,6 +391,9 @@ mod tests {
         o.view.font_family = Some("JetBrains Mono".into());
         o.view.font_size = Some(13.0);
         o.view.style = Style::Dark;
+        o.view.font_bold = true;
+        o.general.language = Some("zh-CN".into());
+        o.view.text_rendering = TextRendering::Grayscale;
         o.search.highlight_color = Color::parse("#80c0c0c0");
         o.shortcuts
             .insert("logview.mark".into(), vec!["ctrl-m".into(), "m".into()]);

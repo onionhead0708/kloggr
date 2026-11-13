@@ -3,6 +3,7 @@
 
 use std::path::Path;
 
+use crate::tr;
 use gpui::{App, ClipboardItem, Window};
 use gpui_component::WindowExt;
 use kloggr_core::crash;
@@ -17,24 +18,30 @@ pub fn show_pending(config_dir: &Path, window: &mut Window, cx: &mut App) {
     let text = std::fs::read_to_string(newest).unwrap_or_default();
     let moved = crash::mark_shown(config_dir);
     let saved = moved.last().unwrap_or(newest).display().to_string();
-    let first = text.lines().next().unwrap_or("kloggr crashed").to_owned();
+    let first = text
+        .lines()
+        .next()
+        .map_or_else(|| tr!("kloggr crashed"), |l| l.to_owned().into());
     let others = match pending.len() - 1 {
-        0 => String::new(),
-        1 => " There is 1 older report next to it.".to_owned(),
-        n => format!(" There are {n} older reports next to it."),
+        0 => gpui::SharedString::default(),
+        1 => tr!(" There is 1 older report next to it."),
+        n => tr!(" There are {count} older reports next to it.", count = n),
     };
     window.open_alert_dialog(cx, move |alert, _, _| {
         let text = text.clone();
         alert
-            .title("kloggr closed unexpectedly")
-            .description(format!(
+            .title(tr!("kloggr closed unexpectedly"))
+            .description(tr!(
                 "{first}\n\nThe report is saved in {saved}.{others} \
                  Report issue opens a new GitHub issue with it, and copies it \
-                 to the clipboard."
+                 to the clipboard.",
+                first = first,
+                saved = saved,
+                others = others,
             ))
-            .ok_text("Report issue")
+            .ok_text(tr!("Report issue"))
             .show_cancel(true)
-            .cancel_text("Close")
+            .cancel_text(tr!("Close"))
             .on_ok(move |_, _, cx| {
                 cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
                 cx.open_url(&crash::issue_url(&text, ISSUE_BODY_MAX));

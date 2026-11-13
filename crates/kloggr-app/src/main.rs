@@ -13,6 +13,7 @@ mod go_to_line;
 mod help;
 mod highlighters;
 mod highlighters_dialog;
+mod i18n;
 mod key_capture;
 mod log_view;
 mod options_dialog;
@@ -52,6 +53,10 @@ fn main() {
     if let Some(path) = init_logging(&args, options.as_ref()) {
         LOG_FILE.set(path).ok();
     }
+    i18n::init(
+        options.as_ref().and_then(|o| o.general.language.as_deref()),
+        kloggr_core::settings::config_dir().as_deref(),
+    );
     tracing::info!(
         "kloggr {} on {}-{}, files {:?}",
         env!("CARGO_PKG_VERSION"),

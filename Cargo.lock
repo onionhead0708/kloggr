@@ -3680,6 +3680,7 @@ dependencies = [
  "gpui-pre",
  "gpui-pre-platform",
  "kloggr-core",
+ "sys-locale",
  "tracing",
  "tracing-subscriber",
  "ureq",
@@ -3698,6 +3699,7 @@ dependencies = [
  "directories",
  "encoding_rs",
  "flate2",
+ "libc",
  "lzma-rs",
  "memchr",
  "memmap2",
@@ -3717,6 +3719,13 @@ dependencies = [
  "unicode-width",
  "ureq",
  "zip",
+]
+
+[[package]]
+name = "kloggr-grep"
+version = "0.3.0"
+dependencies = [
+ "kloggr-core",
 ]
 
 [[package]]
