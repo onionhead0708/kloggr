@@ -34,6 +34,7 @@ pub mod download;
 pub mod encoding;
 pub mod file;
 pub mod highlight;
+pub mod i18n;
 pub mod instance;
 pub mod line_index;
 pub mod options;

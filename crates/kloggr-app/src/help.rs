@@ -6,6 +6,7 @@
 //! opens a new GitHub issue with klogg's bug template, the version and the
 //! system filled in.
 
+use crate::tr;
 use gpui::{
     App, AppContext, Bounds, Context, Global, IntoElement, ParentElement, Render, Styled,
     TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions, actions, div, px, size,
@@ -25,7 +26,7 @@ pub struct Documentation;
 impl Render for Documentation {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let titlebar = crate::OWN_TITLE_BAR
-            .then(|| TitleBar::new().child(div().text_sm().child("kloggr documentation")));
+            .then(|| TitleBar::new().child(div().text_sm().child(tr!("kloggr documentation"))));
         v_flex()
             .size_full()
             .bg(cx.theme().background)
@@ -75,7 +76,7 @@ pub fn show_documentation(cx: &mut App) {
         };
         if !crate::OWN_TITLE_BAR {
             options.titlebar = Some(TitlebarOptions {
-                title: Some("kloggr documentation".into()),
+                title: Some(tr!("kloggr documentation")),
                 ..Default::default()
             });
         }
@@ -97,8 +98,8 @@ pub fn report_issue(cx: &mut App) {
 
 /// Help > About (klogg: `MainWindow::about`).
 pub fn about(window: &mut Window, cx: &mut App) {
-    let text = format!(
-        "**kloggr {}**\n\n\
+    let text = tr!(
+        "**kloggr {version}**\n\n\
          A fast log viewer for very large files.\n\n\
          [{repo}]({repo})\n\n\
          kloggr is a Rust rewrite of [klogg](https://github.com/variar/klogg) \
@@ -106,17 +107,21 @@ pub fn about(window: &mut Window, cx: &mut App) {
          [glogg](https://glogg.bonnefon.org) by Nicolas Bonnefon.\n\n\
          You may modify and redistribute the program under the terms of the \
          GPL (version 3 or later).",
-        env!("CARGO_PKG_VERSION"),
+        version = env!("CARGO_PKG_VERSION"),
         repo = kloggr_core::REPOSITORY,
     );
     let text = match crate::LOG_FILE.get() {
-        Some(path) => format!("{text}\n\nLog file: `{}`", path.display()),
+        Some(path) => tr!(
+            "{text}\n\nLog file: `{path}`",
+            text = text,
+            path = path.display()
+        ),
         None => text,
     };
     window.open_alert_dialog(cx, move |alert, _, _| {
         alert
-            .title("About kloggr")
+            .title(tr!("About kloggr"))
             .description(TextView::markdown("about", text.clone()).selectable(true))
-            .ok_text("Close")
+            .ok_text(tr!("Close"))
     });
 }

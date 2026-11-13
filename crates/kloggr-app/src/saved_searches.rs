@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::tr;
 use gpui::{
     App, AppContext, Context, Entity, EventEmitter, Focusable, Global, InteractiveElement,
     IntoElement, ParentElement, PathPromptOptions, Render, SharedString,
@@ -72,7 +73,7 @@ pub fn edit_history(window: &mut Window, cx: &mut App) {
     window.open_dialog(cx, move |dialog, _, _| {
         let state = state.clone();
         dialog
-            .title("Search history")
+            .title(tr!("Search history"))
             .w(px(560.))
             .child(
                 v_flex()
@@ -80,7 +81,7 @@ pub fn edit_history(window: &mut Window, cx: &mut App) {
                     .child(
                         div()
                             .text_sm()
-                            .child("One search per line, most recent first"),
+                            .child(tr!("One search per line, most recent first")),
                     )
                     .child(Textarea::new(&state).h(px(300.))),
             )
@@ -94,7 +95,7 @@ pub fn edit_history(window: &mut Window, cx: &mut App) {
 /// klogg: "Save as predefined filter" from the search box: asks for a
 /// name and adds the search as a filter.
 pub fn save_as_filter(pattern: String, regex: bool, window: &mut Window, cx: &mut App) {
-    let name = cx.new(|cx| InputState::new(window, cx).placeholder("Name"));
+    let name = cx.new(|cx| InputState::new(window, cx).placeholder(tr!("Name")));
     let first = std::cell::Cell::new(true);
     window.open_dialog(cx, move |dialog, window, cx| {
         if first.replace(false) {
@@ -102,12 +103,16 @@ pub fn save_as_filter(pattern: String, regex: bool, window: &mut Window, cx: &mu
         }
         let (name, pattern) = (name.clone(), pattern.clone());
         dialog
-            .title("Save as predefined filter")
+            .title(tr!("Save as predefined filter"))
             .w(px(480.))
             .child(
                 v_flex()
                     .gap_2()
-                    .child(div().text_sm().child(format!("Pattern: {pattern}")))
+                    .child(
+                        div()
+                            .text_sm()
+                            .child(tr!("Pattern: {pattern}", pattern = pattern)),
+                    )
                     .child(Input::new(&name)),
             )
             .footer(ok_cancel("save-filter", move |_, cx| {
@@ -132,13 +137,13 @@ fn ok_cancel(id: &'static str, ok: impl Fn(&mut Window, &mut App) + 'static) -> 
         .gap_2()
         .child(
             Button::new(SharedString::from(format!("{id}-cancel")))
-                .label("Cancel")
+                .label(tr!("Cancel"))
                 .small()
                 .on_click(|_, window, cx| window.close_dialog(cx)),
         )
         .child(
             Button::new(SharedString::from(format!("{id}-ok")))
-                .label("OK")
+                .label(tr!("OK"))
                 .small()
                 .primary()
                 .on_click(move |_, window, cx| {
@@ -181,7 +186,7 @@ impl FiltersEditor {
 
     fn push(&mut self, f: PredefinedFilter, window: &mut Window, cx: &mut Context<Self>) {
         let input = |text: String,
-                     placeholder: &'static str,
+                     placeholder: SharedString,
                      window: &mut Window,
                      cx: &mut Context<Self>| {
             cx.new(|cx| {
@@ -191,8 +196,8 @@ impl FiltersEditor {
             })
         };
         self.rows.push(FilterRow {
-            name: input(f.name, "Name", window, cx),
-            pattern: input(f.pattern, "Pattern", window, cx),
+            name: input(f.name, tr!("Name"), window, cx),
+            pattern: input(f.pattern, tr!("Pattern"), window, cx),
             regex: f.regex,
         });
     }
@@ -228,7 +233,7 @@ impl FiltersEditor {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("Import".into()),
+            prompt: Some(tr!("Import")),
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = paths.await else {
@@ -250,7 +255,7 @@ impl FiltersEditor {
             .map_err(|e| e.to_string())
             .and_then(|text| {
                 kloggr_core::searches::import_klogg_filters(&text)
-                    .ok_or_else(|| "no predefined filters in it".to_owned())
+                    .ok_or_else(|| tr!("no predefined filters in it").to_string())
             });
         self.message = Some(match filters {
             Ok(filters) => {
@@ -259,7 +264,12 @@ impl FiltersEditor {
                 for f in filters {
                     self.push(f, window, cx);
                 }
-                format!("Imported {n} filter(s) from {}", path.display())
+                tr!(
+                    "Imported {count} filter(s) from {file}",
+                    count = n,
+                    file = path.display()
+                )
+                .to_string()
             }
             Err(e) => format!("{}: {e}", path.display()),
         });
@@ -286,7 +296,7 @@ impl FiltersEditor {
         }
         let text = kloggr_core::searches::export_klogg_filters(&self.filters(cx));
         self.message = Some(match std::fs::write(&path, text) {
-            Ok(()) => format!("Exported to {}", path.display()),
+            Ok(()) => tr!("Exported to {file}", file = path.display()).to_string(),
             Err(e) => format!("{}: {e}", path.display()),
         });
         cx.notify();
@@ -311,7 +321,7 @@ impl Render for FiltersEditor {
                 .child(div().flex_1().child(Input::new(&row.pattern).small()))
                 .child(
                     Checkbox::new(id("regex"))
-                        .label("Regex")
+                        .label(tr!("Regex"))
                         .checked(row.regex)
                         .on_click(cx.listener(move |this, on: &bool, _, cx| {
                             this.rows[i].regex = *on;
@@ -347,7 +357,7 @@ impl Render for FiltersEditor {
                         .label("−")
                         .xsmall()
                         .ghost()
-                        .tooltip("Remove")
+                        .tooltip(tr!("Remove"))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.rows.remove(i);
                             cx.notify();
@@ -361,8 +371,8 @@ impl Render for FiltersEditor {
                     .gap_2()
                     .text_sm()
                     .text_color(muted)
-                    .child(div().w(px(180.)).child("Name"))
-                    .child(div().flex_1().child("Pattern")),
+                    .child(div().w(px(180.)).child(tr!("Name")))
+                    .child(div().flex_1().child(tr!("Pattern"))),
             )
             .child(
                 v_flex()
@@ -380,19 +390,19 @@ impl Render for FiltersEditor {
                     .gap_2()
                     .child(
                         Button::new("filter-add")
-                            .label("Add")
+                            .label(tr!("Add"))
                             .small()
                             .on_click(cx.listener(|this, _, window, cx| this.add(window, cx))),
                     )
                     .child(
                         Button::new("filter-import")
-                            .label("Import…")
+                            .label(tr!("Import…"))
                             .small()
                             .on_click(cx.listener(|this, _, window, cx| this.import(window, cx))),
                     )
                     .child(
                         Button::new("filter-export")
-                            .label("Export…")
+                            .label(tr!("Export…"))
                             .small()
                             .on_click(cx.listener(|this, _, window, cx| this.export(window, cx))),
                     )
@@ -406,13 +416,13 @@ impl Render for FiltersEditor {
                     )
                     .child(
                         Button::new("filters-cancel")
-                            .label("Cancel")
+                            .label(tr!("Cancel"))
                             .small()
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(Close))),
                     )
                     .child(
                         Button::new("filters-ok")
-                            .label("OK")
+                            .label(tr!("OK"))
                             .small()
                             .primary()
                             .on_click(cx.listener(|this, _, _, cx| {
@@ -434,7 +444,7 @@ pub fn edit_filters(window: &mut Window, cx: &mut App) {
         .detach();
     window.open_dialog(cx, move |dialog, _, _| {
         dialog
-            .title("Predefined filters")
+            .title(tr!("Predefined filters"))
             .w(px(760.))
             .child(editor.clone())
     });

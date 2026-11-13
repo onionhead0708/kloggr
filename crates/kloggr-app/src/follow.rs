@@ -18,6 +18,7 @@
 //! In follow mode both views stay at the bottom. Scrolling up or jumping
 //! elsewhere leaves it; Shift+G or scrolling down at the bottom comes back.
 
+use crate::msg;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -39,21 +40,21 @@ pub fn shortcuts() -> Vec<Shortcut> {
     vec![
         Shortcut::new(
             "mainwindow.follow_file",
-            "Follow file",
+            msg!("Follow file"),
             Some(crawler::CONTEXT),
             &["f", "f10"],
             ToggleFollow,
         ),
         Shortcut::new(
             "mainwindow.reload",
-            "Reload file",
+            msg!("Reload file"),
             None,
             &["f5", "secondary-r"],
             Reload,
         ),
         Shortcut::new(
             "mainwindow.stop",
-            "Stop file loading",
+            msg!("Stop file loading"),
             None,
             &["escape"],
             Stop,

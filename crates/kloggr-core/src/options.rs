@@ -58,6 +58,9 @@ pub struct General {
     pub log_file: bool,
     /// How much it says (klogg: `logging.verbosity`, 4 = info).
     pub log_level: LogLevel,
+    /// The interface's language, a BCP 47 tag such as `"de"`; `None`: the
+    /// system's (klogg: `language`). Applies from the next start.
+    pub language: Option<String>,
 }
 
 impl Default for General {
@@ -68,6 +71,7 @@ impl Default for General {
             check_for_updates: true,
             log_file: false,
             log_level: LogLevel::Info,
+            language: None,
         }
     }
 }
@@ -388,6 +392,7 @@ mod tests {
         o.view.font_size = Some(13.0);
         o.view.style = Style::Dark;
         o.view.font_bold = true;
+        o.general.language = Some("zh-CN".into());
         o.view.text_rendering = TextRendering::Grayscale;
         o.search.highlight_color = Color::parse("#80c0c0c0");
         o.shortcuts

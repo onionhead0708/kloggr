@@ -3680,6 +3680,7 @@ dependencies = [
  "gpui-pre",
  "gpui-pre-platform",
  "kloggr-core",
+ "sys-locale",
  "tracing",
  "tracing-subscriber",
  "ureq",

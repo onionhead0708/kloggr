@@ -278,7 +278,8 @@ it.
 
 **Tools > Options…** has four tabs:
 
-- **General**: reopen the last session, follow new files, check for new
+- **General**: reopen the last session, follow new files, the language (from
+  the next start; see below), check for new
   versions once a week, write a log file (and how detailed), the default search options, match highlighting and
   its colour, search history size, and quick find options.
 - **View**: font (family, size, bold), text smoothing (the system's
@@ -289,6 +290,10 @@ it.
   number of recent files, and how files are watched for changes
   (notifications, checking at an interval, or both).
 - **Shortcuts**: a primary and a secondary key for every action.
+
+kloggr's interface is in English; translations can be added as catalogs in
+the configuration folder's `translations` folder and chosen under
+**Options > General > Language** (see `docs/translating.md` in the source).
 
 Settings are kept in `settings.toml` in kloggr's configuration folder
 (`~/.config/kloggr` on Linux), next to the session, highlighters and

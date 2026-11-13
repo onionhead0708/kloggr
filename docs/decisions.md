@@ -8,6 +8,16 @@ Newest first. Each entry gives the date, what klogg does, what kloggr does, and 
 
 ---
 
+## 2026-11-13: Translations: TOML catalogs keyed by the English text, none shipped yet
+
+**klogg:** Qt Linguist `.ts` files compiled into the app; Simplified and Traditional Chinese ship. Options > General > Language, applied after a restart.
+
+**kloggr:** every message goes through `tr!` with its English text as the key, looked up in a TOML catalog (`docs/translating.md`). Catalogs are built in or read from the configuration folder's `translations` folder; the language is chosen in Options > General > Language (default: the system's) and applies from the next start, as in klogg. `crates/kloggr-app/locales/template.toml` lists every message and a test keeps it current. No translation ships yet: only the framework.
+
+**Why:** TOML needs no Qt tools to edit, and a catalog in the configuration folder can be tried without building kloggr. Translations written without a native speaker reviewing them would be worse than English, so they wait for contributors. Key names, encoding names, system error details and the command line stay English.
+
+**Code:** `kloggr_core::i18n`, `crates/kloggr-app/src/i18n.rs`.
+
 ## 2026-11-13: No tray icon
 
 **klogg:** Options > View "Minimize to tray" (`view.minimizeToTray`) puts a tray icon up and hides the window when it is minimized or closed; the icon's menu shows the window again or quits.

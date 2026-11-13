@@ -32,6 +32,11 @@ impl Preferences {
         });
     }
 
+    /// kloggr's configuration folder, if there is one.
+    pub fn config_dir(cx: &App) -> Option<PathBuf> {
+        cx.try_global::<Self>().and_then(|p| p.config_dir.clone())
+    }
+
     /// The options; the defaults if the global isn't installed (tests).
     pub fn get(cx: &App) -> &Options {
         static DEFAULT: std::sync::OnceLock<Options> = std::sync::OnceLock::new();

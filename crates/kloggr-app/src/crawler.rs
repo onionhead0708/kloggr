@@ -34,6 +34,7 @@ use crate::quick_find::{self, QuickFind, Target};
 use crate::results::Results;
 use crate::saved_searches::{self, SavedSearches};
 use crate::shortcuts::Shortcut;
+use crate::{msg, tr};
 use kloggr_core::highlight::ColorLabels;
 use kloggr_core::search::find::Direction;
 use kloggr_core::searches::{self as compose, Mode};
@@ -81,6 +82,11 @@ pub struct TogglePredefinedFilter {
 
 pub(crate) const CONTEXT: &str = "Crawler";
 
+/// The names of [`Visibility`]'s entries, for the translation template.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) const VISIBILITY_LABELS: [&str; 3] =
+    [msg!("Marks and matches"), msg!("Marks"), msg!("Matches")];
+
 /// klogg's defaults (`settings/src/shortcuts.cpp`). klogg's bare `1`–`7`
 /// are Alt+1…Alt+7 here, so that digits in a view always type a line
 /// number (`docs/decisions.md`).
@@ -90,70 +96,70 @@ pub fn shortcuts() -> Vec<Shortcut> {
     vec![
         Shortcut::new(
             "qf.focus_search",
-            "Set focus to search input",
+            msg!("Set focus to search input"),
             crawler,
             &["secondary-s", "secondary-shift-f"],
             FocusSearch,
         ),
         Shortcut::new(
             "crawler.change_visibility_type",
-            "Next filtered view visibility",
+            msg!("Next filtered view visibility"),
             view,
             &["v"],
             VisibilityForward,
         ),
         Shortcut::new(
             "crawler.change_visibility_type_backward",
-            "Previous filtered view visibility",
+            msg!("Previous filtered view visibility"),
             view,
             &["shift-v"],
             VisibilityBackward,
         ),
         Shortcut::new(
             "crawler.change_visibility_to_marks_and_matches",
-            "Show marks and matches",
+            msg!("Show marks and matches"),
             view,
             &["alt-1"],
             ShowMarksAndMatches,
         ),
         Shortcut::new(
             "crawler.change_visibility_to_marks",
-            "Show marks",
+            msg!("Show marks"),
             view,
             &["alt-2"],
             ShowMarks,
         ),
         Shortcut::new(
             "crawler.change_visibility_to_matches",
-            "Show matches",
+            msg!("Show matches"),
             view,
             &["alt-3"],
             ShowMatches,
         ),
         Shortcut::new(
             "crawler.enable_case_matching",
-            "Toggle case matching",
+            msg!("Toggle case matching"),
             view,
             &["alt-4"],
             ToggleMatchCase,
         ),
         Shortcut::new(
             "crawler.enable_regex",
-            "Toggle regular expressions",
+            msg!("Toggle regular expressions"),
             view,
             &["alt-5"],
             ToggleRegex,
         ),
         Shortcut::new(
             "crawler.enable_inverse_matching",
-            "Toggle inverse matching",
+            msg!("Toggle inverse matching"),
             view,
             &["alt-6"],
             ToggleInverse,
         ),
         Shortcut::new(
             "crawler.enable_regex_combining",
-            "Toggle boolean combining",
+            msg!("Toggle boolean combining"),
             view,
             &["alt-7"],
             ToggleBoolean,
@@ -161,42 +167,42 @@ pub fn shortcuts() -> Vec<Shortcut> {
         // klogg's bare 8 and 9, as Alt+8 and Alt+9 like 1–7.
         Shortcut::new(
             "crawler.enable_auto_refresh",
-            "Toggle auto-refresh",
+            msg!("Toggle auto-refresh"),
             view,
             &["alt-8"],
             ToggleAutoRefresh,
         ),
         Shortcut::new(
             "crawler.enable_keep_results",
-            "Toggle keep search results",
+            msg!("Toggle keep search results"),
             view,
             &["alt-9"],
             ToggleKeepResults,
         ),
         Shortcut::new(
             "crawler.increase_top_view_size",
-            "Increase main view",
+            msg!("Increase main view"),
             view,
             &["+", "shift-="],
             IncreaseTopView,
         ),
         Shortcut::new(
             "crawler.decrease_top_view_size",
-            "Decrease main view",
+            msg!("Decrease main view"),
             view,
             &["-"],
             DecreaseTopView,
         ),
         Shortcut::new(
             "mainwindow.freeze_main",
-            "Freeze columns in main view",
+            msg!("Freeze columns in main view"),
             crawler,
             &[],
             ToggleFreezeMain,
         ),
         Shortcut::new(
             "mainwindow.freeze_filtered",
-            "Freeze columns in filtered view",
+            msg!("Freeze columns in filtered view"),
             crawler,
             &[],
             ToggleFreezeFiltered,
@@ -350,7 +356,7 @@ impl Crawler {
             v.set_filter(filter.clone(), cx);
             v
         });
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search"));
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(tr!("Search")));
         let qf = QuickFind::new(window, cx);
         let go_to = GoToLine::new(window, cx);
         let main_focus = main.focus_handle(cx);
@@ -746,7 +752,7 @@ impl Crawler {
         if std::mem::take(&mut self.keep_results) && self.log.is_some() {
             self.new_results(window, cx);
         }
-        self.results[self.current_results].title = format!("Find \"{text}\"");
+        self.results[self.current_results].title = tr!("Find \"{text}\"", text = text).to_string();
         // klogg: `savedSearches_->addRecent`.
         SavedSearches::update(cx, |s| s.add_recent(&text));
         self.run(self.options.pattern(&text), cx);
@@ -871,7 +877,7 @@ impl Crawler {
                 self.last_pattern = None;
                 self.set_search_highlight(None, cx);
                 self.info = SearchInfo {
-                    text: format!("Error in expression: {e}"),
+                    text: tr!("Error in expression: {error}", error = e).to_string(),
                     error: true,
                 };
                 cx.notify();
@@ -889,7 +895,7 @@ impl Crawler {
         self.searching = true;
         self.search_started = std::time::Instant::now();
         self.info = SearchInfo {
-            text: "Search in progress…".into(),
+            text: tr!("Search in progress…").to_string(),
             error: false,
         };
 
@@ -932,17 +938,18 @@ impl Crawler {
                         cx.notify();
                     });
                 }
-                self.info.text = format!(
-                    "Search in progress ({} %)… {} found so far.",
-                    progress.percent(),
-                    matches_text(progress.matches)
-                );
+                self.info.text = tr!(
+                    "Search in progress ({percent} %)… {matches} found so far.",
+                    percent = progress.percent(),
+                    matches = matches_text(progress.matches),
+                )
+                .to_string();
             }
             SearchEvent::Done(Ok(())) => {
                 self.searching = false;
                 self.searched = Some(self.search_covers);
                 let count = self.filter.read(cx).matches().len();
-                self.info.text = format!("{} found", matches_text(count));
+                self.info.text = tr!("{matches} found", matches = matches_text(count)).to_string();
                 tracing::info!(
                     matches = count,
                     elapsed = ?self.search_started.elapsed(),
@@ -970,7 +977,7 @@ impl Crawler {
         self._search = None;
         if self.searching {
             self.searching = false;
-            self.info.text = "Search stopped".into();
+            self.info.text = tr!("Search stopped").to_string();
         }
     }
 
@@ -1158,22 +1165,22 @@ impl Crawler {
     fn history_button(&self, _: &mut Context<Self>) -> impl IntoElement {
         Button::new("history")
             .icon(IconName::ChevronDown)
-            .tooltip("Recent searches")
+            .tooltip(tr!("Recent searches"))
             .small()
             .ghost()
             .dropdown_menu(|menu, _, cx| {
                 let history = SavedSearches::get(cx).history;
                 let mut menu = menu.max_h(px(420.));
                 if history.is_empty() {
-                    menu = menu.label("No recent searches");
+                    menu = menu.label(tr!("No recent searches"));
                 }
                 for text in history {
                     let label: String = text.chars().take(80).collect();
                     menu = menu.menu(label, Box::new(UseSearch { text }));
                 }
                 menu.separator()
-                    .menu("Clear search history", Box::new(ClearSearchHistory))
-                    .menu("Edit search history…", Box::new(EditSearchHistory))
+                    .menu(tr!("Clear search history"), Box::new(ClearSearchHistory))
+                    .menu(tr!("Edit search history…"), Box::new(EditSearchHistory))
             })
     }
 
@@ -1182,8 +1189,8 @@ impl Crawler {
     fn filters_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let this = cx.entity().downgrade();
         Button::new("predefined-filters")
-            .label("Filters")
-            .tooltip("Predefined filters")
+            .label(tr!("Filters"))
+            .tooltip(tr!("Predefined filters"))
             .small()
             .outline()
             .dropdown_caret(true)
@@ -1198,7 +1205,7 @@ impl Crawler {
                     .unwrap_or_default();
                 let mut menu = menu.max_h(px(420.));
                 if filters.is_empty() {
-                    menu = menu.label("No predefined filters");
+                    menu = menu.label(tr!("No predefined filters"));
                 }
                 for (index, f) in filters.iter().enumerate() {
                     let on = checked.get(index).copied().unwrap_or(false);
@@ -1209,8 +1216,11 @@ impl Crawler {
                     );
                 }
                 menu.separator()
-                    .menu("Save search as filter…", Box::new(SaveSearchAsFilter))
-                    .menu("Edit predefined filters…", Box::new(EditPredefinedFilters))
+                    .menu(tr!("Save search as filter…"), Box::new(SaveSearchAsFilter))
+                    .menu(
+                        tr!("Edit predefined filters…"),
+                        Box::new(EditPredefinedFilters),
+                    )
             })
     }
 
@@ -1218,16 +1228,17 @@ impl Crawler {
         let o = self.options;
         let visibility = self.visibility(cx);
         let filtered_focus = self.filtered.focus_handle(cx);
-        let option = |id: &'static str, label: &'static str, tip: &'static str, on: bool| {
-            Toggle::new(id)
-                .label(label)
-                .tooltip(tip)
-                .checked(on)
-                .small()
-        };
+        let option =
+            |id: &'static str, label: gpui::SharedString, tip: gpui::SharedString, on: bool| {
+                Toggle::new(id)
+                    .label(label)
+                    .tooltip(tip)
+                    .checked(on)
+                    .small()
+            };
         let action_button = if self.searching {
             Button::new("stop")
-                .label("Stop")
+                .label(tr!("Stop"))
                 .small()
                 .danger()
                 .on_click(cx.listener(|this, _, _, cx| {
@@ -1236,7 +1247,7 @@ impl Crawler {
                 }))
         } else {
             Button::new("search")
-                .label("Search")
+                .label(tr!("Search"))
                 .small()
                 .primary()
                 .on_click(cx.listener(|this, _, window, cx| this.start_search(window, cx)))
@@ -1250,8 +1261,8 @@ impl Crawler {
             .py_1()
             .child(
                 Button::new("visibility")
-                    .label(visibility.label())
-                    .tooltip("Lines shown below (v / shift-v)")
+                    .label(crate::i18n::tr(visibility.label()))
+                    .tooltip(tr!("Lines shown below (v / shift-v)"))
                     .small()
                     .outline()
                     .dropdown_caret(true)
@@ -1259,7 +1270,11 @@ impl Crawler {
                         // Actions go to the filtered view, the pane they change;
                         // the menu shows their 1/2/3 shortcuts.
                         let item = |menu: PopupMenu, v: Visibility, action: Box<dyn Action>| {
-                            menu.menu_with_check(v.label(), v == visibility, action)
+                            menu.menu_with_check(
+                                crate::i18n::tr(v.label()),
+                                v == visibility,
+                                action,
+                            )
                         };
                         let menu = menu.action_context(filtered_focus.clone());
                         let menu = item(
@@ -1286,25 +1301,37 @@ impl Crawler {
             .child(self.history_button(cx))
             .child(self.filters_button(cx))
             .child(
-                option("match-case", "Aa", "Match case (Alt+4)", o.match_case).on_click(
+                option(
+                    "match-case",
+                    "Aa".into(),
+                    tr!("Match case (Alt+4)"),
+                    o.match_case,
+                )
+                .on_click(
                     cx.listener(|this, on: &bool, _, cx| this.toggle(|o| o.match_case = *on, cx)),
                 ),
             )
             .child(
-                option("regex", ".*", "Use regex (Alt+5)", o.regex).on_click(
+                option("regex", ".*".into(), tr!("Use regex (Alt+5)"), o.regex).on_click(
                     cx.listener(|this, on: &bool, _, cx| this.toggle(|o| o.regex = *on, cx)),
                 ),
             )
             .child(
-                option("inverse", "!", "Inverse match (Alt+6)", o.inverse).on_click(
+                option(
+                    "inverse",
+                    "!".into(),
+                    tr!("Inverse match (Alt+6)"),
+                    o.inverse,
+                )
+                .on_click(
                     cx.listener(|this, on: &bool, _, cx| this.toggle(|o| o.inverse = *on, cx)),
                 ),
             )
             .child(
                 option(
                     "boolean",
-                    "&|",
-                    "Combine quoted patterns with and, or, not (Alt+7)",
+                    "&|".into(),
+                    tr!("Combine quoted patterns with and, or, not (Alt+7)"),
                     o.boolean,
                 )
                 .on_click(
@@ -1314,8 +1341,8 @@ impl Crawler {
             .child(
                 option(
                     "auto-refresh",
-                    "⟳",
-                    "Auto-refresh: search new lines (Alt+8)",
+                    "⟳".into(),
+                    tr!("Auto-refresh: search new lines (Alt+8)"),
                     o.auto_refresh,
                 )
                 .on_click(cx.listener(|this, on: &bool, _, cx| {
@@ -1326,8 +1353,8 @@ impl Crawler {
             .child(
                 option(
                     "keep-results",
-                    "Keep",
-                    "Keep these results and show the next search in a new tab (Alt+9)",
+                    tr!("Keep"),
+                    tr!("Keep these results and show the next search in a new tab (Alt+9)"),
                     self.keep_results,
                 )
                 .on_click(cx.listener(|this, on: &bool, _, cx| {
@@ -1338,8 +1365,8 @@ impl Crawler {
             .child(action_button)
             .child(
                 Toggle::new("follow")
-                    .label("Follow")
-                    .tooltip("Follow the end of the file (f, F10)")
+                    .label(tr!("Follow"))
+                    .tooltip(tr!("Follow the end of the file (f, F10)"))
                     .checked(self.following)
                     .small()
                     .on_click(cx.listener(|this, on: &bool, _, cx| this.set_follow(*on, cx))),
@@ -1387,9 +1414,9 @@ impl Drop for Crawler {
 
 fn matches_text(n: usize) -> String {
     if n == 1 {
-        "1 match".into()
+        tr!("1 match").to_string()
     } else {
-        format!("{n} matches")
+        tr!("{count} matches", count = n).to_string()
     }
 }
 

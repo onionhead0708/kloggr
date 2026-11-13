@@ -13,6 +13,7 @@ stays GPLv3. Keep klogg's copyright notices where code is translated closely.
 |---|---|---|
 | klogg source (C++/Qt) | `~/dev/klogg` (local checkout), upstream github.com/variar/klogg | Behavior and algorithms to reproduce. **The spec of record.** |
 | klogg user docs | `~/dev/klogg/DOCUMENTATION.md` | Feature list, search syntax, shortcuts |
+| kloggr translations | `docs/translating.md` | Catalog format, adding a language, `tr!` for developers |
 | kloggr user guide | `docs/user-guide.md` | Shown by Help > Documentation; update it with each user-visible change |
 | kloggr decisions | `docs/decisions.md` | Deliberate differences from klogg and why. Read before changing a behavior to match klogg, and add an entry for each new difference |
 | klogg test data | `~/dev/klogg/test_data`, `~/dev/klogg/tests` | Port the test cases, reuse the sample files |
@@ -39,6 +40,7 @@ stays GPLv3. Keep klogg's copyright notices where code is translated closely.
 | `ui/highlightersdialog`, `highlighterset(edit)`, `highlighteredit` | `kloggr-app` highlighters_dialog (done), `kloggr-core::highlight::klogg_conf` | gpui-component |
 | `ui/predefinedfilters*`, `savedsearches` | `kloggr-core::searches`, app `saved_searches` (done) | |
 | `ui/scratchpad`, `tabbedscratchpad` | `kloggr-core::scratch`, app `scratchpad` (done) | base64, serde_json, quick-xml, crc32fast |
+| Qt translations (`translations/*.ts`, `installLanguage`) | `kloggr-core::i18n`, app `i18n` (`tr!`, `msg!`, `locales/template.toml`) | sys-locale |
 | `versioncheck/`, `logging/`, `crash_handler/` | `kloggr-core::{crash, version_check}` (done), app `crash_report`, `update_check` | ureq (rustls), tracing, panic hook |
 
 ## Architecture
@@ -188,7 +190,7 @@ Gaps found by comparing kloggr 0.2.0 with klogg's shortcuts, menus, options, com
 - [x] Log file with a verbosity level (klogg `-l/--log`, `-d/--debug`, Options > Advanced logging)
 
 Optional:
-- [ ] Translations (klogg ships Simplified and Traditional Chinese)
+- [x] Translations (klogg ships Simplified and Traditional Chinese): the framework only (`tr!`, TOML catalogs, Options > General > Language, `docs/translating.md`); no catalog ships yet
 - [x] ~~Minimize to tray (klogg `view.minimizeToTray`)~~: not done, no GPUI tray API and GTK on Linux (`docs/decisions.md`)
 - [x] Font bold and antialiasing options (klogg `mainFont.bold`, `mainFont.antialiasing`): Bold font, and Text smoothing System/Subpixel/Grayscale (`docs/decisions.md`)
 - [x] Mouse wheel modifiers: Alt + wheel scrolls sideways as in klogg, Shift + wheel too; no page-per-notch wheel (`docs/decisions.md`)
@@ -202,3 +204,6 @@ Optional:
 - Every core feature ports the relevant klogg tests or behaviors and adds unit tests.
 - When behavior is unclear, check what klogg does in `~/dev/klogg` before inventing.
 - Record every deliberate difference from klogg in `docs/decisions.md` (date, klogg, kloggr, why).
+- Every user-visible string goes through `tr!("…")` (or `msg!` in constants, translated with
+  `i18n::tr` where shown); regenerate the template with
+  `KLOGGR_UPDATE_TEMPLATE=1 cargo test -p kloggr-app template` (`docs/translating.md`).

@@ -54,6 +54,7 @@ use crate::highlighters::{
 };
 use crate::preferences::Preferences;
 use crate::shortcuts::Shortcut;
+use crate::{msg, tr};
 
 actions!(
     log_view,
@@ -104,170 +105,176 @@ pub fn shortcuts() -> Vec<Shortcut> {
     vec![
         Shortcut::new(
             "logview.selection_up",
-            "Move selection up",
+            msg!("Move selection up"),
             c,
             &["up", "k"],
             SelectUp,
         ),
         Shortcut::new(
             "logview.selection_down",
-            "Move selection down",
+            msg!("Move selection down"),
             c,
             &["down", "j"],
             SelectDown,
         ),
         Shortcut::new(
             "logview.select_lines_up",
-            "Extend selection up",
+            msg!("Extend selection up"),
             c,
             &["shift-up"],
             ExtendUp,
         ),
         Shortcut::new(
             "logview.select_lines_down",
-            "Extend selection down",
+            msg!("Extend selection down"),
             c,
             &["shift-down"],
             ExtendDown,
         ),
         Shortcut::new(
             "logview.scroll_up",
-            "Page up",
+            msg!("Page up"),
             c,
             &["pageup", "ctrl-up"],
             PageUp,
         ),
         Shortcut::new(
             "logview.scroll_down",
-            "Page down",
+            msg!("Page down"),
             c,
             &["pagedown", "ctrl-down"],
             PageDown,
         ),
         Shortcut::new(
             "logview.scroll_left",
-            "Scroll left",
+            msg!("Scroll left"),
             c,
             &["left", "h"],
             ScrollLeft,
         ),
         Shortcut::new(
             "logview.scroll_right",
-            "Scroll right",
+            msg!("Scroll right"),
             c,
             &["right", "l"],
             ScrollRight,
         ),
         Shortcut::new(
             "logview.jump_to_start_of_line",
-            "Jump to start of line",
+            msg!("Jump to start of line"),
             c,
             &["home", "^"],
             StartOfLine,
         ),
         Shortcut::new(
             "logview.jump_to_end_of_line",
-            "Jump to end of line",
+            msg!("Jump to end of line"),
             c,
             &["$"],
             EndOfLine,
         ),
         Shortcut::new(
             "logview.jump_to_right",
-            "Jump to right of screen",
+            msg!("Jump to right of screen"),
             c,
             &["end"],
             RightOfScreen,
         ),
-        Shortcut::new("logview.jump_to_top", "Jump to top", c, &["ctrl-home"], Top),
+        Shortcut::new(
+            "logview.jump_to_top",
+            msg!("Jump to top"),
+            c,
+            &["ctrl-home"],
+            Top,
+        ),
         Shortcut::new(
             "logview.jump_to_bottom",
-            "Jump to bottom",
+            msg!("Jump to bottom"),
             c,
             &["ctrl-end", "shift-g"],
             Bottom,
         ),
         Shortcut::new(
             "mainwindow.select_all",
-            "Select all",
+            msg!("Select all"),
             c,
             &["secondary-a"],
             SelectAll,
         ),
         Shortcut::new(
             "mainwindow.copy_selection",
-            "Copy selection",
+            msg!("Copy selection"),
             c,
             &["secondary-c"],
             Copy,
         ),
         Shortcut::new(
             "logview.copy_with_line_numbers",
-            "Copy with line numbers",
+            msg!("Copy with line numbers"),
             c,
             &["secondary-shift-c"],
             CopyWithLineNumbers,
         ),
-        Shortcut::new("logview.mark", "Mark selected lines", c, &["m"], Mark),
+        Shortcut::new("logview.mark", msg!("Mark selected lines"), c, &["m"], Mark),
         Shortcut::new(
             "logview.exit_view",
-            "Release focus from view",
+            msg!("Release focus from view"),
             c,
             &["space"],
             ExitView,
         ),
         Shortcut::new(
             "logview.next_mark",
-            "Jump to next mark",
+            msg!("Jump to next mark"),
             c,
             &["]"],
             NextMark,
         ),
         Shortcut::new(
             "logview.prev_mark",
-            "Jump to previous mark",
+            msg!("Jump to previous mark"),
             c,
             &["["],
             PrevMark,
         ),
         Shortcut::new(
             "logview.add_to_search",
-            "Add selection to search pattern",
+            msg!("Add selection to search pattern"),
             c,
             &["shift-a"],
             AddToSearch,
         ),
         Shortcut::new(
             "logview.exclude_from_search",
-            "Exclude selection from search pattern",
+            msg!("Exclude selection from search pattern"),
             c,
             &["shift-e"],
             ExcludeFromSearch,
         ),
         Shortcut::new(
             "logview.replace_search",
-            "Replace search pattern with selection",
+            msg!("Replace search pattern with selection"),
             c,
             &["shift-r"],
             ReplaceSearch,
         ),
         Shortcut::new(
             "logview.send_selection_to_scratchpad",
-            "Send selection to scratchpad",
+            msg!("Send selection to scratchpad"),
             c,
             &["ctrl-z"],
             SendToScratchpad,
         ),
         Shortcut::new(
             "logview.replace_scratchpad_with_selection",
-            "Replace scratchpad with selection",
+            msg!("Replace scratchpad with selection"),
             c,
             &["ctrl-shift-z"],
             ReplaceScratchpad,
         ),
         Shortcut::new(
             "logview.jump_to_line_number",
-            "Jump to line number typed before",
+            msg!("Jump to line number typed before"),
             c,
             &["g"],
             JumpToLineNumber,
@@ -307,13 +314,16 @@ impl Default for CopyLimits {
     }
 }
 
-fn too_large(bytes: u64, max: u64, what: &'static str, window: &mut Window, cx: &mut App) {
+/// `message` has `{size}` and `{max}` placeholders.
+fn too_large(bytes: u64, max: u64, message: &'static str, window: &mut Window, cx: &mut App) {
+    let text = kloggr_core::i18n::fill(
+        &crate::i18n::tr(message),
+        &[("size", &human_size(bytes)), ("max", &human_size(max))],
+    );
     window.open_alert_dialog(cx, move |alert, _, _| {
-        alert.title("Selection too large").description(format!(
-            "The selection is {}. At most {} can be {what}.",
-            human_size(bytes),
-            human_size(max)
-        ))
+        alert
+            .title(tr!("Selection too large"))
+            .description(text.clone())
     });
 }
 
@@ -784,8 +794,8 @@ impl LogView {
         if path.exists() && same(&path, log.path()) {
             window.open_alert_dialog(cx, |alert, _, _| {
                 alert
-                    .title("Save to file")
-                    .description("The open file can't be saved over itself.")
+                    .title(tr!("Save to file"))
+                    .description(tr!("The open file can't be saved over itself."))
             });
             return;
         }
@@ -830,9 +840,15 @@ impl LogView {
                         if let Err(e) = result
                             && e.kind() != std::io::ErrorKind::Interrupted
                         {
-                            let message = format!("Cannot save {}: {e}", path.display());
+                            let message = tr!(
+                                "Cannot save {file}: {error}",
+                                file = path.display(),
+                                error = e
+                            );
                             window.open_alert_dialog(cx, move |alert, _, _| {
-                                alert.title("Save to file").description(message.clone())
+                                alert
+                                    .title(tr!("Save to file"))
+                                    .description(message.clone())
                             });
                         }
                     }
@@ -936,7 +952,7 @@ impl LogView {
             too_large(
                 bytes,
                 self.limits.scratchpad,
-                "sent to the scratchpad",
+                msg!("The selection is {size}. At most {max} can be sent to the scratchpad."),
                 window,
                 cx,
             );
@@ -1163,19 +1179,25 @@ impl LogView {
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
             }
         } else if bytes > self.limits.max {
-            too_large(bytes, self.limits.max, "copied", window, cx);
+            too_large(
+                bytes,
+                self.limits.max,
+                msg!("The selection is {size}. At most {max} can be copied."),
+                window,
+                cx,
+            );
         } else {
             let this = cx.entity().downgrade();
             window.open_alert_dialog(cx, move |alert, _, _| {
                 let this = this.clone();
                 alert
-                    .title("Copy")
-                    .description(format!(
-                        "The selection is {}. Copy it to the clipboard?",
-                        human_size(bytes)
+                    .title(tr!("Copy"))
+                    .description(tr!(
+                        "The selection is {size}. Copy it to the clipboard?",
+                        size = human_size(bytes),
                     ))
                     .show_cancel(true)
-                    .ok_text("Copy")
+                    .ok_text(tr!("Copy"))
                     .on_ok(move |_, _, cx| {
                         this.update(cx, |v, cx| v.copy_in_background(line_numbers, cx))
                             .ok();
@@ -1754,75 +1776,86 @@ impl LogView {
             .unwrap_or_default();
         // klogg's order (`AbstractLogView::createMenu`).
         menu.action_context(focus)
-            .menu_with_disabled("Mark", Box::new(Mark), nothing_selected)
+            .menu_with_disabled(tr!("Mark"), Box::new(Mark), nothing_selected)
             .separator()
-            .menu_with_disabled("Copy", Box::new(Copy), nothing_selected)
+            .menu_with_disabled(tr!("Copy"), Box::new(Copy), nothing_selected)
             .menu_with_disabled(
-                "Copy with line numbers",
+                tr!("Copy with line numbers"),
                 Box::new(CopyWithLineNumbers),
                 nothing_selected,
             )
             .menu_with_disabled(
-                "Send to scratchpad",
+                tr!("Send to scratchpad"),
                 Box::new(SendToScratchpad),
                 nothing_selected,
             )
             .menu_with_disabled(
-                "Replace scratchpad",
+                tr!("Replace scratchpad"),
                 Box::new(ReplaceScratchpad),
                 nothing_selected,
             )
             .separator()
             .menu_with_disabled(
-                "Find next",
+                tr!("Find next"),
                 Box::new(crate::quick_find::FindSelectionNext),
                 no_text,
             )
             .menu_with_disabled(
-                "Find previous",
+                tr!("Find previous"),
                 Box::new(crate::quick_find::FindSelectionPrevious),
                 no_text,
             )
             .separator()
-            .menu_with_disabled("Replace search", Box::new(ReplaceSearch), no_text)
-            .menu_with_disabled("Add to search", Box::new(AddToSearch), no_text)
-            .menu_with_disabled("Exclude from search", Box::new(ExcludeFromSearch), no_text)
+            .menu_with_disabled(tr!("Replace search"), Box::new(ReplaceSearch), no_text)
+            .menu_with_disabled(tr!("Add to search"), Box::new(AddToSearch), no_text)
+            .menu_with_disabled(
+                tr!("Exclude from search"),
+                Box::new(ExcludeFromSearch),
+                no_text,
+            )
             .separator()
-            .menu("Set search start", Box::new(SetSearchStart))
-            .menu("Set search end", Box::new(SetSearchEnd))
-            .menu_with_disabled("Clear search limits", Box::new(ClearSearchLimits), !limited)
+            .menu(tr!("Set search start"), Box::new(SetSearchStart))
+            .menu(tr!("Set search end"), Box::new(SetSearchEnd))
+            .menu_with_disabled(
+                tr!("Clear search limits"),
+                Box::new(ClearSearchLimits),
+                !limited,
+            )
             .separator()
             .menu_with_disabled(
-                "Set selection start",
+                tr!("Set selection start"),
                 Box::new(SetSelectionStart),
                 nothing_selected,
             )
             .menu_with_disabled(
-                "Set selection end",
+                tr!("Set selection end"),
                 Box::new(SetSelectionEnd),
                 nothing_selected || !selection_started,
             )
             .separator()
-            .menu("Save to file…", Box::new(SaveToFile))
+            .menu(tr!("Save to file…"), Box::new(SaveToFile))
             .menu_with_disabled(
-                "Save selected to file…",
+                tr!("Save selected to file…"),
                 Box::new(SaveSelectedToFile),
                 nothing_selected,
             )
             .separator()
             .menu_with_check_and_disabled(
-                "Freeze columns",
+                tr!("Freeze columns"),
                 frozen,
                 Box::new(ToggleFreezeColumns),
                 this.wrapping,
             )
             .separator()
-            .menu("Save splitter position", Box::new(SaveSplitterPosition))
+            .menu(
+                tr!("Save splitter position"),
+                Box::new(SaveSplitterPosition),
+            )
             .separator()
-            .submenu("Color labels", window, cx, move |menu, _, _| {
+            .submenu(tr!("Color labels"), window, cx, move |menu, _, _| {
                 let mut menu = menu
                     .menu_with_check_and_disabled(
-                        "None",
+                        tr!("None"),
                         current.is_none(),
                         Box::new(RemoveColorLabel),
                         no_text,
@@ -1837,12 +1870,12 @@ impl LogView {
                     );
                 }
                 menu.separator()
-                    .menu("Clear all", Box::new(ClearColorLabels))
+                    .menu(tr!("Clear all"), Box::new(ClearColorLabels))
             })
-            .submenu("Highlighters", window, cx, move |menu, _, _| {
+            .submenu(tr!("Highlighters"), window, cx, move |menu, _, _| {
                 let any_active = sets.iter().any(|s| s.2);
                 let mut menu = menu.menu_with_disabled(
-                    "None",
+                    tr!("None"),
                     Box::new(highlighters::NoHighlighters),
                     !any_active,
                 );

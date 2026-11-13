@@ -43,6 +43,7 @@ use crate::preferences::Preferences;
 use crate::shortcuts::Shortcut;
 use crate::switcher;
 use crate::{log_view, quick_find};
+use crate::{msg, tr};
 
 actions!(
     workspace,
@@ -127,7 +128,7 @@ pub fn shortcuts() -> Vec<Shortcut> {
     let mut out = vec![
         Shortcut::new(
             "mainwindow.new_window",
-            "Open new window",
+            msg!("Open new window"),
             None,
             &[],
             NewWindow,
@@ -136,7 +137,7 @@ pub fn shortcuts() -> Vec<Shortcut> {
         // macOS's Ctrl+Cmd+F) toggles it here.
         Shortcut::new(
             "mainwindow.fullscreen",
-            "Full Screen",
+            msg!("Full Screen"),
             None,
             if cfg!(target_os = "macos") {
                 &["ctrl-cmd-f"]
@@ -147,21 +148,21 @@ pub fn shortcuts() -> Vec<Shortcut> {
         ),
         Shortcut::new(
             "mainwindow.max_window",
-            "Maximize window",
+            msg!("Maximize window"),
             None,
             &[],
             MaximizeWindow,
         ),
         Shortcut::new(
             "mainwindow.min_window",
-            "Minimize window",
+            msg!("Minimize window"),
             None,
             &[],
             MinimizeWindow,
         ),
         Shortcut::new(
             "mainwindow.open_file",
-            "Open file",
+            msg!("Open file"),
             None,
             &["secondary-o"],
             Open,
@@ -169,77 +170,77 @@ pub fn shortcuts() -> Vec<Shortcut> {
         // klogg: `QKeySequence::Paste`. Inputs keep Ctrl+V for pasting.
         Shortcut::new(
             "mainwindow.open_from_clipboard",
-            "Paste text from clipboard",
+            msg!("Paste text from clipboard"),
             None,
             &["secondary-v"],
             OpenClipboard,
         ),
         Shortcut::new(
             "mainwindow.open_from_url",
-            "Open file from URL",
+            msg!("Open file from URL"),
             None,
             &[],
             OpenUrl,
         ),
         Shortcut::new(
             "mainwindow.select_open_file",
-            "Switch to file",
+            msg!("Switch to file"),
             None,
             &["secondary-shift-o"],
             SelectOpenFile,
         ),
         Shortcut::new(
             "mainwindow.close_file",
-            "Close file",
+            msg!("Close file"),
             None,
             &["secondary-w"],
             Close,
         ),
         Shortcut::new(
             "mainwindow.close_all",
-            "Close all files",
+            msg!("Close all files"),
             None,
             &[],
             CloseAllTabs,
         ),
         Shortcut::new(
             "mainwindow.quit",
-            "Exit application",
+            msg!("Exit application"),
             None,
             &["secondary-q"],
             Quit,
         ),
         Shortcut::new(
             "mainwindow.preference",
-            "Preferences",
+            msg!("Preferences"),
             None,
             &[],
             ShowOptions,
         ),
         Shortcut::new(
             "mainwindow.scratchpad",
-            "Open scratchpad",
+            msg!("Open scratchpad"),
             None,
             &[],
             OpenScratchpad,
         ),
         Shortcut::new(
             "mainwindow.copy_path_to_clipboard",
-            "Copy file path to clipboard",
+            msg!("Copy file path to clipboard"),
             None,
             &[],
             CopyPath,
         ),
         Shortcut::new(
             "mainwindow.open_containing_folder",
-            "Open containing folder",
+            msg!("Open containing folder"),
             None,
             &[],
             OpenContainingFolder,
         ),
         Shortcut::new(
             "mainwindow.open_in_editor",
-            "Open file in editor",
+            msg!("Open file in editor"),
             None,
             &[],
             OpenInEditor,
@@ -247,7 +248,7 @@ pub fn shortcuts() -> Vec<Shortcut> {
         // klogg: `QKeySequence::Cut`, after a confirmation.
         Shortcut::new(
             "mainwindow.clear_file",
-            "Clear file",
+            msg!("Clear file"),
             None,
             &["secondary-x"],
             ClearFile,
@@ -255,42 +256,42 @@ pub fn shortcuts() -> Vec<Shortcut> {
         // klogg: W; in the log views, so that W can be typed elsewhere.
         Shortcut::new(
             "mainwindow.text_wrap",
-            "Toggle text wrap",
+            msg!("Toggle text wrap"),
             Some(crate::log_view::CONTEXT),
             &["w"],
             ToggleTextWrap,
         ),
         Shortcut::new(
             "mainwindow.next_tab",
-            "Next tab",
+            msg!("Next tab"),
             None,
             &["ctrl-tab", "ctrl-pagedown"],
             NextTab,
         ),
         Shortcut::new(
             "mainwindow.prev_tab",
-            "Previous tab",
+            msg!("Previous tab"),
             None,
             &["ctrl-shift-tab", "ctrl-pageup"],
             PrevTab,
         ),
         Shortcut::new(
             "mainwindow.last_tab",
-            "Last tab",
+            msg!("Last tab"),
             None,
             &["secondary-9"],
             LastTab,
         ),
     ];
     const TABS: [(&str, &str); 8] = [
-        ("mainwindow.tab_1", "Tab 1"),
-        ("mainwindow.tab_2", "Tab 2"),
-        ("mainwindow.tab_3", "Tab 3"),
-        ("mainwindow.tab_4", "Tab 4"),
-        ("mainwindow.tab_5", "Tab 5"),
-        ("mainwindow.tab_6", "Tab 6"),
-        ("mainwindow.tab_7", "Tab 7"),
-        ("mainwindow.tab_8", "Tab 8"),
+        ("mainwindow.tab_1", msg!("Tab 1")),
+        ("mainwindow.tab_2", msg!("Tab 2")),
+        ("mainwindow.tab_3", msg!("Tab 3")),
+        ("mainwindow.tab_4", msg!("Tab 4")),
+        ("mainwindow.tab_5", msg!("Tab 5")),
+        ("mainwindow.tab_6", msg!("Tab 6")),
+        ("mainwindow.tab_7", msg!("Tab 7")),
+        ("mainwindow.tab_8", msg!("Tab 8")),
     ];
     for (index, (id, label)) in TABS.into_iter().enumerate() {
         out.push(Shortcut {
@@ -309,7 +310,29 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
     crate::shortcuts::default_bindings(shortcuts())
 }
 
-const IDLE_STATUS: &str = "Open a file with Ctrl+O, or drop it here";
+/// The names of the Encoding menu's groups (`kloggr_core::encoding::MENU`),
+/// for the translation template.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) const ENCODING_GROUPS: [&str; 16] = [
+    msg!("Unicode"),
+    msg!("Arabic"),
+    msg!("Baltic"),
+    msg!("Celtic"),
+    msg!("Cyrillic"),
+    msg!("Central European"),
+    msg!("Chinese"),
+    msg!("Eastern European"),
+    msg!("Greek"),
+    msg!("Hebrew"),
+    msg!("Japanese"),
+    msg!("Korean"),
+    msg!("Thai"),
+    msg!("Turkish"),
+    msg!("Western European"),
+    msg!("Vietnamese"),
+];
+
+const IDLE_STATUS: &str = msg!("Open a file with Ctrl+O, or drop it here");
 
 /// Messages from the indexing thread.
 enum ExtractEvent {
@@ -550,86 +573,89 @@ impl Workspace {
             })
             .collect();
         recent_items.push(MenuItem::separator());
-        recent_items.push(MenuItem::action("Clear List", ClearRecent));
+        recent_items.push(MenuItem::action(tr!("Clear List"), ClearRecent));
         vec![
-            Menu::new("File").items([
-                MenuItem::action("New Window", NewWindow),
-                MenuItem::action("Open…", Open),
-                MenuItem::action("Open from Clipboard", OpenClipboard),
-                MenuItem::action("Open from URL…", OpenUrl),
+            Menu::new(tr!("File")).items([
+                MenuItem::action(tr!("New Window"), NewWindow),
+                MenuItem::action(tr!("Open…"), Open),
+                MenuItem::action(tr!("Open from Clipboard"), OpenClipboard),
+                MenuItem::action(tr!("Open from URL…"), OpenUrl),
                 MenuItem::submenu(
-                    Menu::new("Open Recent")
+                    Menu::new(tr!("Open Recent"))
                         .items(recent_items)
                         .disabled(recent.is_empty()),
                 ),
                 MenuItem::separator(),
-                MenuItem::action("Close", Close),
-                MenuItem::action("Close All", CloseAllTabs),
-                MenuItem::action("Quit", Quit),
+                MenuItem::action(tr!("Close"), Close),
+                MenuItem::action(tr!("Close All"), CloseAllTabs),
+                MenuItem::action(tr!("Quit"), Quit),
             ]),
             // klogg: the Edit menu, disabled without a file.
-            Menu::new("Edit")
+            Menu::new(tr!("Edit"))
                 .items([
-                    MenuItem::action("Copy", log_view::Copy),
-                    MenuItem::action("Select All", log_view::SelectAll),
+                    MenuItem::action(tr!("Copy"), log_view::Copy),
+                    MenuItem::action(tr!("Select All"), log_view::SelectAll),
                     MenuItem::separator(),
-                    MenuItem::action("Find…", quick_find::Open),
+                    MenuItem::action(tr!("Find…"), quick_find::Open),
                     MenuItem::separator(),
-                    MenuItem::action("Go to Line…", go_to_line::Open),
+                    MenuItem::action(tr!("Go to Line…"), go_to_line::Open),
                     MenuItem::separator(),
-                    MenuItem::action("Copy Path", CopyPath),
-                    MenuItem::action("Open Containing Folder", OpenContainingFolder),
+                    MenuItem::action(tr!("Copy Path"), CopyPath),
+                    MenuItem::action(tr!("Open Containing Folder"), OpenContainingFolder),
                     MenuItem::separator(),
-                    MenuItem::action("Open in Editor", OpenInEditor),
-                    MenuItem::action("Clear File…", ClearFile),
+                    MenuItem::action(tr!("Open in Editor"), OpenInEditor),
+                    MenuItem::action(tr!("Clear File…"), ClearFile),
                 ])
                 .disabled(no_tab),
             // klogg: View > Freeze columns in main / filtered view.
-            Menu::new("View").items([
-                MenuItem::action("Overview", ToggleOverview).checked(view.overview),
-                MenuItem::action("Line Numbers in Main View", ToggleLineNumbersMain)
+            Menu::new(tr!("View")).items([
+                MenuItem::action(tr!("Overview"), ToggleOverview).checked(view.overview),
+                MenuItem::action(tr!("Line Numbers in Main View"), ToggleLineNumbersMain)
                     .checked(view.line_numbers_main),
-                MenuItem::action("Line Numbers in Filtered View", ToggleLineNumbersFiltered)
-                    .checked(view.line_numbers_filtered),
+                MenuItem::action(
+                    tr!("Line Numbers in Filtered View"),
+                    ToggleLineNumbersFiltered,
+                )
+                .checked(view.line_numbers_filtered),
                 MenuItem::separator(),
-                MenuItem::action("Text Wrap", ToggleTextWrap).checked(view.text_wrap),
+                MenuItem::action(tr!("Text Wrap"), ToggleTextWrap).checked(view.text_wrap),
                 // klogg: no frozen columns with text wrap.
-                MenuItem::action("Freeze Columns in Main View", ToggleFreezeMain)
+                MenuItem::action(tr!("Freeze Columns in Main View"), ToggleFreezeMain)
                     .checked(frozen.0.enabled)
                     .disabled(no_tab || view.text_wrap),
-                MenuItem::action("Freeze Columns in Filtered View", ToggleFreezeFiltered)
+                MenuItem::action(tr!("Freeze Columns in Filtered View"), ToggleFreezeFiltered)
                     .checked(frozen.1.enabled)
                     .disabled(no_tab || view.text_wrap),
                 MenuItem::separator(),
                 // klogg: View > Follow File, Reload; Stop is on its toolbar.
-                MenuItem::action("Follow File", ToggleFollow)
+                MenuItem::action(tr!("Follow File"), ToggleFollow)
                     .checked(following)
                     .disabled(no_tab),
-                MenuItem::action("Reload", Reload).disabled(no_tab),
-                MenuItem::action("Stop", Stop).disabled(no_tab),
+                MenuItem::action(tr!("Reload"), Reload).disabled(no_tab),
+                MenuItem::action(tr!("Stop"), Stop).disabled(no_tab),
                 MenuItem::separator(),
                 MenuItem::submenu(self.opened_files_menu()),
                 MenuItem::separator(),
-                MenuItem::action("Full Screen", ToggleFullScreen)
+                MenuItem::action(tr!("Full Screen"), ToggleFullScreen)
                     .checked(self.geometry.is_some_and(|g| g.fullscreen)),
             ]),
             self.encoding_menu(cx),
-            Menu::new("Tools").items([
-                MenuItem::action("Options…", ShowOptions),
-                MenuItem::action("Predefined Filters…", EditPredefinedFilters),
-                MenuItem::action("Scratchpad", OpenScratchpad),
+            Menu::new(tr!("Tools")).items([
+                MenuItem::action(tr!("Options…"), ShowOptions),
+                MenuItem::action(tr!("Predefined Filters…"), EditPredefinedFilters),
+                MenuItem::action(tr!("Scratchpad"), OpenScratchpad),
                 MenuItem::separator(),
-                MenuItem::action("Highlighters…", EditHighlighters),
+                MenuItem::action(tr!("Highlighters…"), EditHighlighters),
                 MenuItem::submenu(Highlighters::menu(cx)),
             ]),
             self.favorites_menu(),
             // klogg: Help > Documentation, Report Issue, About.
-            Menu::new("Help").items([
-                MenuItem::action("Documentation", help::ShowDocumentation),
+            Menu::new(tr!("Help")).items([
+                MenuItem::action(tr!("Documentation"), help::ShowDocumentation),
                 MenuItem::separator(),
-                MenuItem::action("Report Issue…", help::ReportIssue),
+                MenuItem::action(tr!("Report Issue…"), help::ReportIssue),
                 MenuItem::separator(),
-                MenuItem::action("About kloggr", help::About),
+                MenuItem::action(tr!("About kloggr"), help::About),
             ]),
         ]
     }
@@ -641,8 +667,8 @@ impl Workspace {
         let can_add =
             current.is_some_and(|p| !self.session.is_favorite(p) && !Self::is_temporary(p));
         let mut items = vec![
-            MenuItem::action("Add to Favorites", AddToFavorites).disabled(!can_add),
-            MenuItem::action("Remove from Favorites…", RemoveFromFavorites)
+            MenuItem::action(tr!("Add to Favorites"), AddToFavorites).disabled(!can_add),
+            MenuItem::action(tr!("Remove from Favorites…"), RemoveFromFavorites)
                 .disabled(self.session.favorites.is_empty()),
         ];
         if !self.session.favorites.is_empty() {
@@ -653,20 +679,20 @@ impl Workspace {
                 MenuItem::action(path_label(path), OpenFavorite { path: path.clone() })
             }),
         );
-        Menu::new("Favorites").items(items)
+        Menu::new(tr!("Favorites")).items(items)
     }
 
     /// klogg: View > Opened Files: the switcher, then a tab per file.
     fn opened_files_menu(&self) -> Menu {
         let mut items = vec![
-            MenuItem::action("Switch to File…", SelectOpenFile),
+            MenuItem::action(tr!("Switch to File…"), SelectOpenFile),
             MenuItem::separator(),
         ];
         items.extend(self.tabs.iter().enumerate().map(|(index, tab)| {
             MenuItem::action(tab.path.display().to_string(), ActivateTab { index })
                 .checked(index == self.active)
         }));
-        Menu::new("Opened Files")
+        Menu::new(tr!("Opened Files"))
             .items(items)
             .disabled(self.tabs.is_empty())
     }
@@ -678,23 +704,25 @@ impl Workspace {
         let crawler = self.crawler().map(|c| c.read(cx));
         let chosen = crawler.and_then(|c| c.encoding);
         let mut items = vec![
-            MenuItem::action("Auto", SetEncoding { name: None })
+            MenuItem::action(tr!("Auto"), SetEncoding { name: None })
                 .checked(crawler.is_some() && chosen.is_none()),
             MenuItem::separator(),
         ];
         items.extend(encoding::MENU.iter().map(|(group, names)| {
-            MenuItem::submenu(Menu::new(*group).items(names.iter().map(|name| {
-                let checked = chosen.is_some_and(|e| e.name() == *name);
-                MenuItem::action(
-                    *name,
-                    SetEncoding {
-                        name: Some((*name).to_owned()),
-                    },
-                )
-                .checked(checked)
-            })))
+            MenuItem::submenu(
+                Menu::new(crate::i18n::tr(group)).items(names.iter().map(|name| {
+                    let checked = chosen.is_some_and(|e| e.name() == *name);
+                    MenuItem::action(
+                        *name,
+                        SetEncoding {
+                            name: Some((*name).to_owned()),
+                        },
+                    )
+                    .checked(checked)
+                })),
+            )
         }));
-        Menu::new("Encoding")
+        Menu::new(tr!("Encoding"))
             .items(items)
             .disabled(crawler.is_none())
     }
@@ -755,13 +783,13 @@ impl Workspace {
                 window.open_alert_dialog(cx, move |alert, _, _| {
                     let (this, path) = (this.clone(), path.clone());
                     alert
-                        .title("Open archive")
-                        .description(format!(
-                            "Extract {} to a temporary folder?",
-                            file_name(&path)
+                        .title(tr!("Open archive"))
+                        .description(tr!(
+                            "Extract {file} to a temporary folder?",
+                            file = file_name(&path),
                         ))
                         .show_cancel(true)
-                        .ok_text("Extract")
+                        .ok_text(tr!("Extract"))
                         .on_ok(move |_, window, cx| {
                             let path = path.clone();
                             this.update(cx, |ws, cx| ws.extract(path, kind, window, cx))
@@ -804,7 +832,7 @@ impl Workspace {
     fn open_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = cx.read_from_clipboard().and_then(|c| c.text());
         let Some(text) = text.filter(|t| !t.is_empty()) else {
-            self.error = Some("The clipboard holds no text".to_owned());
+            self.error = Some(tr!("The clipboard holds no text").to_string());
             cx.notify();
             return;
         };
@@ -813,7 +841,7 @@ impl Workspace {
         {
             Ok(path) => self.open_with(path, None, window, cx),
             Err(e) => {
-                self.error = Some(format!("Cannot save the clipboard: {e}"));
+                self.error = Some(tr!("Cannot save the clipboard: {error}", error = e).to_string());
                 cx.notify();
             }
         }
@@ -827,8 +855,8 @@ impl Workspace {
         let files = self.tabs.iter().map(|t| t.path.clone()).collect();
         let this = cx.entity().downgrade();
         let labels = switcher::Labels {
-            title: "Switch to file",
-            ok: "Switch",
+            title: tr!("Switch to file"),
+            ok: tr!("Switch"),
         };
         self._switcher = Some(switcher::open(
             labels,
@@ -848,7 +876,8 @@ impl Workspace {
     /// (Esc) cancels it.
     fn open_url(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
         let Some(url) = download::parse_url(&url) else {
-            self.error = Some(format!("{} is not an http or https URL", url.trim()));
+            self.error =
+                Some(tr!("{url} is not an http or https URL", url = url.trim()).to_string());
             cx.notify();
             return;
         };
@@ -874,7 +903,7 @@ impl Workspace {
             },
             cx,
         );
-        self.downloading = Some(format!("Downloading {url}…"));
+        self.downloading = Some(tr!("Downloading {url}…", url = url).to_string());
         self.error = None;
         cx.notify();
         self._download = Some(cx.spawn_in(window, async move |this, cx| {
@@ -886,7 +915,10 @@ impl Workspace {
                                 Some(total) => format!("{}%", got * 100 / total.max(1)),
                                 None => archives::human_size(got).to_string(),
                             };
-                            this.downloading = Some(format!("Downloading {url}… {done}"));
+                            this.downloading = Some(
+                                tr!("Downloading {url}… {done}", url = url, done = done)
+                                    .to_string(),
+                            );
                         }
                         DownloadEvent::Done(result) => {
                             this.downloading = None;
@@ -894,7 +926,12 @@ impl Workspace {
                                 Ok(path) => this.open(path, window, cx),
                                 Err(download::DownloadError::Cancelled) => {}
                                 // klogg: a message box with the error.
-                                Err(e) => this.error = Some(format!("Cannot download {url}: {e}")),
+                                Err(e) => {
+                                    this.error = Some(
+                                        tr!("Cannot download {url}: {error}", url = url, error = e)
+                                            .to_string(),
+                                    )
+                                }
                             }
                         }
                     }
@@ -964,7 +1001,7 @@ impl Workspace {
             cx,
         );
         let name = file_name(&path);
-        self.extracting = Some(format!("Extracting {name}…"));
+        self.extracting = Some(tr!("Extracting {name}…", name = name).to_string());
         self.error = None;
         cx.notify();
         self._extract = Some(cx.spawn_in(window, async move |this, cx| {
@@ -972,7 +1009,10 @@ impl Workspace {
                 let alive = this.update_in(cx, |this, window, cx| {
                     match event {
                         ExtractEvent::Progress(p) => {
-                            this.extracting = Some(format!("Extracting {name}… {p}%"));
+                            this.extracting = Some(
+                                tr!("Extracting {name}… {percent}%", name = name, percent = p)
+                                    .to_string(),
+                            );
                         }
                         ExtractEvent::Done(result) => {
                             this.extracting = None;
@@ -1001,13 +1041,22 @@ impl Workspace {
             Ok(files) => files,
             Err(e) => {
                 // klogg: "Failed to extract %1".
-                self.error = Some(format!("Failed to extract {}: {e}", archive_path.display()));
+                self.error = Some(
+                    tr!(
+                        "Failed to extract {file}: {error}",
+                        file = archive_path.display(),
+                        error = e
+                    )
+                    .to_string(),
+                );
                 return;
             }
         };
         self.add_recent(archive_path, cx);
         match files.as_slice() {
-            [] => self.error = Some(format!("{} is empty", archive_path.display())),
+            [] => {
+                self.error = Some(tr!("{file} is empty", file = archive_path.display()).to_string())
+            }
             [file] => self.open_with(file.clone(), None, window, cx),
             _ if !kind.is_archive() => self.open_with(files[0].clone(), None, window, cx),
             _ => {
@@ -1118,8 +1167,12 @@ impl Workspace {
                     };
                     match event {
                         IndexEvent::Progress(p) => {
-                            this.tabs[index].status =
-                                format!("{shown} — indexing {}%", p.percent());
+                            this.tabs[index].status = tr!(
+                                "{file} — indexing {percent}%",
+                                file = shown,
+                                percent = p.percent()
+                            )
+                            .to_string();
                         }
                         IndexEvent::Done(Ok(log)) => {
                             tracing::info!(
@@ -1150,7 +1203,7 @@ impl Workspace {
             }
         });
         self.tabs.push(Tab {
-            status: format!("{} — indexing…", path.display()),
+            status: tr!("{file} — indexing…", file = path.display()).to_string(),
             path,
             crawler,
             new_data: false,
@@ -1346,7 +1399,7 @@ impl Workspace {
             files: true,
             directories: false,
             multiple: true,
-            prompt: Some("Open".into()),
+            prompt: Some(tr!("Open")),
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = paths.await else {
@@ -1388,8 +1441,8 @@ impl Workspace {
             .unwrap_or(0);
         let this = cx.entity().downgrade();
         let labels = switcher::Labels {
-            title: "Remove from favorites",
-            ok: "Remove",
+            title: tr!("Remove from favorites"),
+            ok: tr!("Remove"),
         };
         let chosen_files = files.clone();
         self._switcher = Some(switcher::open(
@@ -1416,14 +1469,15 @@ impl Workspace {
             self.open(path, window, cx);
             return;
         }
+        let (yes, no) = (tr!("Yes"), tr!("No"));
         let answer = window.prompt(
             PromptLevel::Warning,
-            &format!(
-                "Could not read file {}. Remove it from favorites?",
-                path.display()
+            &tr!(
+                "Could not read file {file}. Remove it from favorites?",
+                file = path.display(),
             ),
             None,
-            &["Yes", "No"],
+            &[yes.as_ref(), no.as_ref()],
             cx,
         );
         cx.spawn_in(window, async move |this, cx| {
@@ -1445,14 +1499,15 @@ impl Workspace {
             self.open(path, window, cx);
             return;
         }
+        let (yes, no) = (tr!("Yes"), tr!("No"));
         let answer = window.prompt(
             PromptLevel::Warning,
-            &format!(
-                "Could not read file {}. Remove it from recent files?",
-                path.display()
+            &tr!(
+                "Could not read file {file}. Remove it from recent files?",
+                file = path.display(),
             ),
             None,
-            &["Yes", "No"],
+            &[yes.as_ref(), no.as_ref()],
             cx,
         );
         cx.spawn_in(window, async move |this, cx| {
@@ -1506,14 +1561,15 @@ impl Workspace {
         if crawler.read(cx).log.is_none() {
             return;
         }
+        let (clear, cancel) = (tr!("Clear"), tr!("Cancel"));
         let answer = window.prompt(
             PromptLevel::Warning,
-            &format!(
-                "Clear file {}? Its content will be removed from disk. This can't be undone.",
-                tab.path.display()
+            &tr!(
+                "Clear file {file}? Its content will be removed from disk. This can't be undone.",
+                file = tab.path.display(),
             ),
             None,
-            &["Clear", "Cancel"],
+            &[clear.as_ref(), cancel.as_ref()],
             cx,
         );
         cx.spawn_in(window, async move |_, cx| {
@@ -1522,9 +1578,10 @@ impl Workspace {
             }
             let task = crawler.update(cx, |c, cx| c.clear_file(cx));
             if let Err(e) = task.await {
-                let message = format!("Cannot clear the file: {e}");
+                let message = tr!("Cannot clear the file: {error}", error = e);
+                let ok = tr!("OK");
                 if let Ok(shown) = cx.update(|window, cx| {
-                    window.prompt(PromptLevel::Critical, &message, None, &["OK"], cx)
+                    window.prompt(PromptLevel::Critical, &message, None, &[ok.as_ref()], cx)
                 }) {
                     shown.await.ok();
                 }
@@ -1564,9 +1621,10 @@ impl Workspace {
         if let Some(downloading) = &self.downloading {
             return downloading.clone();
         }
-        self.tabs
-            .get(self.active)
-            .map_or_else(|| IDLE_STATUS.to_owned(), |t| t.status.clone())
+        self.tabs.get(self.active).map_or_else(
+            || crate::i18n::tr(IDLE_STATUS).to_string(),
+            |t| t.status.clone(),
+        )
     }
 
     /// The tab's text: the name the user gave it, else the file name
@@ -1592,10 +1650,10 @@ impl Workspace {
         };
         let current = self.tab_label(tab);
         self.prompt_text(
-            "Rename tab",
-            "Tab name (empty for the file name)",
+            tr!("Rename tab"),
+            tr!("Tab name (empty for the file name)"),
             current,
-            "OK",
+            tr!("OK"),
             move |ws, name, _, cx| ws.rename_tab(index, &name, cx),
             window,
             cx,
@@ -1612,10 +1670,10 @@ impl Workspace {
             .map(|t| t.trim().to_owned())
             .unwrap_or_default();
         self.prompt_text(
-            "Open from URL",
-            "URL to download",
+            tr!("Open from URL"),
+            tr!("URL to download"),
             initial,
-            "Open",
+            tr!("Open"),
             |ws, url, window, cx| ws.open_url(url, window, cx),
             window,
             cx,
@@ -1627,10 +1685,10 @@ impl Workspace {
     #[allow(clippy::too_many_arguments)]
     fn prompt_text(
         &mut self,
-        title: &'static str,
-        label: &'static str,
+        title: SharedString,
+        label: SharedString,
         initial: String,
-        ok: &'static str,
+        ok: SharedString,
         done: impl Fn(&mut Self, String, &mut Window, &mut Context<Self>) + Clone + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1668,14 +1726,14 @@ impl Workspace {
                 }
             };
             dialog
-                .title(title)
+                .title(title.clone())
                 .w(px(480.))
                 .child(
                     div()
                         .flex()
                         .flex_col()
                         .gap_2()
-                        .child(div().text_sm().child(label))
+                        .child(div().text_sm().child(label.clone()))
                         .child(Input::new(&input)),
                 )
                 .footer(
@@ -1685,13 +1743,13 @@ impl Workspace {
                         .gap_2()
                         .child(
                             Button::new("prompt-cancel")
-                                .label("Cancel")
+                                .label(tr!("Cancel"))
                                 .small()
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
                         .child(
                             Button::new("prompt-ok")
-                                .label(ok)
+                                .label(ok.clone())
                                 .small()
                                 .primary()
                                 .on_click(on_ok),
@@ -1750,25 +1808,28 @@ impl Workspace {
                     move |window, cx| Tooltip::new(path.clone()).build(window, cx)
                 })
                 .context_menu(move |menu, _, _| {
-                    menu.menu("Close this", Box::new(CloseTab { index }))
-                        .menu("Close others", Box::new(CloseOtherTabs { index }))
+                    menu.menu(tr!("Close this"), Box::new(CloseTab { index }))
+                        .menu(tr!("Close others"), Box::new(CloseOtherTabs { index }))
                         .menu_with_disabled(
-                            "Close to the left",
+                            tr!("Close to the left"),
                             Box::new(CloseTabsLeft { index }),
                             index == 0,
                         )
                         .menu_with_disabled(
-                            "Close to the right",
+                            tr!("Close to the right"),
                             Box::new(CloseTabsRight { index }),
                             index == last,
                         )
-                        .menu("Close all", Box::new(CloseAllTabs))
+                        .menu(tr!("Close all"), Box::new(CloseAllTabs))
                         .separator()
-                        .menu("Copy full path", Box::new(CopyTabPath { index }))
-                        .menu("Open containing folder", Box::new(OpenTabFolder { index }))
+                        .menu(tr!("Copy full path"), Box::new(CopyTabPath { index }))
+                        .menu(
+                            tr!("Open containing folder"),
+                            Box::new(OpenTabFolder { index }),
+                        )
                         .separator()
-                        .menu("Rename tab", Box::new(RenameTab { index }))
-                        .menu("Reset tab name", Box::new(ResetTabName { index }))
+                        .menu(tr!("Rename tab"), Box::new(RenameTab { index }))
+                        .menu(tr!("Reset tab name"), Box::new(ResetTabName { index }))
                 });
             let dragged = DraggedTab {
                 index,
@@ -1787,7 +1848,7 @@ impl Workspace {
                         .label("×")
                         .xsmall()
                         .ghost()
-                        .tooltip("Close (Ctrl+W)")
+                        .tooltip(tr!("Close (Ctrl+W)"))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.close_tab(index, window, cx);
                         })),
@@ -1824,7 +1885,7 @@ impl Render for Workspace {
                 .items_center()
                 .justify_center()
                 .text_color(muted)
-                .child(IDLE_STATUS),
+                .child(crate::i18n::tr(IDLE_STATUS)),
         };
         div()
             .id("workspace")
@@ -2022,30 +2083,36 @@ fn toggle_view_option(
 fn status_of(path: &Path, crawler: &Crawler) -> String {
     let shown = path.display();
     if let Some(p) = crawler.saving {
-        return format!("{shown} — saving {p}%");
+        return tr!("{file} — saving {percent}%", file = shown, percent = p).to_string();
     }
     match (crawler.reindex_percent(), &crawler.log) {
-        (Some(p), _) => format!("{shown} — indexing {p}%"),
+        (Some(p), _) => tr!("{file} — indexing {percent}%", file = shown, percent = p).to_string(),
         (None, Some(log)) => {
             // klogg: "Detected as …" or "Displayed as …".
+            let encoding = log.encoding();
             let how = if crawler.encoding.is_some() {
-                "displayed as"
+                tr!("displayed as {encoding}", encoding = encoding)
             } else {
-                "detected as"
+                tr!("detected as {encoding}", encoding = encoding)
             };
             let lines = log.line_count();
             // klogg's toolbar: size, modification date, encoding, lines.
             let size = archives::human_size(log.byte_len() as u64);
             let modified = log
                 .modified()
-                .map(|t| format!(" — modified {}", local_time(t)))
+                .map(|t| tr!(" — modified {date}", date = local_time(t)))
                 .unwrap_or_default();
-            format!(
-                "{shown} — {size}{modified} — {lines} lines — {how} {}",
-                log.encoding()
+            tr!(
+                "{file} — {size}{modified} — {count} lines — {encoding}",
+                file = shown,
+                size = size,
+                modified = modified,
+                count = lines,
+                encoding = how,
             )
+            .to_string()
         }
-        (None, None) => format!("{shown} — indexing…"),
+        (None, None) => tr!("{file} — indexing…", file = shown).to_string(),
     }
 }
 

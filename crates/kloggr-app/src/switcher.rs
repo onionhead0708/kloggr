@@ -8,6 +8,7 @@
 
 use std::path::PathBuf;
 
+use crate::tr;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement,
@@ -23,7 +24,7 @@ pub struct Chosen(pub usize);
 
 pub struct FileSwitcher {
     files: Vec<PathBuf>,
-    ok: &'static str,
+    ok: gpui::SharedString,
     input: Entity<InputState>,
     /// Indexes in `files` that match the filter.
     pub(crate) shown: Vec<usize>,
@@ -44,11 +45,11 @@ impl FileSwitcher {
     pub fn new(
         files: Vec<PathBuf>,
         selected: usize,
-        ok: &'static str,
+        ok: gpui::SharedString,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Filter"));
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(tr!("Filter")));
         let subscription = cx.subscribe_in(
             &input,
             window,
@@ -143,7 +144,7 @@ impl Render for FileSwitcher {
                                 .p_2()
                                 .text_sm()
                                 .text_color(muted)
-                                .child("No open file matches"),
+                                .child(tr!("No open file matches")),
                         )
                     }),
             )
@@ -153,13 +154,13 @@ impl Render for FileSwitcher {
                     .gap_2()
                     .child(
                         Button::new("switch-cancel")
-                            .label("Cancel")
+                            .label(tr!("Cancel"))
                             .small()
                             .on_click(|_, window, cx| window.close_dialog(cx)),
                     )
                     .child(
                         Button::new("switch-ok")
-                            .label(self.ok)
+                            .label(self.ok.clone())
                             .small()
                             .primary()
                             .disabled(empty)
@@ -201,9 +202,9 @@ pub fn wildcard_match(pattern: &str, text: &str) -> bool {
 
 /// What the dialog shows.
 pub struct Labels {
-    pub title: &'static str,
+    pub title: gpui::SharedString,
     /// The button that chooses.
-    pub ok: &'static str,
+    pub ok: gpui::SharedString,
 }
 
 /// Shows the list with `selected` selected; `chosen` gets the index of the
@@ -226,7 +227,7 @@ pub fn open(
     let dialog_switcher = switcher.clone();
     window.open_dialog(cx, move |dialog, _, _| {
         dialog
-            .title(labels.title)
+            .title(labels.title.clone())
             .w(px(800.))
             .child(dialog_switcher.clone())
     });
