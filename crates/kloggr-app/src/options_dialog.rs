@@ -19,7 +19,7 @@ use gpui_component::tab::{Tab, TabBar};
 use gpui_component::{ActiveTheme, Disableable, Sizable, WindowExt, h_flex, v_flex};
 use kloggr_core::encoding;
 use kloggr_core::highlight::Color;
-use kloggr_core::options::{LogLevel, Options, Style};
+use kloggr_core::options::{LogLevel, Options, Style, TextRendering};
 
 use crate::highlighters::hsla;
 use crate::key_capture;
@@ -31,6 +31,12 @@ use crate::shortcuts::{self, Shortcut};
 pub struct Close;
 
 impl EventEmitter<Close> for OptionsEditor {}
+
+const TEXT_RENDERINGS: [(TextRendering, &str); 3] = [
+    (TextRendering::System, "System"),
+    (TextRendering::Subpixel, "Subpixel"),
+    (TextRendering::Grayscale, "Grayscale"),
+];
 
 const STYLES: [(Style, &str); 3] = [
     (Style::System, "System"),
@@ -518,6 +524,9 @@ impl OptionsEditor {
                 .child(child)
         };
         let style_index = STYLES.iter().position(|(s, _)| *s == o.view.style);
+        let rendering_index = TEXT_RENDERINGS
+            .iter()
+            .position(|(r, _)| *r == o.view.text_rendering);
         v_flex()
             .gap_2()
             .child(row(
@@ -532,6 +541,28 @@ impl OptionsEditor {
                 div()
                     .w(px(80.))
                     .child(Input::new(&self.font_size).small())
+                    .into_any_element(),
+            ))
+            .child(self.check(
+                "font-bold",
+                "Bold font",
+                o.view.font_bold,
+                |o, v| o.view.font_bold = v,
+                cx,
+            ))
+            .child(row(
+                "Text smoothing",
+                RadioGroup::horizontal("text-rendering")
+                    .children(
+                        TEXT_RENDERINGS
+                            .iter()
+                            .map(|(_, label)| Radio::new(*label).label(*label)),
+                    )
+                    .selected_index(rendering_index)
+                    .on_click(cx.listener(|this, index: &usize, _, cx| {
+                        this.options.view.text_rendering = TEXT_RENDERINGS[*index].0;
+                        cx.notify();
+                    }))
                     .into_any_element(),
             ))
             .child(row(

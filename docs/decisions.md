@@ -8,6 +8,16 @@ Newest first. Each entry gives the date, what klogg does, what kloggr does, and 
 
 ---
 
+## 2026-11-13: Text smoothing instead of "force antialiasing"
+
+**klogg:** Options > View has "Force font antialiasing" (`mainFont.antialiasing`), which asks Qt to antialias the log views' font even where the system wouldn't, and "Use bold font" (`mainFont.bold`).
+
+**kloggr:** "Bold font" as in klogg. Instead of the antialiasing checkbox, "Text smoothing" chooses System (default), Subpixel or Grayscale, and applies to every window, not only the log views.
+
+**Why:** GPUI always antialiases text, so the checkbox would do nothing; what it can change is subpixel against grayscale smoothing, and only for the whole app (`App::set_text_rendering_mode`). Subpixel is used only where the display supports it.
+
+**Code:** `kloggr_core::options::TextRendering`, `Preferences::apply_style`.
+
 ## 2026-11-13: Mouse wheel: Shift and Alt scroll sideways, nothing scrolls by pages
 
 **klogg:** Qt's scroll area: Alt + wheel scrolls sideways, Shift + wheel scrolls a page per notch.

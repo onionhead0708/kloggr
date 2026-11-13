@@ -281,7 +281,9 @@ it.
 - **General**: reopen the last session, follow new files, check for new
   versions once a week, write a log file (and how detailed), the default search options, match highlighting and
   its colour, search history size, and quick find options.
-- **View**: font, overview bar, line numbers, and hiding ANSI colour
+- **View**: font (family, size, bold), text smoothing (the system's
+  choice, subpixel or grayscale, for every window), overview bar, line
+  numbers, and hiding ANSI colour
   sequences (`ESC[…m`) that some programs write for terminals.
 - **File**: follow on scrolling past the end, archive extraction, the
   number of recent files, and how files are watched for changes

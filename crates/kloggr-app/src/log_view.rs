@@ -1872,7 +1872,11 @@ struct Metrics {
 impl Metrics {
     fn new(window: &mut Window, cx: &App) -> Self {
         let theme = cx.theme();
-        let font = gpui::font(theme.mono_font_family.clone());
+        let mut font = gpui::font(theme.mono_font_family.clone());
+        // klogg: `mainFont.bold`.
+        if Preferences::get(cx).view.font_bold {
+            font.weight = gpui::FontWeight::BOLD;
+        }
         let font_size = theme.mono_font_size;
         let ts = window.text_system();
         let font_id = ts.resolve_font(&font);
