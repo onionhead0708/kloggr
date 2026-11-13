@@ -188,7 +188,7 @@ Optional:
 - [ ] Translations (klogg ships Simplified and Traditional Chinese)
 - [ ] Minimize to tray (klogg `view.minimizeToTray`)
 - [ ] Font bold and antialiasing options (klogg `mainFont.bold`, `mainFont.antialiasing`)
-- [ ] Mouse wheel modifiers: klogg scrolls sideways with Alt and faster with Shift, kloggr sideways with Shift; match or record in `docs/decisions.md`
+- [x] Mouse wheel modifiers: Alt + wheel scrolls sideways as in klogg, Shift + wheel too; no page-per-notch wheel (`docs/decisions.md`)
 - [ ] A command-line search tool like `klogg_grep`, which also lets the benchmarks compare search with klogg
 - [ ] Indexing files larger than memory: read-ahead hints (`madvise`) or sequential reads, where klogg wins on UTF-16 at 10 GiB; tab widths while indexing (the `long` benchmark row)
 

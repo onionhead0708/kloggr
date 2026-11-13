@@ -8,6 +8,16 @@ Newest first. Each entry gives the date, what klogg does, what kloggr does, and 
 
 ---
 
+## 2026-11-13: Mouse wheel: Shift and Alt scroll sideways, nothing scrolls by pages
+
+**klogg:** Qt's scroll area: Alt + wheel scrolls sideways, Shift + wheel scrolls a page per notch.
+
+**kloggr:** Alt + wheel scrolls sideways as in klogg, and so does Shift + wheel. There is no page-per-notch wheel.
+
+**Why:** Shift + wheel scrolling sideways is the convention in browsers, editors and file managers on Linux and Windows. macOS turns Shift + wheel into a sideways scroll before the app sees it, so klogg's page scrolling never worked there. Page Up and Page Down still scroll by pages.
+
+**Code:** `LogView::on_scroll`.
+
 ## 2026-11-11: No empty bar above the tabs on macOS
 
 **klogg:** Qt's native title bar on every platform, with the menu bar under it on Windows and Linux, and in the screen's menu bar on macOS.

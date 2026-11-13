@@ -1532,7 +1532,10 @@ impl LogView {
             cx.stop_propagation();
             return;
         }
-        let (dx, dy) = if event.modifiers.shift && delta.x == px(0.) {
+        // Shift + wheel scrolls sideways (the usual convention), and so does
+        // Alt as in klogg (Qt's scroll areas); see `docs/decisions.md`.
+        let sideways = event.modifiers.shift || event.modifiers.alt;
+        let (dx, dy) = if sideways && delta.x == px(0.) {
             (delta.y, px(0.))
         } else {
             (delta.x, delta.y)
@@ -3053,6 +3056,34 @@ mod tests {
                 .as_deref(),
             Some("line 1 word_1")
         );
+    }
+
+    #[gpui::test]
+    fn wheel_sideways_with_shift_or_alt(cx: &mut TestAppContext) {
+        let text: String = (0..100)
+            .map(|i| format!("{i} {}\n", "x".repeat(500)))
+            .collect();
+        let (view, cx) = open(cx, "wide.log", &text);
+        let l = layout(&view, cx);
+        let at = cell(&l, 1., 1.);
+        // Shift or Alt + wheel scrolls sideways (klogg: Alt).
+        for modifiers in [Modifiers::shift(), Modifiers::alt()] {
+            cx.simulate_event(ScrollWheelEvent {
+                position: at,
+                delta: ScrollDelta::Pixels(point(px(0.), -l.char_width * 4.)),
+                modifiers,
+                ..Default::default()
+            });
+            assert_eq!(viewport(&view, cx).top(), 0.0, "not scrolled down");
+            assert_eq!(viewport(&view, cx).left(), 4);
+            cx.simulate_event(ScrollWheelEvent {
+                position: at,
+                delta: ScrollDelta::Pixels(point(px(0.), l.char_width * 4.)),
+                modifiers,
+                ..Default::default()
+            });
+            assert_eq!(viewport(&view, cx).left(), 0);
+        }
     }
 
     #[gpui::test]
