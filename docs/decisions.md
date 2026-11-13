@@ -8,6 +8,14 @@ Newest first. Each entry gives the date, what klogg does, what kloggr does, and 
 
 ---
 
+## 2026-11-13: No tray icon
+
+**klogg:** Options > View "Minimize to tray" (`view.minimizeToTray`) puts a tray icon up and hides the window when it is minimized or closed; the icon's menu shows the window again or quits.
+
+**kloggr:** no tray icon. Minimizing minimizes, closing the last window quits.
+
+**Why:** GPUI has no tray support. The usual crate (`tray-icon`) needs GTK and libappindicator on Linux, which would add build dependencies and libraries to the .deb and AppImage of an app that otherwise has none, and GNOME shows tray icons only with an extension. Not worth it for an optional feature; revisit if GPUI gains a tray API.
+
 ## 2026-11-13: Text smoothing instead of "force antialiasing"
 
 **klogg:** Options > View has "Force font antialiasing" (`mainFont.antialiasing`), which asks Qt to antialias the log views' font even where the system wouldn't, and "Use bold font" (`mainFont.bold`).

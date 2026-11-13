@@ -189,7 +189,7 @@ Gaps found by comparing kloggr 0.2.0 with klogg's shortcuts, menus, options, com
 
 Optional:
 - [ ] Translations (klogg ships Simplified and Traditional Chinese)
-- [ ] Minimize to tray (klogg `view.minimizeToTray`)
+- [x] ~~Minimize to tray (klogg `view.minimizeToTray`)~~: not done, no GPUI tray API and GTK on Linux (`docs/decisions.md`)
 - [x] Font bold and antialiasing options (klogg `mainFont.bold`, `mainFont.antialiasing`): Bold font, and Text smoothing System/Subpixel/Grayscale (`docs/decisions.md`)
 - [x] Mouse wheel modifiers: Alt + wheel scrolls sideways as in klogg, Shift + wheel too; no page-per-notch wheel (`docs/decisions.md`)
 - [x] A command-line search tool like `klogg_grep`, which also lets the benchmarks compare search with klogg (`kloggr-grep`, `scripts/bench-grep-vs-klogg.sh`, results in `docs/benchmarks.md`)
