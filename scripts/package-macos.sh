@@ -3,7 +3,8 @@
 #   kloggr-<version>-macos-universal.dmg   kloggr.app for Apple Silicon and Intel
 # The app is only ad-hoc signed, not signed with an Apple Developer ID or
 # notarized: macOS blocks the first start until it's allowed in
-# System Settings > Privacy & Security (see README.md).
+# System Settings > Privacy & Security, or with xattr: the dmg has a
+# README.txt with both ways (packaging/macos/README.txt).
 #
 # Usage: scripts/package-macos.sh [--no-build]
 set -euo pipefail
@@ -99,6 +100,8 @@ codesign --force --deep --sign - "$app"
 # --- dmg -------------------------------------------------------------------
 ln -s /Applications "$out/dmg/Applications"
 cp LICENSE "$out/dmg/LICENSE.txt"
+# How to allow the unsigned app (Terminal command, or System Settings).
+cp packaging/macos/README.txt "$out/dmg/README.txt"
 dmg="$out/kloggr-$version-macos-universal.dmg"
 # hdiutil sometimes fails with "Resource busy" on CI runners: retry.
 for attempt in 1 2 3 4 5; do

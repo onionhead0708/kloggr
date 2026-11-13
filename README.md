@@ -83,6 +83,7 @@ place may get an error until you close the file in kloggr.
 ### macOS (11 or later, Apple Silicon and Intel)
 
 Open `kloggr-*-macos-universal.dmg` and drag **kloggr** to **Applications**.
+The dmg's `README.txt` explains the steps below too.
 
 The app is not signed with an Apple Developer ID or notarized, so macOS blocks
 the first start (*"kloggr" can't be opened* or *Apple could not verify…*).
@@ -93,9 +94,7 @@ To allow it:
    **Open Anyway** next to the message about kloggr, then confirm.
 
 Or, in Terminal: `xattr -dr com.apple.quarantine /Applications/kloggr.app`
-
-On macOS, open files with **File > Open** or by dragging them onto the
-window. Opening files from Finder with *Open With* doesn't work yet.
+(also when macOS says kloggr *is damaged*, which has no Open Anyway button).
 
 ## Build from source
 
