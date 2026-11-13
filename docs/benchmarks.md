@@ -4,6 +4,8 @@ How to reproduce:
 
 ```bash
 scripts/bench-vs-klogg.sh 1024           # kloggr vs klogg, 1 GiB files, best of 3
+COLD=1 scripts/bench-vs-klogg.sh 10240   # the same, each file dropped from the page cache first
+KLOGG_GREP=… scripts/bench-grep-vs-klogg.sh 1024   # search: kloggr-grep vs klogg_grep
 cargo bench -p kloggr-core                # criterion suite (1 GiB files)
 KLOGGR_BENCH_SIZE_MB=10240 cargo bench -p kloggr-core -- index   # 10 GB
 ```
@@ -18,7 +20,8 @@ and cached in `target/bench-data`:
 | long | 1–16 KiB of words, about 1 in 8 separated by a tab |
 | utf16 | typical, encoded as UTF-16LE with a BOM |
 
-Both tools run with a warm page cache, so the numbers measure CPU work, not disk.
+Both tools run with a warm page cache, so the numbers measure CPU work, not disk,
+except with `COLD=1`.
 
 ## 2026-11-08: 1 GiB, kloggr 4862bee + index shrink, klogg 24.11.0.0
 
@@ -222,4 +225,51 @@ kloggr-grep's search time includes writing the lines, which is most of it when
 many lines match (criterion's `search_all`, which only collects them, takes 191 ms
 for `ERROR`). klogg_grep doesn't decode UTF-16: it found no line with `ERROR` in
 that file, so its time there isn't comparable.
+
+## 2026-11-13: read-ahead and tab widths while indexing, kloggr feat/phase-7-optional
+
+Same machine. `scripts/bench-vs-klogg.sh` against klogg 24.11 built from source.
+
+Two changes to indexing:
+- **Read-ahead** (Linux and macOS): a thread reads the file sequentially, at
+  most 512 MiB ahead of the indexer, and the indexer waits until the next
+  128 MiB are read before each batch, so it finds the pages in memory instead of
+  faulting them in from the drive. Blocks already in the page cache are skipped
+  (`mincore`), so a cached file costs nothing more. `madvise(MADV_WILLNEED)` and
+  `MADV_SEQUENTIAL` were tried first and gained under 10%.
+- **Tab widths**: the longest line's width now expands tabs, as klogg's does.
+  Each chunk measures its lines in the same `memchr2` pass that finds line feeds,
+  so this moved per-line work out of the sequential loop and made indexing faster.
+
+### Cold, 10 GiB
+
+`COLD=1 PROFILES="typical short utf16" RUNS=2 scripts/bench-vs-klogg.sh 10240`: the
+file is dropped from the page cache before each run. The NVMe drive reads 1.8 GB/s
+(1.68 GiB/s) with `dd`.
+
+| file | kloggr before | kloggr now | klogg | now vs klogg |
+|---|---|---|---|---|
+| typical | 13.4 s | 7.59 s (1.32 GiB/s) | 8.10 s (1.24 GiB/s) | 1.1× |
+| short | 19.3 s | 9.24 s (1.08 GiB/s) | 24.29 s (0.41 GiB/s) | 2.6× |
+| utf16 | 12.6 s | 7.01 s (1.43 GiB/s) | 6.37 s (1.57 GiB/s) | 0.9× |
+
+"Before" is master's indexer, one cold run each. On UTF-16 klogg is still a little
+ahead; both are close to the drive's speed.
+
+### Warm, 1 GiB
+
+`RUNS=3 scripts/bench-vs-klogg.sh 1024`, now with tab widths on both sides, so the
+long-line row compares like with like.
+
+| file | kloggr | klogg | speedup |
+|---|---|---|---|
+| typical | 167 ms (5.99 GiB/s) | 771 ms (1.30 GiB/s) | 4.6× |
+| short | 711 ms (1.41 GiB/s) | 2354 ms (0.42 GiB/s) | 3.3× |
+| long (tabs) | 173 ms (5.77 GiB/s) | 143.8 s (0.01 GiB/s) | 830× (one run) |
+| utf16 | 115 ms (8.70 GiB/s) | 622 ms (1.61 GiB/s) | 5.4× |
+
+Before these changes kloggr took 274 / 911 / 53 / 223 ms. The long file got slower
+(53 to 173 ms) because its tabs are now counted; the others got faster.
+Windows keeps indexing through the mapping without read-ahead: it has no
+`mincore`, and reading a cached file again would cost about a fifth.
 

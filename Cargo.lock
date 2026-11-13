@@ -3698,6 +3698,7 @@ dependencies = [
  "directories",
  "encoding_rs",
  "flate2",
+ "libc",
  "lzma-rs",
  "memchr",
  "memmap2",

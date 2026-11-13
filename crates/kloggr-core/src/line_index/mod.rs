@@ -16,7 +16,11 @@
 //! position within an aligned code unit whose other byte is 0, so text such as
 //! U+520A is not split. Indexing starts after the byte-order mark.
 //!
-//! TODO: line lengths do not expand tabs yet (klogg `expandTabsInLine`).
+//! The longest line's length expands tabs to the next multiple of
+//! [`TAB_STOP`](crate::text::TAB_STOP) columns, as klogg does while indexing (`expandTabsInLine`).
+//! Each chunk measures its lines in the same pass that finds the line feeds;
+//! a line that starts in an earlier chunk gets a [`Segment`], which gives
+//! its width from any start column, so chunks don't wait for each other.
 
 mod compressed;
 
@@ -31,6 +35,56 @@ use crate::encoding::LineFeed;
 
 /// Bytes scanned by one rayon task.
 const CHUNK: usize = 4 << 20;
+
+/// Tab stops, as the views lay lines out (klogg: `TabStop`).
+const TAB_STOP: u64 = crate::text::TAB_STOP as u64;
+
+/// The column after a tab at column `col`.
+fn tab_stop(col: u64) -> u64 {
+    (col / TAB_STOP + 1) * TAB_STOP
+}
+
+/// A piece of a line, without line feed, whose start column isn't known
+/// yet: its width from any column. After its first tab the columns are
+/// those from a tab stop, so the units before that tab and the width after
+/// it are enough.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Segment {
+    /// It has at least one code unit (a trailing `\r` included).
+    nonempty: bool,
+    /// Code units before the first tab, or all of them without a tab.
+    before_tab: u64,
+    tab: bool,
+    /// Width after the first tab, from a tab stop.
+    after_tab: u64,
+    /// It ends with a `\r` that isn't counted: it isn't part of the line if
+    /// a `\n` follows, and is one column if anything else does.
+    cr: bool,
+}
+
+impl Segment {
+    /// The column after this segment when it starts at `col`.
+    fn end_col(&self, col: u64) -> u64 {
+        if self.tab {
+            tab_stop(col + self.before_tab) + self.after_tab
+        } else {
+            col + self.before_tab
+        }
+    }
+}
+
+/// What one chunk found: line starts, and line widths.
+struct ChunkScan {
+    starts: Vec<u64>,
+    /// From the chunk's start to its first line feed, or to its end.
+    head: Segment,
+    /// The chunk has a line feed, which ends the head's line.
+    terminated: bool,
+    /// The widest line between two line feeds of the chunk.
+    inner_max: u64,
+    /// From the last line feed to the chunk's end, starting a line.
+    tail: Segment,
+}
 
 /// Indexing progress, reported after each batch of chunks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,10 +122,13 @@ pub struct LineIndex {
     starts: CompressedOffsets,
     /// Number of bytes of the buffer covered by the index.
     len: u64,
-    /// Longest line among all lines except the last, in code units.
+    /// Widest line among the lines ended by a line feed, in columns.
     max_terminated_len: u64,
-    /// Length of the last line, which may still grow on [`extend`](Self::extend).
-    last_len: u64,
+    /// Width of the line still open at the end of the indexed part, which
+    /// may still grow on [`extend`](Self::extend), without a final `\r`.
+    open_len: u64,
+    /// The open line ends with a `\r` (see [`Segment::cr`]).
+    open_cr: bool,
 }
 
 impl Default for LineIndex {
@@ -95,7 +152,8 @@ impl LineIndex {
             starts: CompressedOffsets::new(),
             len: 0,
             max_terminated_len: 0,
-            last_len: 0,
+            open_len: 0,
+            open_cr: false,
         }
     }
 
@@ -183,55 +241,42 @@ impl LineIndex {
         // indexed part ended on a line feed: a start is only recorded once
         // there is a byte after the terminator.
         if self.starts.is_empty() || self.lf.ends_with_lf(data, scan_from) {
-            self.push_start(data, scan_from as u64);
+            self.starts.push(scan_from as u64);
         }
 
-        // Positions after each line feed in the new bytes, chunk by chunk in
-        // parallel. Chunks are code-unit aligned, so units never straddle them.
+        // Positions after each line feed in the new bytes, and line widths,
+        // chunk by chunk in parallel. Chunks are code-unit aligned, so units
+        // never straddle them.
         let lf = self.lf;
-        let (width, index) = (lf.width as usize, lf.index as usize);
-        let chunks: Vec<Vec<u64>> = (scan_from..end)
+        let chunks: Vec<ChunkScan> = (scan_from..end)
             .step_by(CHUNK)
             .collect::<Vec<_>>()
             .into_par_iter()
-            .map(|from| {
-                let to = (from + CHUNK).min(end);
-                memchr::memchr_iter(b'\n', &data[from..to])
-                    .map(|i| from + i)
-                    .filter(|&p| {
-                        width == 1
-                            || (p >= origin + index
-                                && (p - index - origin).is_multiple_of(width)
-                                && lf.ends_with_lf(data, p - index + width))
-                    })
-                    .map(|p| (p - index + width) as u64)
-                    .filter(|&s| s < end as u64)
-                    .collect()
-            })
+            .map(|from| scan_chunk(data, from, (from + CHUNK).min(end), end, lf, origin))
             .collect();
-        for starts in chunks {
-            for s in starts {
-                self.push_start(data, s);
+        for chunk in chunks {
+            self.continue_line(&chunk.head);
+            if chunk.terminated {
+                self.max_terminated_len = self.max_terminated_len.max(self.open_len);
+                (self.open_len, self.open_cr) = (0, false);
+                self.max_terminated_len = self.max_terminated_len.max(chunk.inner_max);
+                self.continue_line(&chunk.tail);
+            }
+            for s in chunk.starts {
+                self.starts.push(s);
             }
         }
-
         self.len = end as u64;
-        if let Some(last) = self.starts.last() {
-            self.last_len = self.content_len(data, last as usize, end);
-        }
     }
 
-    /// Length in code units of the line in `data[start..end]`, no terminator.
-    fn content_len(&self, data: &[u8], start: usize, end: usize) -> u64 {
-        (self.lf.strip_eol(&data[start..end]).len() / self.lf.width as usize) as u64
-    }
-
-    fn push_start(&mut self, data: &[u8], start: u64) {
-        if let Some(prev) = self.starts.last() {
-            let len = self.content_len(data, prev as usize, start as usize);
-            self.max_terminated_len = self.max_terminated_len.max(len);
+    /// Adds `segment` to the open line.
+    fn continue_line(&mut self, segment: &Segment) {
+        if segment.nonempty {
+            // A `\r` followed by more text is one column.
+            let col = self.open_len + u64::from(self.open_cr);
+            self.open_len = segment.end_col(col);
+            self.open_cr = segment.cr;
         }
-        self.starts.push(start);
     }
 
     pub fn line_count(&self) -> usize {
@@ -243,11 +288,15 @@ impl LineIndex {
         self.len
     }
 
-    /// Length in code units of the longest line, without terminator (klogg:
-    /// `getMaxLength`, which also expands tabs; not done yet). For UTF-8 this
-    /// is bytes, for UTF-16 it is 16-bit units.
+    /// Width of the longest line, without terminator, in code units with
+    /// tabs expanded to the next multiple of
+    /// [`TAB_STOP`](crate::text::TAB_STOP) (klogg:
+    /// `getMaxLength`). For UTF-8 a code unit is a byte, for UTF-16 a 16-bit
+    /// unit.
     pub fn max_line_len(&self) -> u64 {
-        self.max_terminated_len.max(self.last_len)
+        // A `\r` at the very end is part of the line until a `\n` follows.
+        self.max_terminated_len
+            .max(self.open_len + u64::from(self.open_cr))
     }
 
     /// Heap bytes used by the index.
@@ -313,6 +362,115 @@ impl LineIndex {
     }
 }
 
+/// Scans `data[from..to]` for line feeds and tabs. `to` is the chunk's
+/// end and `end` the end of the indexed part; both are code-unit aligned,
+/// as is `from` relative to `origin`.
+fn scan_chunk(
+    data: &[u8],
+    from: usize,
+    to: usize,
+    end: usize,
+    lf: LineFeed,
+    origin: usize,
+) -> ChunkScan {
+    let (w, index) = (lf.width as usize, lf.index as usize);
+    // Whether the code unit starting at `u` is the ASCII character `c`.
+    let unit_is = |u: usize, c: u8| {
+        if w == 1 {
+            data[u] == c
+        } else {
+            lf.unit_before(data, u + w) == Some(c)
+        }
+    };
+    let units = |a: usize, b: usize| ((b - a) / w) as u64;
+    let mut scan = ChunkScan {
+        starts: Vec::new(),
+        head: Segment::default(),
+        terminated: false,
+        inner_max: 0,
+        tail: Segment::default(),
+    };
+    // Where the text not yet measured starts, and the column there: from
+    // the line start, or from the head's first tab.
+    let mut last = from;
+    let mut col = 0u64;
+    // Start of the line after the last line feed.
+    let mut line_start = from;
+    for p in memchr::memchr2_iter(b'\n', b'\t', &data[from..to]) {
+        let p = from + p;
+        // The unit holding this byte, if the byte is a whole ASCII unit.
+        let u = if w == 1 {
+            p
+        } else {
+            if p < origin + index || !(p - index - origin).is_multiple_of(w) {
+                continue;
+            }
+            p - index
+        };
+        if w > 1 && lf.unit_before(data, u + w) != Some(data[p]) {
+            continue;
+        }
+        if data[p] == b'\t' {
+            if !scan.terminated && !scan.head.tab {
+                scan.head.before_tab = units(last, u);
+                scan.head.tab = true;
+                col = 0;
+            } else {
+                col = tab_stop(col + units(last, u));
+            }
+            last = u + w;
+            continue;
+        }
+        // A line feed; a `\r` before it isn't part of the line.
+        let mut content_end = u;
+        if u >= last + w && unit_is(u - w, b'\r') {
+            content_end -= w;
+        }
+        let width = col + units(last, content_end);
+        if scan.terminated {
+            scan.inner_max = scan.inner_max.max(width);
+        } else {
+            scan.head.nonempty = u > from;
+            if scan.head.tab {
+                scan.head.after_tab = width;
+            } else {
+                scan.head.before_tab = width;
+            }
+            scan.terminated = true;
+        }
+        col = 0;
+        last = u + w;
+        line_start = last;
+        if last < end {
+            scan.starts.push(last as u64);
+        }
+    }
+    // The rest, up to the chunk's end; a final `\r` waits for what follows.
+    let mut content_end = to;
+    let cr = to >= last + w && unit_is(to - w, b'\r');
+    if cr {
+        content_end -= w;
+    }
+    let width = col + units(last, content_end);
+    if scan.terminated {
+        scan.tail = Segment {
+            nonempty: to > line_start,
+            before_tab: width,
+            cr,
+            ..Segment::default()
+        };
+    } else {
+        scan.head.nonempty = to > from;
+        if scan.head.tab {
+            scan.head.after_tab = width;
+        } else {
+            scan.head.before_tab = width;
+        }
+        scan.head.cr = cr;
+    }
+    scan
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,6 +534,101 @@ mod tests {
         assert_eq!(LineIndex::build(b"ab\r\nabcd\nx").max_line_len(), 4);
         assert_eq!(LineIndex::build(b"ab\nx\r\nabcdef").max_line_len(), 6);
         assert_eq!(LineIndex::build(b"").max_line_len(), 0);
+        // A lone `\r` is part of the line, at the end too.
+        assert_eq!(LineIndex::build(b"a\rb\n").max_line_len(), 3);
+        assert_eq!(LineIndex::build(b"ab\r").max_line_len(), 3);
+    }
+
+    /// Width of `line` with tabs expanded, the way the views lay it out.
+    fn expanded(line: &[u8]) -> u64 {
+        line.iter().fold(
+            0,
+            |col, &b| if b == b'\t' { tab_stop(col) } else { col + 1 },
+        )
+    }
+
+    #[test]
+    fn max_line_len_expands_tabs() {
+        let max = |data: &[u8]| LineIndex::build(data).max_line_len();
+        assert_eq!(max(b"\t"), 8);
+        assert_eq!(max(b"a\tb"), 9);
+        assert_eq!(max(b"1234567\tx"), 9);
+        assert_eq!(max(b"12345678\t"), 16);
+        assert_eq!(max(b"\t\t\r\nabc"), 16);
+        assert_eq!(max(b"abc\n\t\t\tx\r\nab"), 25);
+        assert_eq!(
+            max(b"x\ta\r\tb\n"),
+            17,
+            "a `\\r` inside the line is a column"
+        );
+    }
+
+    /// The widest line of `data`, tabs expanded; a `\r` is dropped only
+    /// before a `\n`.
+    fn widest(data: &[u8]) -> u64 {
+        let mut lines: Vec<&[u8]> = data.split(|&b| b == b'\n').collect();
+        let last = lines.pop().unwrap_or_default();
+        lines
+            .iter()
+            .map(|l| expanded(strip_cr(l)))
+            .chain([expanded(last)])
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Like [`generated`], with tabs.
+    fn generated_with_tabs(len: usize) -> Vec<u8> {
+        let mut x = 0x2545f4914f6cdd1du64;
+        generated(len)
+            .into_iter()
+            .map(|b| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                if b != b'\n' && b != b'\r' && x.is_multiple_of(11) {
+                    b'\t'
+                } else {
+                    b
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn tab_widths_across_chunks_and_extends() {
+        let data = generated_with_tabs(3 * CHUNK + 12_345);
+        let full = LineIndex::build(&data);
+        assert_eq!(full.max_line_len(), widest(&data));
+        assert_eq!(full.line_count(), reference(&data).len());
+
+        // A long line with tabs across chunk boundaries.
+        let mut long = b"x\n".to_vec();
+        long.extend(
+            generated_with_tabs(2 * CHUNK + 777)
+                .iter()
+                .map(|&b| match b {
+                    b'\n' | b'\r' => b'y',
+                    b => b,
+                }),
+        );
+        long.extend(b"\r\nz");
+        let want = expanded(&long[2..long.len() - 3]);
+        assert_eq!(LineIndex::build(&long).max_line_len(), want);
+
+        // Grown in uneven steps, cutting between `\r` and `\n` and in
+        // runs of tabs.
+        let data = generated_with_tabs(60_000);
+        let full = LineIndex::build(&data);
+        let mut idx = LineIndex::default();
+        let mut cut = 0;
+        let mut step = 1;
+        while cut < data.len() {
+            cut = (cut + step).min(data.len());
+            idx.extend(&data[..cut]);
+            assert_eq!(idx.max_line_len(), widest(&data[..cut]), "cut={cut}");
+            step = step * 7 % 1013 + 1;
+        }
+        assert_eq!(idx.max_line_len(), full.max_line_len());
     }
 
     /// Deterministic pseudo-random log with lines of 0..200 bytes, some CRLF.
@@ -626,6 +879,44 @@ mod tests {
                 }
                 idx.extend(&data);
                 assert_eq!(idx.line_count(), index(enc, &data).line_count());
+            }
+        }
+
+        #[test]
+        fn tab_widths_in_code_units() {
+            // Tabs, and units holding a 0x09 or 0x0D byte that aren't tabs
+            // or carriage returns (U+0909, U+0D0D, U+090D).
+            let ascii = String::from_utf8(generated_with_tabs(CHUNK + CHUNK / 3)).unwrap();
+            let text: String = ascii
+                .split_inclusive('\n')
+                .enumerate()
+                .map(|(i, l)| match i % 4 {
+                    0 => format!("\u{0909}{l}"),
+                    1 => format!("\t\u{0D0D}\u{090D}{l}"),
+                    _ => l.to_owned(),
+                })
+                .collect();
+            let units: Vec<u16> = text.encode_utf16().collect();
+            let mut lines: Vec<&[u16]> = units.split(|&u| u == 0x0A).collect();
+            let last = lines.pop().unwrap();
+            let width = |l: &[u16]| {
+                l.iter()
+                    .fold(0, |c, &u| if u == 9 { tab_stop(c) } else { c + 1 })
+            };
+            let want = lines
+                .iter()
+                .map(|l| width(l.strip_suffix(&[0x0D]).unwrap_or(l)))
+                .chain([width(last)])
+                .max()
+                .unwrap();
+            for be in [false, true] {
+                let data = encode(&text, be, true);
+                let enc = if be {
+                    Encoding::UTF_16BE
+                } else {
+                    Encoding::UTF_16LE
+                };
+                assert_eq!(index(enc, &data).max_line_len(), want, "be={be}");
             }
         }
 

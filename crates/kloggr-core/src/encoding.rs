@@ -39,7 +39,7 @@ impl LineFeed {
     }
 
     /// The ASCII value of the code unit ending at `end`, if it is ASCII.
-    fn unit_before(&self, data: &[u8], end: usize) -> Option<u8> {
+    pub(crate) fn unit_before(&self, data: &[u8], end: usize) -> Option<u8> {
         let w = self.width as usize;
         let unit = data.get(end.checked_sub(w)?..end)?;
         let (i, b) = (self.index as usize, unit[self.index as usize]);

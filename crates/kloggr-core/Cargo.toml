@@ -35,6 +35,10 @@ lzma-rs.workspace = true
 sevenz-rust2.workspace = true
 zip.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+# mincore: which pages of a file are already cached (`file::read_ahead`).
+libc.workspace = true
+
 [dev-dependencies]
 criterion.workspace = true
 

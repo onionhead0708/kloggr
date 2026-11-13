@@ -193,7 +193,7 @@ Optional:
 - [x] Font bold and antialiasing options (klogg `mainFont.bold`, `mainFont.antialiasing`): Bold font, and Text smoothing System/Subpixel/Grayscale (`docs/decisions.md`)
 - [x] Mouse wheel modifiers: Alt + wheel scrolls sideways as in klogg, Shift + wheel too; no page-per-notch wheel (`docs/decisions.md`)
 - [x] A command-line search tool like `klogg_grep`, which also lets the benchmarks compare search with klogg (`kloggr-grep`, `scripts/bench-grep-vs-klogg.sh`, results in `docs/benchmarks.md`)
-- [ ] Indexing files larger than memory: read-ahead hints (`madvise`) or sequential reads, where klogg wins on UTF-16 at 10 GiB; tab widths while indexing (the `long` benchmark row)
+- [x] Indexing files larger than memory: a read-ahead thread (Linux, macOS) and tab widths while indexing; cold 10 GiB 30–50% faster, results in `docs/benchmarks.md`
 
 ## Conventions
 

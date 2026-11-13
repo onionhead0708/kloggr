@@ -12,7 +12,7 @@ use std::fs::File;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use memmap2::Mmap;
 
@@ -280,6 +280,96 @@ fn map_file(path: &Path) -> Result<(Option<Mmap>, File, FileId), OpenError> {
     Ok((map, file, FileId::of(&meta)))
 }
 
+/// How far the read-ahead thread may run ahead of the indexer. Far enough
+/// to keep the drive busy, small enough not to push out of memory pages the
+/// indexer hasn't reached on a file larger than memory.
+#[cfg(unix)]
+const READ_AHEAD_WINDOW: u64 = 512 << 20;
+
+/// How far the read-ahead thread must be ahead before the indexer starts a
+/// batch (a batch is 8 MiB per thread). Reading faults in the mapping would
+/// compete with the thread for the drive.
+const READ_AHEAD_LEAD: u64 = 128 << 20;
+
+/// Shared between the indexer and the read-ahead thread (none on Windows).
+#[derive(Default)]
+#[cfg_attr(not(unix), allow(dead_code))]
+struct ReadAhead {
+    /// Bytes indexed.
+    indexed: AtomicU64,
+    /// Bytes read, or `u64::MAX` once the thread has stopped.
+    read: AtomicU64,
+    stop: AtomicBool,
+}
+
+impl ReadAhead {
+    /// Waits until the bytes up to `done + READ_AHEAD_LEAD` are read, or the
+    /// thread stopped, or `cancel` is set.
+    fn wait(&self, done: u64, len: u64, cancel: &AtomicBool) {
+        self.indexed.store(done, Ordering::Relaxed);
+        let want = done.saturating_add(READ_AHEAD_LEAD).min(len);
+        while self.read.load(Ordering::Acquire) < want && !cancel.load(Ordering::Relaxed) {
+            std::thread::sleep(std::time::Duration::from_micros(200));
+        }
+    }
+
+    /// Reads the mapped file sequentially, at most [`READ_AHEAD_WINDOW`]
+    /// bytes ahead of the indexer (klogg reads files in blocks while
+    /// indexing them), so the page cache fills at the drive's sequential
+    /// speed instead of at the pace of page faults. The data read is
+    /// discarded: the indexer reads the mapping, which then finds the pages
+    /// cached. Blocks already cached are skipped, which keeps the cost on a
+    /// cached file to a `mincore` call per block.
+    ///
+    /// Unix only: Windows has no `mincore`, and reading a cached file again
+    /// would slow its indexing by about a fifth.
+    #[cfg(unix)]
+    fn run(&self, file: &File, map: &Mmap) {
+        const BLOCK: usize = 4 << 20;
+        let len = map.len();
+        let mut buf = Vec::new();
+        let mut at = 0usize;
+        while at < len && !self.stop.load(Ordering::Relaxed) {
+            if at as u64 >= self.indexed.load(Ordering::Relaxed) + READ_AHEAD_WINDOW {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                continue;
+            }
+            let n = BLOCK.min(len - at);
+            if !is_cached(&map[at..at + n]) {
+                buf.resize(BLOCK, 0);
+                if read_exact_at(file, &mut buf[..n], at as u64).is_err() {
+                    break;
+                }
+            }
+            at += n;
+            self.read.store(at as u64, Ordering::Release);
+        }
+        self.read.store(u64::MAX, Ordering::Release);
+    }
+}
+
+/// Whether every page of `data`, which starts on a page boundary of a
+/// mapping, is in memory (`mincore`). `false` if it can't tell.
+#[cfg(unix)]
+fn is_cached(data: &[u8]) -> bool {
+    // SAFETY: sysconf has no preconditions.
+    let page = match unsafe { libc::sysconf(libc::_SC_PAGESIZE) } {
+        p if p > 0 => p as usize,
+        _ => return false,
+    };
+    let mut pages = vec![0u8; data.len().div_ceil(page)];
+    // SAFETY: `data` is part of a live mapping and starts on a page
+    // boundary; `pages` has one byte per page of it.
+    let ok = unsafe {
+        libc::mincore(
+            data.as_ptr() as *mut libc::c_void,
+            data.len(),
+            pages.as_mut_ptr().cast(),
+        )
+    } == 0;
+    ok && pages.iter().all(|p| p & 1 == 1)
+}
+
 fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -334,7 +424,30 @@ impl LogFile {
             encoding::detect(&data[..data.len().min(encoding::DETECTION_SAMPLE)]);
         let encoding = options.encoding.unwrap_or(detected_encoding);
         let mut index = LineIndex::new(encoding.line_feed(), encoding.bom_len(data));
-        index.extend_with(data, cancel, on_progress)?;
+        let mut on_progress = on_progress;
+        let ahead = ReadAhead::default();
+        let len = data.len() as u64;
+        let result = std::thread::scope(|scope| {
+            #[cfg(unix)]
+            let reading = map
+                .as_ref()
+                .map(|map| scope.spawn(|| ahead.run(&file, map)))
+                .is_some();
+            #[cfg(not(unix))]
+            let reading = false;
+            if reading {
+                ahead.wait(0, len, cancel);
+            } else {
+                ahead.read.store(u64::MAX, Ordering::Relaxed);
+            }
+            let result = index.extend_with(data, cancel, |p| {
+                ahead.wait(p.done, len, cancel);
+                on_progress(p)
+            });
+            ahead.stop.store(true, Ordering::Relaxed);
+            result
+        });
+        result?;
         Ok(Self::assemble(
             path,
             options,
@@ -680,6 +793,33 @@ mod tests {
         let path = std::env::temp_dir().join(format!("kloggr-{}-{name}", std::process::id()));
         File::create(&path).unwrap().write_all(content).unwrap();
         path
+    }
+
+    #[test]
+    fn opens_a_file_of_many_read_ahead_blocks() {
+        // Larger than the read-ahead lead, so the indexer waits for the
+        // read-ahead thread between batches.
+        let line = b"0123456789 abcdefghij\tklmnopqrstuvwxyz\n";
+        let count = ((READ_AHEAD_LEAD as usize) + (5 << 20)) / line.len();
+        let path = temp_file("read-ahead.log", &line.repeat(count));
+        let log = LogFile::open(&path).unwrap();
+        assert_eq!(log.line_count(), count);
+        assert_eq!(log.index().max_line_len(), 40);
+        assert_eq!(
+            log.line(count - 1).as_deref(),
+            Some(&line[..line.len() - 1])
+        );
+        drop(log);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn written_file_is_cached() {
+        let path = temp_file("cached.log", &vec![b'x'; 3 << 20]);
+        let (map, _, _) = map_file(&path).unwrap();
+        assert!(is_cached(&map.unwrap()[..]));
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]
