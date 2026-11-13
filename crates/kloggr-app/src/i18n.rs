@@ -195,7 +195,10 @@ mod tests {
             if path.ends_with("i18n.rs") {
                 continue;
             }
-            let text = std::fs::read_to_string(&path).unwrap();
+            // Git may check sources out with CRLF line ends (Windows).
+            let text = std::fs::read_to_string(&path)
+                .unwrap()
+                .replace("\r\n", "\n");
             // Not the tests, whose strings aren't shown.
             let text = text
                 .find("#[cfg(test)]\nmod tests")
@@ -286,7 +289,9 @@ mod tests {
         if std::env::var_os("KLOGGR_UPDATE_TEMPLATE").is_some() {
             std::fs::write(&path, &want).unwrap();
         }
-        let have = std::fs::read_to_string(&path).unwrap_or_default();
+        let have = std::fs::read_to_string(&path)
+            .unwrap_or_default()
+            .replace("\r\n", "\n");
         assert!(
             have == want,
             "locales/template.toml is out of date: run \
