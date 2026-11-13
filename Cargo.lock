@@ -3669,7 +3669,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kloggr-app"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -3689,7 +3689,7 @@ dependencies = [
 
 [[package]]
 name = "kloggr-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64 0.23.1",
  "bzip2",
@@ -3723,7 +3723,7 @@ dependencies = [
 
 [[package]]
 name = "kloggr-grep"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "kloggr-core",
 ]
